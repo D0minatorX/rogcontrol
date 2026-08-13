@@ -18,6 +18,35 @@ from rogcontrol import config
 from rogcontrol import profiles
 
 
+def _require_default_path_resolved_at_call_time():
+    """Refuse to run if load/save ever bind CONFIG_PATH into their signature.
+
+    The default-path tests are only harmless because they patch
+    ``config.CONFIG_PATH``, and that only redirects anything while load/save
+    read the name when they are called. Refactor either of them to the
+    natural-looking ``def save_config(cfg, path=CONFIG_PATH)`` and the real
+    ~/.config path is bound at import, the patch quietly stops having any
+    effect, and the next bare ``save_config(cfg)`` writes over the user's
+    actual profiles -- there is no getting them back once os.replace runs.
+    So this fails closed: no test in this file runs at all.
+    """
+    for func in (config.save_config, config.load_config):
+        if func.__defaults__ != (None,):
+            raise AssertionError(
+                f"rogcontrol.config.{func.__name__} no longer defaults its "
+                f"path to None (__defaults__ = {func.__defaults__!r}). "
+                "Patching config.CONFIG_PATH can no longer redirect it, so "
+                "these tests would write to the user's real config. Restore "
+                "`path=None` plus `path = CONFIG_PATH if path is None else "
+                "path` in the function body."
+            )
+
+
+def setUpModule():
+    # Before any test in this file gets to call load/save.
+    _require_default_path_resolved_at_call_time()
+
+
 class Migration(unittest.TestCase):
     def test_empty_config_gets_stock_profiles(self):
         out = config.migrate_config({})
@@ -304,6 +333,10 @@ class TheDefaultPath(unittest.TestCase):
     they are called, so this can point them somewhere harmless."""
 
     def setUp(self):
+        # Also checked per-test, not just once in setUpModule: these are the
+        # tests that actually call load/save with no path, and this class
+        # keeps its guard if it is ever pulled into another test module.
+        _require_default_path_resolved_at_call_time()
         self.dir = tempfile.mkdtemp()
         self.path = os.path.join(self.dir, "rogcontrol.json")
         self.addCleanup(shutil.rmtree, self.dir, True)
