@@ -100,5 +100,14 @@ def pct_to_pwm255(pct):
 
 
 def pct_to_rpm(pct, floor, slope):
-    """Fan percentage to rpm using this machine's measured calibration."""
-    return round(floor + slope * pct)
+    """Fan percentage to rpm using this machine's measured calibration.
+
+    NOTE: the argument order differs from the older ``pct_to_rpm(rpm_cal, pct)``
+    in rogcontrol.py -- this one takes the percentage first and the calibration
+    unpacked, because that is what callers of this module have to hand. The
+    percentage is clamped to 0-100 exactly as the older function does: the
+    calibration is a straight line fitted over the 0-100 curve range only, so
+    extrapolating past either end reports an rpm the fan cannot physically
+    reach (150% would claim 9050 rpm on a fan that tops out at 6585).
+    """
+    return round(floor + slope * max(0, min(100, pct)))
