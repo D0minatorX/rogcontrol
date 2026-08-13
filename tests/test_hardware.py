@@ -289,6 +289,206 @@ class TestBattery(FakeSysfs):
         self.assertIsNone(hardware.is_ac_connected(root=self.root))
 
 
+class TestGpuLimitParsing(unittest.TestCase):
+    """Reading the card's own limits out of nvidia-smi.
+
+    The fixtures are literal output from an RTX 5070 Ti Laptop GPU on driver
+    610.57.04. Parsing is where this breaks -- the CSV gains a column, the
+    query dump reorders its sections -- so the input is kept verbatim rather
+    than reduced to the two numbers it contains."""
+
+    CSV = "NVIDIA GeForce RTX 5070 Ti Laptop GPU, 5.00, 140.00\n"
+
+    CLOCK_DUMP = """
+GPU 00000000:01:00.0
+    Clocks
+        Graphics                                       : 555 MHz
+        SM                                             : 555 MHz
+    Max Clocks
+        Graphics                                       : 3090 MHz
+        SM                                             : 3090 MHz
+        Memory                                         : 14001 MHz
+    Max Customer Boost Clocks
+        Graphics                                       : N/A
+"""
+
+    def test_power_range_off_the_card(self):
+        self.assertEqual(hardware.parse_gpu_power_limits(self.CSV), (5, 140))
+
+    def test_the_card_names_itself(self):
+        self.assertEqual(hardware.parse_gpu_name(self.CSV),
+                         "NVIDIA GeForce RTX 5070 Ti Laptop GPU")
+
+    def test_an_unusable_range_is_refused(self):
+        # A slider handed any of these would have an empty or inverted
+        # range, which is worse than falling back to the defaults.
+        for row in ("GPU, [N/A], 140.00", "GPU, 140.00, 5.00",
+                    "GPU, 0.00, 0.00", "GPU, 140.00", "", "   "):
+            self.assertIsNone(hardware.parse_gpu_power_limits(row), row)
+
+    def test_max_clock_comes_from_the_max_section(self):
+        # 555 is the clock the card happens to be running at; taking the
+        # first "Graphics" line would report that as the ceiling.
+        self.assertEqual(hardware.parse_gpu_max_clock(self.CLOCK_DUMP), 3090)
+
+    def test_a_dump_without_a_max_section(self):
+        self.assertIsNone(hardware.parse_gpu_max_clock(
+            "    Clocks\n        Graphics : 555 MHz\n"))
+        self.assertIsNone(hardware.parse_gpu_max_clock(""))
+
+    def test_an_unparseable_max_clock(self):
+        self.assertIsNone(hardware.parse_gpu_max_clock(
+            "    Max Clocks\n        Graphics                : N/A\n"))
+
+    def test_the_defaults_are_a_fresh_dict_each_time(self):
+        # Handed straight to the UI, which keeps it: one shared dict would
+        # let one page's edit reach every other caller.
+        first = hardware.default_gpu_limits()
+        first["max_w"] = 1
+        self.assertEqual(hardware.default_gpu_limits()["max_w"],
+                         hardware.GPU_MAX_W_FALLBACK)
+
+
+class TestGpuClockLimitArg(unittest.TestCase):
+    """The top of the slider unlocks; it does not lock at the maximum.
+
+    Locking at the stock maximum still *pins* the clock, so the card stops
+    idling down and stops boosting -- the opposite of the "no limit" the
+    position means."""
+
+    def test_the_top_of_the_range_resets(self):
+        self.assertEqual(hardware.gpu_clock_limit_arg(3090, 3090), "reset")
+
+    def test_above_the_top_still_resets(self):
+        # A saved ceiling from a bigger card, loaded on a smaller one.
+        self.assertEqual(hardware.gpu_clock_limit_arg(4000, 3090), "reset")
+
+    def test_anything_below_is_a_real_cap(self):
+        self.assertEqual(hardware.gpu_clock_limit_arg(3075, 3090), 3075)
+        self.assertEqual(hardware.gpu_clock_limit_arg(200, 3090), 200)
+
+    def test_the_value_is_an_int_the_helper_will_take(self):
+        # The slider hands over a float; the helper validates with a shell
+        # integer test and would reject "1500.0".
+        self.assertEqual(hardware.gpu_clock_limit_arg(1500.0, 3090), 1500)
+
+
+class TestNvidiaSettingsArgs(unittest.TestCase):
+    """The two clock offsets. The attribute names are the whole test: a
+    typo in either is silently accepted by nvidia-settings and does
+    nothing."""
+
+    def test_core_offset(self):
+        self.assertEqual(
+            hardware.nvidia_settings_args("core", 150),
+            ["nvidia-settings", "-a",
+             "[gpu:0]/GPUGraphicsClockOffsetAllPerformanceLevels=150"])
+
+    def test_memory_offset(self):
+        self.assertEqual(
+            hardware.nvidia_settings_args("memory", -200),
+            ["nvidia-settings", "-a",
+             "[gpu:0]/GPUMemoryTransferRateOffsetAllPerformanceLevels=-200"])
+
+    def test_floats_are_written_as_integers(self):
+        self.assertTrue(
+            hardware.nvidia_settings_args("core", 25.0)[2].endswith("=25"))
+
+
+class TestSupergfxParsing(unittest.TestCase):
+    def test_a_list_of_modes(self):
+        self.assertEqual(
+            hardware.parse_supergfx_modes("[Integrated, Hybrid]"),
+            ["Integrated", "Hybrid"])
+
+    def test_the_single_mode_this_machine_reports(self):
+        self.assertEqual(hardware.parse_supergfx_modes("[AsusMuxDgpu]\n"),
+                         ["AsusMuxDgpu"])
+
+    def test_nothing_at_all(self):
+        for text in ("", "   \n", "[]", None):
+            self.assertEqual(hardware.parse_supergfx_modes(text), [], text)
+
+
+class TestBusctlParsing(unittest.TestCase):
+    def test_the_power_mode_out_of_a_property_reply(self):
+        self.assertEqual(hardware.parse_busctl_string('s "balanced"\n'),
+                         "balanced")
+
+    def test_a_reply_that_is_not_a_string_property(self):
+        for text in ("", "b true", "s", 'u 3', None):
+            self.assertIsNone(hardware.parse_busctl_string(text), text)
+
+
+class TestLogTail(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self._tmp.name, "rogcontrol.log")
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_the_last_lines_in_order(self):
+        write(self.path, "\n".join(f"line {i}" for i in range(10)) + "\n")
+        self.assertEqual(hardware.read_log_tail(3, path=self.path),
+                         "line 7\nline 8\nline 9")
+
+    def test_a_short_log_comes_back_whole(self):
+        write(self.path, "only line\n")
+        self.assertEqual(hardware.read_log_tail(100, path=self.path),
+                         "only line")
+
+    def test_a_missing_log_is_none_rather_than_empty(self):
+        # "no log yet" and "the log is empty" are different things to put on
+        # screen, so they must not collapse into the same value here.
+        self.assertIsNone(hardware.read_log_tail(path=self.path))
+
+    def test_an_empty_log_is_empty_rather_than_none(self):
+        write(self.path, "")
+        self.assertEqual(hardware.read_log_tail(path=self.path), "")
+
+    def test_a_byte_window_never_starts_mid_line(self):
+        # Seeking into the middle of a file lands inside a line; a half line
+        # at the top of the view reads as a corrupt log.
+        write(self.path, "".join(f"line {i}\n" for i in range(1000)))
+        text = hardware.read_log_tail(5, path=self.path, max_bytes=40)
+        for line in text.splitlines():
+            self.assertRegex(line, r"^line \d+$")
+
+    def test_the_log_lives_where_every_other_tool_writes_it(self):
+        self.assertEqual(
+            hardware.LOG_PATH,
+            os.path.expanduser("~/.local/share/rogcontrol/rogcontrol.log"))
+
+
+class TestFirmwareGpuDefaults(FakeSysfs):
+    """The asus-wmi knobs, read back as the starting value for a profile
+    that has never stored one."""
+
+    def wmi(self, name, value):
+        write(os.path.join(self.root, hardware.ASUS_WMI_DIR.lstrip("/"), name),
+              f"{value}\n")
+
+    def test_reads_what_the_firmware_holds(self):
+        self.wmi("nv_dynamic_boost", 15)
+        self.wmi("nv_temp_target", 80)
+        self.assertEqual(hardware.read_nv_dynamic_boost(root=self.root), 15)
+        self.assertEqual(hardware.read_nv_temp_target(root=self.root), 80)
+
+    def test_a_value_outside_the_drivers_range_is_clamped(self):
+        # The kernel rejects a write outside NVIDIA_BOOST_MIN/MAX, so a
+        # firmware reporting 99 must not become a slider position that can
+        # only ever fail.
+        self.wmi("nv_dynamic_boost", 99)
+        self.wmi("nv_temp_target", 10)
+        self.assertEqual(hardware.read_nv_dynamic_boost(root=self.root),
+                         hardware.DYN_BOOST_MAX)
+        self.assertEqual(hardware.read_nv_temp_target(root=self.root),
+                         hardware.TEMP_TARGET_MIN)
+
+    def test_absent_nodes_read_as_none(self):
+        self.assertIsNone(hardware.read_nv_dynamic_boost(root=self.root))
+        self.assertIsNone(hardware.read_nv_temp_target(root=self.root))
+
+
 class TestCapabilities(FakeSysfs):
     def test_reports_what_the_fake_machine_has(self):
         self.hwmon(10, "asus")

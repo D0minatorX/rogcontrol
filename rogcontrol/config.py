@@ -36,6 +36,40 @@ DEFAULT_CONFIG = {
 }
 
 
+# The "leave it alone" entry in the two auto-switch pickers. It is a label,
+# not a profile: choosing it stores null, and null is what every reader
+# treats as "do not switch on this power source". Storing the label itself
+# would name a profile that does not exist, and the switch would look
+# configured while doing nothing.
+NO_AUTO_SWITCH = "Don't auto-switch"
+
+# Config keys the pickers write, by power source.
+AUTO_SWITCH_KEYS = {"ac": "ac_profile", "battery": "battery_profile"}
+
+
+def auto_switch_choices(cfg):
+    """The picker's entries: the no-op first, then every profile."""
+    profiles = cfg.get("profiles")
+    names = list(profiles) if isinstance(profiles, dict) else []
+    return [NO_AUTO_SWITCH] + names
+
+
+def auto_switch_selected(cfg, key):
+    """Index into auto_switch_choices for what is stored under ``key``.
+
+    A stored profile that no longer exists -- renamed or deleted since it
+    was chosen -- selects the no-op rather than nothing at all, so the
+    picker cannot come up blank."""
+    choices = auto_switch_choices(cfg)
+    stored = cfg.get(key)
+    return choices.index(stored) if stored in choices[1:] else 0
+
+
+def auto_switch_value(label):
+    """What to store for a chosen label: None for the no-op entry."""
+    return None if label == NO_AUTO_SWITCH else label
+
+
 def migrate_config(cfg, gpu_min_w=1, gpu_max_w=140):
     """Bring a config from any older version up to date WITHOUT touching
     anything the user has set.

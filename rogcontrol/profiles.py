@@ -35,6 +35,28 @@ PPD_MODE_TO_PROFILE = {}
 for _name, _mode in PROFILE_TO_PPD_MODE.items():
     PPD_MODE_TO_PROFILE.setdefault(_mode, _name)
 
+
+def expected_ppd_mode(profile_name):
+    """The OS power mode this profile is supposed to sit on, or None.
+
+    None is not a failure: the mapping only covers the four stock names, so
+    a profile the user invented has no expected mode and cannot be in or out
+    of sync with the OS. Reporting it as out of sync -- which comparing
+    against a default would do -- would put a permanent warning on the page
+    for a profile that is behaving perfectly."""
+    return PROFILE_TO_PPD_MODE.get(profile_name)
+
+
+def ppd_modes_agree(profile_name, actual_mode):
+    """True/False if the two can be compared, None if they cannot.
+
+    Three states rather than two, for the same reason as above: "no opinion"
+    and "disagrees" are different things to put on screen."""
+    expected = expected_ppd_mode(profile_name)
+    if expected is None or actual_mode is None:
+        return None
+    return expected == actual_mode
+
 # Ordered coolest/quietest first, which is the order they appear in the
 # profile menu and the tray.
 #

@@ -351,6 +351,54 @@ class TheDefaultPath(unittest.TestCase):
         self.assertEqual(config.load_config()["charge_limit"], 61)
 
 
+class AutoSwitchPickers(unittest.TestCase):
+    """The Battery page's "on AC use" / "on battery use" choices.
+
+    The whole point of these three functions is that the no-op entry is a
+    label and the stored value is null. Storing the label would name a
+    profile that does not exist, and every reader would then find a target
+    it cannot switch to."""
+
+    def setUp(self):
+        self.cfg = {"profiles": {"Quiet": {}, "Performance": {}},
+                    "ac_profile": "Performance", "battery_profile": None}
+
+    def test_the_no_op_comes_first(self):
+        choices = config.auto_switch_choices(self.cfg)
+        self.assertEqual(choices,
+                         [config.NO_AUTO_SWITCH, "Quiet", "Performance"])
+
+    def test_a_config_with_no_profiles_still_offers_the_no_op(self):
+        self.assertEqual(config.auto_switch_choices({}),
+                         [config.NO_AUTO_SWITCH])
+        # A corrupt profiles value must not take the picker down with it.
+        self.assertEqual(config.auto_switch_choices({"profiles": []}),
+                         [config.NO_AUTO_SWITCH])
+
+    def test_selection_points_at_the_stored_profile(self):
+        self.assertEqual(
+            config.auto_switch_selected(self.cfg, "ac_profile"), 2)
+
+    def test_null_selects_the_no_op(self):
+        self.assertEqual(
+            config.auto_switch_selected(self.cfg, "battery_profile"), 0)
+
+    def test_a_deleted_profile_falls_back_to_the_no_op(self):
+        # Renamed or deleted since it was chosen. Selecting nothing would
+        # leave the picker blank, which reads as a broken control.
+        self.cfg["ac_profile"] = "Gone"
+        self.assertEqual(
+            config.auto_switch_selected(self.cfg, "ac_profile"), 0)
+
+    def test_the_no_op_is_stored_as_null(self):
+        self.assertIsNone(config.auto_switch_value(config.NO_AUTO_SWITCH))
+        self.assertEqual(config.auto_switch_value("Quiet"), "Quiet")
+
+    def test_the_keys_are_the_ones_every_other_tool_reads(self):
+        self.assertEqual(config.AUTO_SWITCH_KEYS,
+                         {"ac": "ac_profile", "battery": "battery_profile"})
+
+
 class WhereTheRealConfigLives(unittest.TestCase):
     def test_config_path_points_at_the_users_config(self):
         self.assertEqual(config.CONFIG_PATH,

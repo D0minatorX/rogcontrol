@@ -284,6 +284,317 @@ def read_nvidia_stats(timeout=5):
     return out[0], out[1]
 
 
+# Ranges every GPU control is bounded by.
+#
+# The two asus-wmi knobs are the kernel driver's own limits (NVIDIA_BOOST_MIN/
+# MAX and NVIDIA_TEMP_MIN/MAX in asus-wmi.c) -- a write outside them comes
+# back -EINVAL, so offering a wider slider would only produce failures.
+#
+# The power and clock-ceiling numbers are *fallbacks*. The card is asked for
+# its own in detect_gpu_limits below, because a 140 W ceiling is this laptop's
+# and hardcoding it would misdescribe every other card.
+DYN_BOOST_MIN, DYN_BOOST_MAX = 5, 25
+TEMP_TARGET_MIN, TEMP_TARGET_MAX = 75, 87
+CLOCK_OFFSET_MIN, CLOCK_OFFSET_MAX = -1000, 1000
+MEM_CLOCK_OFFSET_MIN, MEM_CLOCK_OFFSET_MAX = -1000, 1000
+GPU_MIN_W_FALLBACK, GPU_MAX_W_FALLBACK = 5, 140
+CLOCK_LIMIT_MIN, CLOCK_LIMIT_FALLBACK_MAX = 200, 3090
+
+
+def parse_gpu_power_limits(text):
+    """``(min_w, max_w)`` from the power-limit CSV, or None.
+
+    ``0 < lo < hi`` is the whole validation, and it is not paranoia: a card
+    that reports "[N/A]" for one of them, or a pair the wrong way round,
+    would otherwise hand a slider an empty or inverted range."""
+    for line in (text or "").strip().splitlines():
+        fields = [f.strip() for f in line.split(",")]
+        if len(fields) < 3:
+            continue
+        try:
+            lo, hi = float(fields[1]), float(fields[2])
+        except ValueError:
+            continue
+        if 0 < lo < hi:
+            return round(lo), round(hi)
+    return None
+
+
+def parse_gpu_name(text):
+    """The card's name from the same CSV row, or None."""
+    for line in (text or "").strip().splitlines():
+        name = line.split(",")[0].strip()
+        if name and name != "[N/A]":
+            return name
+    return None
+
+
+def parse_gpu_max_clock(text):
+    """Highest lockable graphics clock in MHz from ``nvidia-smi -q -d CLOCK``.
+
+    The file lists several "Graphics" lines -- current, application, default,
+    max -- so the section heading is what disambiguates them; taking the
+    first Graphics line in the file would report the clock the card happens
+    to be running at right now as its ceiling."""
+    in_max = False
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Max Clocks"):
+            in_max = True
+        elif in_max and stripped.startswith("Graphics"):
+            try:
+                mhz = int(stripped.split(":", 1)[1].strip().split()[0])
+            except (IndexError, ValueError):
+                return None
+            return mhz if mhz > 0 else None
+    return None
+
+
+def default_gpu_limits():
+    """The ranges to use when the card cannot be asked. A fresh dict every
+    call: it is handed to the UI, which is free to keep it."""
+    return {"name": None,
+            "min_w": GPU_MIN_W_FALLBACK,
+            "max_w": GPU_MAX_W_FALLBACK,
+            "clock_limit_max": CLOCK_LIMIT_FALLBACK_MAX}
+
+
+def detect_gpu_limits(timeout=5):
+    """Ask the card for its real power and clock limits.
+
+    Two nvidia-smi calls, run once at startup, because the alternative is a
+    power slider that stops at another laptop's ceiling. Each failure falls
+    back independently -- a driver that answers the CSV query but not the
+    CLOCK dump still gets its true wattage range."""
+    limits = default_gpu_limits()
+    try:
+        result = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=name,power.min_limit,power.max_limit",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=timeout)
+        if result.returncode == 0:
+            limits["name"] = parse_gpu_name(result.stdout) or limits["name"]
+            found = parse_gpu_power_limits(result.stdout)
+            if found:
+                limits["min_w"], limits["max_w"] = found
+    except Exception:
+        pass
+    try:
+        result = subprocess.run(["nvidia-smi", "-q", "-d", "CLOCK"],
+                                capture_output=True, text=True, timeout=timeout)
+        if result.returncode == 0:
+            mhz = parse_gpu_max_clock(result.stdout)
+            if mhz:
+                limits["clock_limit_max"] = mhz
+    except Exception:
+        pass
+    return limits
+
+
+def gpu_clock_limit_arg(mhz, max_mhz):
+    """What to hand ``run_helper("gpuclocklimit", ...)``.
+
+    The top of the slider is "reset", not a lock at the stock maximum:
+    locking there still *pins* the clock, so the card would stop idling down
+    and stop boosting -- the opposite of the no-limit the position means."""
+    mhz = int(mhz)
+    return "reset" if mhz >= int(max_mhz) else mhz
+
+
+# nvidia-settings attribute names for the two offsets. These shift the whole
+# voltage/frequency curve -- a genuine over/underclock -- unlike the ceiling
+# above, and they are not a helper action: nvidia-settings needs the user's
+# X/Wayland session, so running it through sudo would talk to the wrong
+# display or none at all.
+NV_CLOCK_ATTRIBUTES = {
+    "core": "GPUGraphicsClockOffsetAllPerformanceLevels",
+    "memory": "GPUMemoryTransferRateOffsetAllPerformanceLevels",
+}
+
+
+def nvidia_settings_args(kind, mhz):
+    """The full nvidia-settings command line for one clock offset."""
+    attribute = NV_CLOCK_ATTRIBUTES[kind]
+    return ["nvidia-settings", "-a", f"[gpu:0]/{attribute}={int(mhz)}"]
+
+
+def set_nvidia_clock_offset(kind, mhz, timeout=10):
+    """Apply one clock offset, returning ``(ok, message)`` like run_helper."""
+    try:
+        result = subprocess.run(nvidia_settings_args(kind, mhz),
+                                capture_output=True, text=True, timeout=timeout)
+    except Exception as e:
+        return False, str(e)
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout or "unknown error").strip()
+    return True, result.stdout.strip()
+
+
+def read_nv_dynamic_boost(root=None):
+    """Dynamic Boost watts the firmware is holding, clamped, or None."""
+    return _read_clamped(f"{ASUS_WMI_DIR}/nv_dynamic_boost",
+                         DYN_BOOST_MIN, DYN_BOOST_MAX, root)
+
+
+def read_nv_temp_target(root=None):
+    """GPU temperature target the firmware is holding, clamped, or None."""
+    return _read_clamped(f"{ASUS_WMI_DIR}/nv_temp_target",
+                         TEMP_TARGET_MIN, TEMP_TARGET_MAX, root)
+
+
+def _read_clamped(path, low, high, root):
+    """An int from sysfs, held inside the range the driver accepts.
+
+    Clamped rather than rejected: these are used as the starting value for a
+    profile that has none, and a machine reporting something outside the
+    kernel's own range should still land on a usable number."""
+    val = read_int(_under(root, path))
+    return None if val is None else max(low, min(high, val))
+
+
+# -- Graphics mode (supergfxctl) ---------------------------------------------
+
+# Used only when supergfxctl will not say what it supports. Listing a mode
+# the daemon rejects is harmless -- the switch fails with its message -- but
+# the daemon's own list is always preferred, because on this machine it
+# reports exactly one supported mode and a picker offering three would be
+# offering two that cannot work.
+GPU_MODES_FALLBACK = ("Integrated", "Hybrid", "AsusMuxDgpu")
+
+
+def parse_supergfx_modes(text):
+    """The mode list out of ``supergfxctl -s``: ``[Integrated, Hybrid]``."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    return [part.strip() for part in text.strip("[]").split(",")
+            if part.strip()]
+
+
+def read_gpu_mode(timeout=5):
+    """The graphics mode in force, as supergfxctl spells it, or None."""
+    try:
+        result = subprocess.run(["supergfxctl", "-g"], capture_output=True,
+                                text=True, timeout=timeout)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def read_supported_gpu_modes(timeout=5):
+    """The modes this machine can actually be switched to, or []."""
+    try:
+        result = subprocess.run(["supergfxctl", "-s"], capture_output=True,
+                                text=True, timeout=timeout)
+    except Exception:
+        return []
+    if result.returncode != 0:
+        return []
+    return parse_supergfx_modes(result.stdout)
+
+
+def set_gpu_mode(mode, timeout=10):
+    """Switch graphics mode, returning ``(ok, message)``.
+
+    Not run through the helper: supergfxctl talks to supergfxd over the
+    system bus and does its own authorisation."""
+    try:
+        result = subprocess.run(["supergfxctl", "-m", str(mode)],
+                                capture_output=True, text=True, timeout=timeout)
+    except Exception as e:
+        return False, str(e)
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout or "unknown error").strip()
+    return True, result.stdout.strip()
+
+
+# -- OS power mode (power-profiles-daemon) -----------------------------------
+
+# PPD has shipped under two bus names across distro versions, so both are
+# tried rather than one being assumed. Same list as the enforcer's.
+PPD_BUS_NAMES = ("net.hadess.PowerProfiles",
+                 "org.freedesktop.UPower.PowerProfiles")
+
+
+def parse_busctl_string(text):
+    """The value out of ``busctl get-property``'s ``s "balanced"`` reply."""
+    parts = (text or "").strip().split(None, 1)
+    if len(parts) != 2 or parts[0] != "s":
+        return None
+    return parts[1].strip().strip('"') or None
+
+
+def read_power_mode(timeout=5):
+    """The OS power mode (PPD's ActiveProfile), or None.
+
+    powerprofilesctl first because it is one call and no bus-name guessing;
+    busctl behind it because the CLI is a separate package and the daemon
+    can be there without it -- which is exactly the machine where this
+    readout matters most."""
+    try:
+        result = subprocess.run(["powerprofilesctl", "get"],
+                                capture_output=True, text=True, timeout=timeout)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+    for name in PPD_BUS_NAMES:
+        path = "/" + name.replace(".", "/")
+        try:
+            result = subprocess.run(
+                ["busctl", "--system", "get-property", name, path, name,
+                 "ActiveProfile"],
+                capture_output=True, text=True, timeout=timeout)
+        except Exception:
+            continue
+        if result.returncode == 0:
+            mode = parse_busctl_string(result.stdout)
+            if mode:
+                return mode
+    return None
+
+
+# -- Log ---------------------------------------------------------------------
+
+# Written by the GTK3 app, the boot-apply service and the enforcer, all of
+# which run outside this process. Reading it back is the only way the window
+# can show what happened to the hardware while it was closed.
+LOG_PATH = os.path.expanduser("~/.local/share/rogcontrol/rogcontrol.log")
+
+# Most a tail ever reads off disk. The log rotates, but a rotation that has
+# not happened yet must not turn "show me the log" into a multi-megabyte
+# read on the main loop.
+LOG_TAIL_BYTES = 256 * 1024
+
+
+def read_log_tail(max_lines=200, path=None, max_bytes=LOG_TAIL_BYTES):
+    """The last ``max_lines`` lines of the log, or None if it cannot be read.
+
+    Reads from the end rather than the start, and drops the first line of
+    that window unless the window began at the start of the file -- seeking
+    into the middle of a file lands mid-line, and a half line at the top of
+    the view reads as a corrupt log."""
+    path = LOG_PATH if path is None else path
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            start = max(0, size - max_bytes)
+            f.seek(start)
+            data = f.read()
+    except OSError:
+        return None
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if start > 0 and lines:
+        lines = lines[1:]
+    if max_lines is not None and len(lines) > max_lines:
+        lines = lines[-max_lines:]
+    return "\n".join(lines)
+
+
 # -- Fans --------------------------------------------------------------------
 
 FAN_CHANNELS = ("1", "2", "3")
@@ -437,6 +748,10 @@ def detect_capabilities(root=None):
     caps["nv_temp_target"] = os.path.exists(_under(root, f"{ASUS_WMI_DIR}/nv_temp_target"))
     caps["nv_dynamic_boost"] = os.path.exists(_under(root, f"{ASUS_WMI_DIR}/nv_dynamic_boost"))
     caps["nvidia"] = have_cmd("nvidia-smi")
+    # A separate question from nvidia-smi: the two clock offsets go through
+    # nvidia-settings, which is its own package and is missing on plenty of
+    # machines that have a working driver.
+    caps["nvidia_settings"] = have_cmd("nvidia-settings")
     caps["supergfxctl"] = have_cmd("supergfxctl")
     caps["rogauracore"] = have_cmd("rogauracore")
     caps["ryzenadj"] = have_cmd("ryzenadj") or os.path.exists("/usr/local/bin/ryzenadj")

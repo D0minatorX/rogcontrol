@@ -186,5 +186,34 @@ class TailoredDefaults(unittest.TestCase):
             self.assertLessEqual(prof["gpu"]["watts"], 30, name)
 
 
+class PowerModeAgreement(unittest.TestCase):
+    """The System page's sync verdict.
+
+    Three-valued on purpose: a user's own profile has no OS power mode, and
+    calling that "out of sync" would put a permanent warning on the page for
+    a machine behaving perfectly."""
+
+    def test_a_stock_profile_maps_to_its_mode(self):
+        self.assertEqual(profiles.expected_ppd_mode("Quiet"), "power-saver")
+        self.assertEqual(profiles.expected_ppd_mode("Performance"),
+                         "performance")
+
+    def test_a_user_profile_maps_to_nothing(self):
+        self.assertIsNone(profiles.expected_ppd_mode("TEST"))
+        self.assertIsNone(profiles.expected_ppd_mode(None))
+
+    def test_agreeing_and_disagreeing(self):
+        self.assertIs(
+            profiles.ppd_modes_agree("Balanced Power", "balanced"), True)
+        self.assertIs(
+            profiles.ppd_modes_agree("Balanced Power", "performance"), False)
+
+    def test_unknowable_rather_than_false(self):
+        # No profile mapping, or no answer from the daemon: neither is a
+        # disagreement, and reporting one as such would be a lie.
+        self.assertIsNone(profiles.ppd_modes_agree("TEST", "balanced"))
+        self.assertIsNone(profiles.ppd_modes_agree("Quiet", None))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -32,9 +32,12 @@ from gi.repository import Adw, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import config as config_mod  # noqa: E402
 from . import hardware  # noqa: E402
+from .pages.battery import BatteryPage  # noqa: E402
 from .pages.cpu import CpuPage  # noqa: E402
 from .pages.fans import FansPage  # noqa: E402
+from .pages.gpu import GpuPage  # noqa: E402
 from .pages.overview import OverviewPage  # noqa: E402
+from .pages.system import SystemPage  # noqa: E402
 
 APP_ID = "com.fadi.rogcontrol.dev"
 
@@ -59,14 +62,8 @@ PAGE_SPECS = (
 # sidebar: the shape of the finished app should be visible from the first
 # run, and a missing entry reads as a bug where "Coming next" reads as a plan.
 PLACEHOLDERS = {
-    "gpu": ("GPU", "Power limit, clock offsets, Dynamic Boost and the "
-                   "temperature target move here."),
-    "battery": ("Battery", "Charge limit and the AC/battery profile pickers "
-                           "move here."),
     "keyboard": ("Keyboard", "Brightness, effect, colours and speed move "
                              "here."),
-    "system": ("System", "GPU mode, power-mode sync, the log view and About "
-                         "move here."),
 }
 
 
@@ -183,12 +180,12 @@ class MainWindow(Adw.ApplicationWindow):
         return Adw.NavigationPage(title="ROG Control", child=toolbar)
 
     def _build_page(self, page_id, label):
-        if page_id == "overview":
-            return OverviewPage(self)
-        if page_id == "cpu":
-            return CpuPage(self)
-        if page_id == "fans":
-            return FansPage(self)
+        builders = {"overview": OverviewPage, "cpu": CpuPage, "gpu": GpuPage,
+                    "fans": FansPage, "battery": BatteryPage,
+                    "system": SystemPage}
+        builder = builders.get(page_id)
+        if builder is not None:
+            return builder(self)
         title, description = PLACEHOLDERS[page_id]
         status = Adw.StatusPage(title=title, description=description)
         status.set_icon_name(dict(
@@ -347,8 +344,8 @@ class MainWindow(Adw.ApplicationWindow):
             tick = getattr(page, "self_test_tick", None)
             if tick is not None:
                 tick()
-        self.select_page("cpu")
-        self.select_page("fans")
+        for page_id, _label, _icon in PAGE_SPECS:
+            self.select_page(page_id)
         self.select_page("overview")
 
 
@@ -368,6 +365,12 @@ class RogControlApp(Adw.Application):
         if self.win is None:
             config = config_mod.load_config()
             caps = hardware.detect_capabilities()
+            # Asked once, here, rather than by the GPU page: the System
+            # page's About row needs the same answer, and two pages each
+            # forking nvidia-smi at startup would cost half a second for one
+            # fact. On a machine with no NVIDIA card the exec fails
+            # immediately and the fallback ranges come back.
+            caps["gpu_limits"] = hardware.detect_gpu_limits()
             self.win = MainWindow(self, config, caps)
             self.win.select_page("overview")
         return self.win
