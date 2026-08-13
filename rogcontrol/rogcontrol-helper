@@ -152,14 +152,24 @@ case "$1" in
         [ "$MATCH" = 1 ] || {
             echo "invalid EPP preference '$PREF'; machine offers: $(cat "$AVAIL_FILE")" >&2
             exit 1; }
-        # EPP is per policy and is rejected outright while the governor is
-        # "performance", so report that case instead of failing silently on 32
-        # separate writes.
+        # The kernel rejects an EPP write outright while the governor is
+        # "performance", and that is not an error worth reporting: the
+        # governor pins every core at maximum performance, so the preference
+        # would have nothing to influence. It is also not a state this app
+        # chose -- power-profiles-daemon switches the governor to
+        # "performance" whenever the OS power mode is set to Performance, so
+        # selecting the Performance profile put the machine here.
+        #
+        # Succeed quietly instead. The profile keeps its stored preference and
+        # it takes effect the moment the governor returns to "powersave",
+        # which is what happens on the way back to any other profile. Failing
+        # here made every Performance apply report an error, and made the
+        # background enforcer log one every cycle.
         for g in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do
             [ -e "$g" ] || continue
             if [ "$(cat "$g")" = "performance" ]; then
-                echo "EPP cannot be set while the governor is 'performance'" >&2
-                exit 1
+                echo "governor is 'performance'; EPP has no effect and was not written"
+                exit 0
             fi
             break
         done
