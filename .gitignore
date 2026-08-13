@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.zip
+
+# Stale snapshot of an older build, kept locally only
+rogcontrol-v20-source-222739/

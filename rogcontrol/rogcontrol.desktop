@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=ROG Control
+Comment=CPU/GPU power, undervolt, fans, keyboard, charge limit, and GPU mode for the G614PR
+Icon=/home/YOUR_USERNAME/.local/share/icons/hicolor/256x256/apps/rogcontrol.png
+Exec=python3 /home/YOUR_USERNAME/.local/bin/rogcontrol.py
+Terminal=false
+Categories=System;Settings;

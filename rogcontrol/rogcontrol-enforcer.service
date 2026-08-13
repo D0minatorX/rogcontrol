@@ -1,0 +1,11 @@
+[Unit]
+Description=Continuously enforce ROG Control profile (CPU/GPU/fans/charge/kbd) against BIOS/firmware resets
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.local/bin/rogcontrol-enforcer.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

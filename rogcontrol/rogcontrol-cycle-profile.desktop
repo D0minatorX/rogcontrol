@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=ROG Control - Cycle Profile
+NoDisplay=true
+Exec=python3 /home/YOUR_USERNAME/.local/bin/rogcontrol-cycle-profile.py
+Terminal=false

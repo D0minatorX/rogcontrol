@@ -1,0 +1,9 @@
+[Unit]
+Description=Reapply saved ROG Control profile at login (with retries)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/bin/rogcontrol-apply.py
+
+[Install]
+WantedBy=default.target
