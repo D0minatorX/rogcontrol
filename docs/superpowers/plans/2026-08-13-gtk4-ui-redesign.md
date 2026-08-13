@@ -139,7 +139,7 @@ class InterpolateCurve(unittest.TestCase):
 
     def test_fills_the_widest_gap_first(self):
         out = fancurve.interpolate_curve([(50, 10), (52, 12), (90, 90)], 4)
-        self.assertIn((70, 51), out)
+        self.assertIn((71, 51), out)
 
     def test_temperatures_strictly_increase(self):
         out = fancurve.interpolate_curve([(50, 5), (51, 9)], 8)
