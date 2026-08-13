@@ -212,6 +212,41 @@ class TestFans(FakeSysfs):
         self.assertEqual(hardware.read_fan_curve_enabled(root=self.root),
                          {"1": None, "2": None, "3": None})
 
+    def curve_points(self, channel, pairs):
+        path = self.hwmon(11, "asus_custom_fan_curve")
+        for i, (temp, pwm) in enumerate(pairs, start=1):
+            write(os.path.join(path, f"pwm{channel}_auto_point{i}_temp"),
+                  f"{temp}\n")
+            write(os.path.join(path, f"pwm{channel}_auto_point{i}_pwm"),
+                  f"{pwm}\n")
+        return path
+
+    def test_curve_points_read_back_as_temp_and_pwm(self):
+        # pwm, not percent: this is what the driver stores, and the page
+        # compares in the same units so that a curve cannot differ from
+        # itself through rounding.
+        pairs = [(50, 10), (55, 18), (60, 31), (68, 36),
+                 (78, 41), (83, 43), (88, 46), (93, 153)]
+        self.curve_points("1", pairs)
+        self.assertEqual(hardware.read_fan_curve_points("1", root=self.root),
+                         pairs)
+
+    def test_curve_points_are_per_channel(self):
+        self.curve_points("1", [(t, 10) for t in range(30, 38)])
+        self.curve_points("2", [(t, 20) for t in range(40, 48)])
+        self.assertEqual(hardware.read_fan_curve_points("2", root=self.root),
+                         [(t, 20) for t in range(40, 48)])
+
+    def test_curve_points_are_none_when_a_point_is_missing(self):
+        # A partial read must not be reported as a curve: the page would
+        # compare it against the editor, find a difference and claim the
+        # user has unapplied changes they never made.
+        self.curve_points("1", [(50, 10), (55, 18)])
+        self.assertIsNone(hardware.read_fan_curve_points("1", root=self.root))
+
+    def test_curve_points_are_none_without_the_interface(self):
+        self.assertIsNone(hardware.read_fan_curve_points("1", root=self.root))
+
 
 class TestBattery(FakeSysfs):
     def test_percentage_and_charging(self):

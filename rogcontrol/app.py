@@ -33,6 +33,7 @@ from gi.repository import Adw, Gio, GLib, Gtk, Pango  # noqa: E402
 from . import config as config_mod  # noqa: E402
 from . import hardware  # noqa: E402
 from .pages.cpu import CpuPage  # noqa: E402
+from .pages.fans import FansPage  # noqa: E402
 from .pages.overview import OverviewPage  # noqa: E402
 
 APP_ID = "com.fadi.rogcontrol.dev"
@@ -60,8 +61,6 @@ PAGE_SPECS = (
 PLACEHOLDERS = {
     "gpu": ("GPU", "Power limit, clock offsets, Dynamic Boost and the "
                    "temperature target move here."),
-    "fans": ("Fans", "The three curve editors and the RPM calibration move "
-                     "here."),
     "battery": ("Battery", "Charge limit and the AC/battery profile pickers "
                            "move here."),
     "keyboard": ("Keyboard", "Brightness, effect, colours and speed move "
@@ -188,6 +187,8 @@ class MainWindow(Adw.ApplicationWindow):
             return OverviewPage(self)
         if page_id == "cpu":
             return CpuPage(self)
+        if page_id == "fans":
+            return FansPage(self)
         title, description = PLACEHOLDERS[page_id]
         status = Adw.StatusPage(title=title, description=description)
         status.set_icon_name(dict(
@@ -347,6 +348,7 @@ class MainWindow(Adw.ApplicationWindow):
             if tick is not None:
                 tick()
         self.select_page("cpu")
+        self.select_page("fans")
         self.select_page("overview")
 
 

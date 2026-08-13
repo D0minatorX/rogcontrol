@@ -105,6 +105,30 @@ def run_helper(*args, timeout=10):
     return True, result.stdout.strip()
 
 
+ENFORCER_SERVICE = "rogcontrol-enforcer.service"
+
+
+def set_enforcer_running(running, timeout=10):
+    """Start or stop the background enforcer, returning True if it worked.
+
+    It is a --user unit, so no sudo and no password. The one caller that
+    needs this is fan calibration: the enforcer re-asserts the profile's
+    curve on its own schedule, and a curve pushed back mid-measurement makes
+    the fan settle at a speed nobody asked for and the fit meaningless.
+
+    False rather than an exception on failure, because "the enforcer is not
+    installed" is a perfectly ordinary state -- and the caller only needs to
+    know whether it has something to restart afterwards."""
+    action = "start" if running else "stop"
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", action, ENFORCER_SERVICE],
+            capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
 # -- CPU ---------------------------------------------------------------------
 
 def read_cpu_temp(root=None):
@@ -280,6 +304,29 @@ def read_fan_rpms(root=None):
     for ch in FAN_CHANNELS:
         rpms[ch] = read_int(os.path.join(hw, f"fan{ch}_input"))
     return rpms
+
+
+def read_fan_curve_points(channel, root=None, n=8):
+    """The curve the driver holds for one fan: ``[(temp, pwm), ...]`` or None.
+
+    pwm as written, 0-255, not percent -- see fancurve.curve_matches_hardware
+    for why the comparison is done in the units the hardware actually stores.
+
+    None means "cannot tell": no such hwmon, or a point file that would not
+    read. That is not the same as "the curve differs", and the caller must
+    not treat it as one, or a machine without the interface would show a
+    permanent unsaved-changes warning."""
+    hw = find_hwmon_by_name("asus_custom_fan_curve", root=root)
+    if not hw:
+        return None
+    points = []
+    for i in range(1, n + 1):
+        temp = read_int(os.path.join(hw, f"pwm{channel}_auto_point{i}_temp"))
+        pwm = read_int(os.path.join(hw, f"pwm{channel}_auto_point{i}_pwm"))
+        if temp is None or pwm is None:
+            return None
+        points.append((temp, pwm))
+    return points
 
 
 def read_fan_curve_enabled(root=None):
