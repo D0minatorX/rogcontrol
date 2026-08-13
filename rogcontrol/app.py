@@ -28,7 +28,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import config as config_mod  # noqa: E402
 from . import hardware  # noqa: E402
@@ -36,6 +36,12 @@ from .pages.cpu import CpuPage  # noqa: E402
 from .pages.overview import OverviewPage  # noqa: E402
 
 APP_ID = "com.fadi.rogcontrol.dev"
+
+# The smallest window this layout is meant to be usable at -- roughly a phone
+# in portrait. Nothing here is allowed to demand more than this: a page that
+# does shows up as a window that refuses to be dragged narrower, which is the
+# GTK3 version's defining bug and the reason this shell exists.
+MIN_WIDTH, MIN_HEIGHT = 360, 360
 
 # (id, sidebar label, icon). Order is the sidebar order.
 PAGE_SPECS = (
@@ -95,6 +101,13 @@ class MainWindow(Adw.ApplicationWindow):
             except (TypeError, ValueError):
                 pass
         self.set_default_size(width, height)
+        # How narrow the window is *allowed* to be, as opposed to how narrow
+        # it opens. Everything inside is built to reflow rather than scroll
+        # sideways -- subtitles wrap, sliders shrink, the sidebar folds away
+        # -- so there is no reason to stop the user at a phone-sized window.
+        # GTK takes the larger of this and what the content genuinely needs,
+        # so it is a floor and not a promise; see MIN_WIDTH below.
+        self.set_size_request(MIN_WIDTH, MIN_HEIGHT)
 
         self.pages = {}
         self._build_ui()
@@ -193,6 +206,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.profile_drop = Gtk.DropDown.new_from_strings(
             self.profile_names or ["(no profiles)"])
         self.profile_drop.set_tooltip_text("Active profile")
+        # A drop-down is as wide as the name it is showing, and profile names
+        # are the user's to invent. Left alone, "Balanced Performance" sets
+        # the window's minimum width from inside the header bar, where no
+        # amount of reflowing below can help.
+        self.profile_drop.set_factory(self._ellipsizing_factory())
         current = self.config.get("current_profile")
         if current in self.profile_names:
             self.profile_drop.set_selected(self.profile_names.index(current))
@@ -201,6 +219,26 @@ class MainWindow(Adw.ApplicationWindow):
         # every time the window opened.
         self.profile_drop.connect("notify::selected", self._on_profile_changed)
         return self.profile_drop
+
+    @staticmethod
+    def _ellipsizing_factory():
+        """List factory whose labels shorten instead of pushing the header
+        wide. Used for the button face; the popup list inherits it, which is
+        fine -- the popover is free to be as wide as the window allows."""
+        factory = Gtk.SignalListItemFactory()
+
+        def setup(_factory, item):
+            label = Gtk.Label(xalign=0)
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            label.set_max_width_chars(16)
+            item.set_child(label)
+
+        def bind(_factory, item):
+            item.get_child().set_text(item.get_item().get_string())
+
+        factory.connect("setup", setup)
+        factory.connect("bind", bind)
+        return factory
 
     # -- navigation ----------------------------------------------------------
 

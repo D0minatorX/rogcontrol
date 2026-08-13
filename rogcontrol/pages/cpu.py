@@ -24,18 +24,27 @@ from gi.repository import Adw, GLib  # noqa: E402
 
 from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
+from ..widgets.slider_row import SliderRow, align_value_widths  # noqa: E402
 
 # How long a control has to sit still before it is applied. Long enough to
-# swallow a drag across a spin button's whole range, short enough that the
-# toast still feels like a response to what you just did.
+# swallow a drag across a slider's whole range, short enough that the toast
+# still feels like a response to what you just did. The sliders do this
+# waiting themselves -- they only emit once the handle has stopped -- so this
+# is also what the switch row and the busy-retry below wait.
 DEBOUNCE_MS = 400
+
+# A slider that reports in has already settled, so the group timer exists
+# only to merge controls that settle together (moving STAPM and then Fast
+# within the same instant) into a single ryzenadj call. Waiting another full
+# DEBOUNCE_MS there would double the delay the user feels.
+COALESCE_MS = 20
 
 # (key, title, subtitle, min, max, unit). Watts and degrees as the user sees
 # them; the config and the helper both work in milliwatts for the first three.
 #
-# The unit is in the title because a spin button shows a bare number: without
-# it, "35" beside "Temperature target 80" is ambiguous at a glance, and these
-# are values people copy off forum posts.
+# The unit belongs to the value, not the title: the slider's readout shows
+# "35 W", so the title does not have to carry a "(W)" to disambiguate it from
+# the 80 next to it.
 LIMIT_ROWS = (
     ("stapm", "STAPM limit",
      "Sustained package power. The ceiling the chip settles at.", 15, 150, "W"),
@@ -94,25 +103,25 @@ class CpuPage(Adw.PreferencesPage):
                         "re-sends all four.")
         self.add(limits)
         for key, title, subtitle, low, high, unit in LIMIT_ROWS:
-            row = Adw.SpinRow.new_with_range(low, high, 1)
-            # The unit goes in the title, not just the toast: a spin button
-            # shows a bare number, and "35" next to "80" says nothing about
-            # which is watts and which is degrees.
-            row.set_title(f"{title} ({unit})")
-            row.set_subtitle(subtitle)
-            row.connect("notify::value", self._on_limit_changed, key, title, unit)
+            row = SliderRow(title=title, subtitle=subtitle, minimum=low,
+                            maximum=high, step=1, unit=unit,
+                            settle_ms=DEBOUNCE_MS)
+            row.connect("changed", self._on_limit_changed, key, title)
             limits.add(row)
             self.rows[key] = row
+        # One readout width across the group, so the four scales end in a
+        # column instead of stopping wherever "150 W" and "100 °C" happen to.
+        align_value_widths([self.rows[key] for key, *_ in LIMIT_ROWS])
 
         tuning = Adw.PreferencesGroup(title="Tuning")
         self.add(tuning)
 
-        coall = Adw.SpinRow.new_with_range(
-            hardware.COALL_MIN, hardware.COALL_MAX, 1)
-        coall.set_title("Curve Optimizer")
-        coall.set_subtitle(COALL_SUBTITLE)
-        coall.connect("notify::value", self._on_limit_changed,
-                      "coall", "Curve Optimizer", "")
+        coall = SliderRow(title="Curve Optimizer", subtitle=COALL_SUBTITLE,
+                          minimum=hardware.COALL_MIN,
+                          maximum=hardware.COALL_MAX, step=1,
+                          settle_ms=DEBOUNCE_MS)
+        coall.connect("changed", self._on_limit_changed,
+                      "coall", "Curve Optimizer")
         tuning.add(coall)
         self.rows["coall"] = coall
 
@@ -126,13 +135,15 @@ class CpuPage(Adw.PreferencesPage):
         clock_range = self.caps.get("cpu_clock") or (400000, 5000000)
         self.min_ghz = clock_range[0] / 1e6
         self.max_ghz = clock_range[1] / 1e6
-        clock = Adw.SpinRow.new_with_range(self.min_ghz, self.max_ghz, 0.1)
-        clock.set_digits(1)
-        clock.set_title("Maximum core clock (GHz)")
-        clock.set_subtitle(
-            f"Hard ceiling; cores still idle down freely. "
-            f"{self.max_ghz:.1f} means no limit.")
-        clock.connect("notify::value", self._on_clock_changed)
+        # One decimal, and a step to match: the top of this machine's range is
+        # 3.2 GHz, and a whole-number slider could not express it.
+        clock = SliderRow(
+            title="Maximum core clock", minimum=self.min_ghz,
+            maximum=self.max_ghz, step=0.1, digits=1, unit="GHz",
+            settle_ms=DEBOUNCE_MS,
+            subtitle=f"Hard ceiling; cores still idle down freely. "
+                     f"{self.max_ghz:.1f} means no limit.")
+        clock.connect("changed", self._on_clock_changed)
         tuning.add(clock)
         self.rows["clock"] = clock
 
@@ -203,20 +214,20 @@ class CpuPage(Adw.PreferencesPage):
 
     # -- change handling -----------------------------------------------------
 
-    def _on_limit_changed(self, row, _param, key, title, unit):
+    def _on_limit_changed(self, row, _value, key, title):
         if self._loading:
             return
-        value = row.get_value()
-        shown = f"{value:.0f}{(' ' + unit) if unit else ''}"
-        self._schedule("limits", f"{title} set to {shown}")
+        self._schedule("limits", f"{title} set to {row.get_display_value()}")
 
     def _on_boost_changed(self, row, _param):
         if self._loading:
             return
         state = "on" if row.get_active() else "off"
-        self._schedule("boost", f"Turbo boost {state}")
+        # A switch has no drag to wait out, but two quick toggles should
+        # still be one apply, so it keeps the full debounce.
+        self._schedule("boost", f"Turbo boost {state}", DEBOUNCE_MS)
 
-    def _on_clock_changed(self, row, _param):
+    def _on_clock_changed(self, row, _value):
         if self._loading:
             return
         ghz = row.get_value()
@@ -226,13 +237,17 @@ class CpuPage(Adw.PreferencesPage):
             label = f"Clock ceiling set to {ghz:.1f} GHz"
         self._schedule("clock", label)
 
-    def _schedule(self, group, label):
-        """Apply ``group`` once its controls have sat still for DEBOUNCE_MS."""
+    def _schedule(self, group, label, delay=COALESCE_MS):
+        """Apply ``group`` once its controls have stopped arriving.
+
+        The slider has already waited DEBOUNCE_MS for the handle to stop, so
+        the default here is only long enough to merge two controls that
+        settled together."""
         self._pending[group] = label
         source = self._timers.pop(group, None)
         if source is not None:
             GLib.source_remove(source)
-        self._timers[group] = GLib.timeout_add(DEBOUNCE_MS, self._fire, group)
+        self._timers[group] = GLib.timeout_add(delay, self._fire, group)
 
     def _fire(self, group):
         self._timers.pop(group, None)
