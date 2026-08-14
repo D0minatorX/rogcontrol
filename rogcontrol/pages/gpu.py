@@ -71,39 +71,47 @@ TITLES = {"watts": "Power limit",
           "clock_offset": "Core clock offset",
           "mem_clock_offset": "Memory clock offset"}
 
-CLOCK_LIMIT_SUBTITLE = (
+# Each control keeps a few words on the row and says the rest on hover: six
+# sliders with a paragraph under each is a page that has to be scrolled past
+# rather than read. The wording that survives on screen is the part that
+# changes what you would do -- "top of the slider means no limit", "0 is
+# stock" -- not the explanation of the mechanism behind it.
+CLOCK_LIMIT_TOOLTIP = (
     "A ceiling, not a target — the GPU still idles and boosts freely below "
-    "it, and this raises no power or thermal limit.\n"
+    "it, and this raises no power or thermal limit.\n\n"
     "Lower it to cut heat and noise. The top of the slider means Default: no "
     "limit is applied at all."
 )
 
-OFFSET_SUBTITLE = (
+OFFSET_SUBTITLE = "0 is stock; positive is a real overclock"
+
+OFFSET_TOOLTIP = (
     "A genuine overclock when positive: this raises the voltage/frequency "
     "curve, so the card draws more power and runs hotter at the same clock — "
-    "unlike the ceiling above, which cannot do that.\n"
-    "0 is stock. Increase in small steps and test; too much causes crashes "
-    "or graphical corruption."
+    "unlike the clock ceiling, which cannot do that.\n\n"
+    "Increase in small steps and test; too much causes crashes or graphical "
+    "corruption."
 )
 
-BOOST_SUBTITLE = (
+BOOST_TOOLTIP = (
     "Extra power the firmware may shift from the CPU to the GPU under load. "
     "Higher favours the GPU in games; lower leaves more headroom for the "
     "CPU. The range is fixed by the firmware."
 )
 
-TEMP_TARGET_SUBTITLE = (
+TEMP_TARGET_TOOLTIP = (
     "The temperature the GPU aims to hold before it starts reducing clocks. "
     "Lower runs cooler and quieter but throttles sooner. The range is fixed "
     "by the firmware."
 )
 
-APPLY_SUBTITLE = (
+APPLY_TOOLTIP = (
     "Writes everything on this page to the card: the power limit and clock "
     "ceiling through nvidia-smi, Dynamic Boost and the temperature target "
-    "through asus-wmi, and the two offsets through nvidia-settings. Takes a "
-    "second or two."
+    "through asus-wmi, and the two offsets through nvidia-settings."
 )
+
+REVERT_TOOLTIP = "Puts every control back to what the profile holds."
 
 
 class GpuPage(Gtk.Box):
@@ -178,8 +186,9 @@ class GpuPage(Gtk.Box):
 
         watts = SliderRow(
             title="Power limit",
-            subtitle=f"The board power the card is allowed to draw. This "
-                     f"card reports {self.min_w}–{self.max_w} W.",
+            subtitle="Board power the card may draw",
+            tooltip=f"The board power the card is allowed to draw. This card "
+                    f"reports {self.min_w}–{self.max_w} W.",
             minimum=self.min_w, maximum=self.max_w, step=1, unit="W",
             settle_ms=SETTLE_MS)
         watts.connect("changed", self._on_changed)
@@ -187,7 +196,9 @@ class GpuPage(Gtk.Box):
         self.rows["watts"] = watts
 
         boost = SliderRow(
-            title="NVIDIA Dynamic Boost", subtitle=BOOST_SUBTITLE,
+            title="NVIDIA Dynamic Boost",
+            subtitle="Watts the firmware may move from the CPU",
+            tooltip=BOOST_TOOLTIP,
             minimum=hardware.DYN_BOOST_MIN, maximum=hardware.DYN_BOOST_MAX,
             step=1, unit="W", settle_ms=SETTLE_MS)
         boost.connect("changed", self._on_changed)
@@ -195,7 +206,7 @@ class GpuPage(Gtk.Box):
         self.rows["dyn_boost"] = boost
 
         temp_target = SliderRow(
-            title="Temperature target", subtitle=TEMP_TARGET_SUBTITLE,
+            title="Temperature target", tooltip=TEMP_TARGET_TOOLTIP,
             minimum=hardware.TEMP_TARGET_MIN,
             maximum=hardware.TEMP_TARGET_MAX,
             step=1, unit="°C", settle_ms=SETTLE_MS)
@@ -208,7 +219,8 @@ class GpuPage(Gtk.Box):
         page.add(clocks)
 
         ceiling = SliderRow(
-            title="Clock ceiling", subtitle=CLOCK_LIMIT_SUBTITLE,
+            title="Clock ceiling", subtitle="Top of the slider means no limit",
+            tooltip=CLOCK_LIMIT_TOOLTIP,
             minimum=hardware.CLOCK_LIMIT_MIN, maximum=self.clock_limit_max,
             step=15, unit="MHz", settle_ms=SETTLE_MS)
         ceiling.connect("changed", self._on_changed)
@@ -217,6 +229,7 @@ class GpuPage(Gtk.Box):
 
         core = SliderRow(
             title="Core clock offset", subtitle=OFFSET_SUBTITLE,
+            tooltip=OFFSET_TOOLTIP,
             minimum=hardware.CLOCK_OFFSET_MIN,
             maximum=hardware.CLOCK_OFFSET_MAX,
             step=25, unit="MHz", settle_ms=SETTLE_MS)
@@ -226,6 +239,7 @@ class GpuPage(Gtk.Box):
 
         memory = SliderRow(
             title="Memory clock offset", subtitle=OFFSET_SUBTITLE,
+            tooltip=OFFSET_TOOLTIP,
             minimum=hardware.MEM_CLOCK_OFFSET_MIN,
             maximum=hardware.MEM_CLOCK_OFFSET_MAX,
             step=25, unit="MHz", settle_ms=SETTLE_MS)
@@ -240,8 +254,8 @@ class GpuPage(Gtk.Box):
     def _build_actions_group(self):
         group = Adw.PreferencesGroup(title="Apply")
         self.apply_row = Adw.ActionRow(title="Apply GPU settings",
-                                       subtitle=APPLY_SUBTITLE)
-        self.apply_row.set_subtitle_lines(0)
+                                       subtitle="Takes a second or two")
+        self.apply_row.set_tooltip_text(APPLY_TOOLTIP)
         self.apply_button = Gtk.Button(label="Apply")
         self.apply_button.set_valign(Gtk.Align.CENTER)
         self.apply_button.add_css_class("suggested-action")
@@ -253,9 +267,8 @@ class GpuPage(Gtk.Box):
         self.revert_button = Gtk.Button(label="Revert")
         self.revert_button.set_valign(Gtk.Align.CENTER)
         self.revert_button.connect("clicked", self._on_revert_clicked)
-        revert_row = Adw.ActionRow(
-            title="Discard unapplied changes",
-            subtitle="Puts every control back to what the profile holds.")
+        revert_row = Adw.ActionRow(title="Discard unapplied changes")
+        revert_row.set_tooltip_text(REVERT_TOOLTIP)
         revert_row.add_suffix(self.revert_button)
         revert_row.set_activatable_widget(self.revert_button)
         group.add(revert_row)
@@ -297,10 +310,14 @@ class GpuPage(Gtk.Box):
     def _disable(self, key, reason):
         row = self.rows[key]
         row.set_sensitive(False)
-        # The tooltip, not the subtitle: the subtitle explains what the
-        # setting does and is still worth reading on a machine that cannot
-        # use it, so the reason goes somewhere it cannot displace that.
-        row.set_tooltip_text(f"Not available on this machine: {reason}")
+        # Prepended to the row's own explanation rather than replacing it:
+        # the tooltip is now where the setting is explained, and what it does
+        # is still worth reading on a machine that cannot do it. The reason
+        # goes first because it is why the control is grey.
+        what = row.get_tooltip_text() or ""
+        row.set_tooltip_text(
+            f"Not available on this machine: {reason}."
+            + (f"\n\n{what}" if what else ""))
 
     # -- loading -------------------------------------------------------------
 

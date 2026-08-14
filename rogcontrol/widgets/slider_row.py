@@ -8,13 +8,12 @@ clicking thirty times. Worse for a settings list, a spin button's width comes
 from its digits, so a column of them has a ragged left edge: the entry beside
 "3.2" is narrower than the one beside "150", and the arrows never line up.
 
-The layout is deliberately vertical -- title and readout, then the wrapping
+The layout is deliberately vertical -- title and readout, then the (short)
 subtitle, then a full-width scale beneath both:
 
     ┌──────────────────────────────────────────────┐
     │ STAPM limit                            35 W  │
-    │ Sustained package power. The ceiling the      │
-    │ chip settles at.                              │
+    │ Sustained package power                       │
     │ ──────────●──────────────────────────────────│
     └──────────────────────────────────────────────┘
 
@@ -22,6 +21,11 @@ A slider sitting to the *right* of a four-line subtitle is what forces a
 window wide, which is the thing this page has to stop doing. Below it, the
 scale gets the full row every time, the subtitle is free to wrap, and every
 row in a group has an identical left edge no matter what its value is.
+
+The subtitle is a few words at most. What a setting *means* -- the paragraph
+about STAPM, the warning about undervolting too far -- is the row's tooltip
+instead, so a page of seven controls is a page rather than an essay. See
+``tooltip`` below.
 
 The CSS class names on the two boxes are not decoration. libadwaita styles
 ``row > box.header`` and ``row > box.header > box.title`` directly -- margins,
@@ -63,7 +67,7 @@ class SliderRow(Adw.PreferencesRow):
 
     def __init__(self, title="", subtitle="", minimum=0.0, maximum=100.0,
                  step=1.0, digits=0, unit="", settle_ms=SETTLE_MS,
-                 page_step=None):
+                 page_step=None, tooltip=""):
         super().__init__()
         # No markup anywhere: these strings are hardware descriptions that
         # already contain "&" and "<" as often as not, and a stray entity is
@@ -92,6 +96,8 @@ class SliderRow(Adw.PreferencesRow):
                             else float(page_step)))
 
         self._build(title, subtitle)
+        if tooltip:
+            self.set_tooltip_text(tooltip)
         self._adj.connect("value-changed", self._on_value_changed)
         self._update_label()
         # A pending settle timer outliving the widget would emit into a
@@ -273,6 +279,17 @@ class SliderRow(Adw.PreferencesRow):
         if label is not None:
             label.set_text(title)
             self.scale.update_property([Gtk.AccessibleProperty.LABEL], [title])
+
+    def set_tooltip_text(self, text):
+        """The explanation, on hover, from anywhere on the row.
+
+        Set on the scale as well as on the row. GTK walks up from the widget
+        under the pointer until it finds a tooltip, so the row's would be
+        found through the scale anyway -- but the scale is the widest thing
+        in the row and the one the pointer is most often on, and this way it
+        cannot depend on that walk."""
+        Gtk.Widget.set_tooltip_text(self, text)
+        self.scale.set_tooltip_text(text)
 
     def set_subtitle(self, subtitle):
         subtitle = subtitle or ""

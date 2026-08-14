@@ -54,45 +54,67 @@ DASH = "—"
 # page and the Overview all name the same fan the same way.
 FAN_CHANNEL = "1"
 
-# (key, title, subtitle, min, max, unit). Watts and degrees as the user sees
-# them; the config and the helper both work in milliwatts for the first three.
+# (key, title, subtitle, tooltip, min, max, unit). Watts and degrees as the
+# user sees them; the config and the helper both work in milliwatts for the
+# first three.
 #
 # The unit belongs to the value, not the title: the slider's readout shows
 # "35 W", so the title does not have to carry a "(W)" to disambiguate it from
 # the 80 next to it.
+#
+# The subtitle is a few words, and only where the title alone is ambiguous:
+# "STAPM limit" says nothing without "Sustained package power", but
+# "Temperature target" on a page of °C sliders needs no help. What each one
+# actually means is the tooltip -- seven controls whose explanations are all
+# printed under them is a page nobody reads and everybody scrolls.
 LIMIT_ROWS = (
-    ("stapm", "STAPM limit",
-     "Sustained package power. The ceiling the chip settles at.", 15, 150, "W"),
-    ("fast", "Fast limit",
-     "Short-burst ceiling, a few seconds at a time.", 15, 165, "W"),
-    ("slow", "Slow limit",
-     "Medium-term ceiling, between the fast and sustained windows.",
+    ("stapm", "STAPM limit", "Sustained package power",
+     "The ceiling the chip settles at once the short-term windows have "
+     "expired — the limit that decides how hard it runs indefinitely.",
      15, 150, "W"),
-    ("temp", "Temperature target",
-     "Tctl the chip throttles itself to hold.", 60, 100, "°C"),
+    ("fast", "Fast limit", "Short-burst ceiling",
+     "The ceiling for bursts of a few seconds at a time, before the slow and "
+     "sustained windows take over.", 15, 165, "W"),
+    ("slow", "Slow limit", "Medium-term ceiling",
+     "The ceiling between the fast burst window and the sustained STAPM "
+     "limit.", 15, 150, "W"),
+    ("temp", "Temperature target", "",
+     "The Tctl temperature the chip throttles itself to hold. Lower backs "
+     "off sooner and runs quieter.", 60, 100, "°C"),
 )
 
-COALL_SUBTITLE = (
+# The one warning on this page that stays on screen. See COALL_TOOLTIP.
+COALL_SUBTITLE = "All-core undervolt — too negative freezes the machine"
+
+COALL_TOOLTIP = (
     "All-core undervolt. Negative runs cooler and often slightly faster, "
-    "because the chip has more thermal headroom to boost.\n"
+    "because the chip has more thermal headroom to boost.\n\n"
     "Too negative freezes the machine under load — this laptop locked solid "
     "at −20. Move two or three counts at a time and test under load before "
     "going further. 0 is stock."
 )
 
-BOOST_SUBTITLE = (
+BOOST_TOOLTIP = (
     "Off pins every core at its base clock. Worth trying if the fans surge at "
     "idle: the EC reads the raw hottest core, and a boost spike hits 85–90 °C "
     "for a few milliseconds even while the reported temperature sits near "
     "57 °C — enough to send the fans to the top of the curve."
 )
 
-APPLY_SUBTITLE = (
+CLOCK_TOOLTIP = (
+    "A hard ceiling on the core clock. The cores still idle right down below "
+    "it; this only stops them going above it. At the top of the range no "
+    "limit is applied at all."
+)
+
+APPLY_TOOLTIP = (
     "Writes everything on this page to the chip, in the one order that works: "
     "the power limits, then turbo boost, then the energy preference, then the "
     "clock ceiling — the boost switch resets every policy's ceiling, so the "
-    "cap has to go last. Takes a second or two."
+    "cap has to go last."
 )
+
+REVERT_TOOLTIP = "Puts every control back to what the profile holds."
 
 # Which controls each step of the apply owns, for saving what succeeded and
 # putting back what did not. "epp" owns no control: it comes from the profile
@@ -184,9 +206,9 @@ class CpuPage(Gtk.Box):
             description="Sent to ryzenadj as one set — Apply re-sends all "
                         "four together.")
         page.add(limits)
-        for key, title, subtitle, low, high, unit in LIMIT_ROWS:
-            row = SliderRow(title=title, subtitle=subtitle, minimum=low,
-                            maximum=high, step=1, unit=unit,
+        for key, title, subtitle, tooltip, low, high, unit in LIMIT_ROWS:
+            row = SliderRow(title=title, subtitle=subtitle, tooltip=tooltip,
+                            minimum=low, maximum=high, step=1, unit=unit,
                             settle_ms=SETTLE_MS)
             row.connect("changed", self._on_control_changed)
             limits.add(row)
@@ -198,7 +220,14 @@ class CpuPage(Gtk.Box):
         tuning = Adw.PreferencesGroup(title="Tuning")
         page.add(tuning)
 
+        # The only row on the page that keeps a warning in visible text. The
+        # rest of this one is on hover like everything else, but "too negative
+        # freezes the machine" is not something to find out by hovering: this
+        # laptop has actually locked solid at −20, and a tooltip is invisible
+        # to anyone who does not happen to rest the pointer here -- and
+        # unreachable from a touchscreen altogether.
         coall = SliderRow(title="Curve Optimizer", subtitle=COALL_SUBTITLE,
+                          tooltip=COALL_TOOLTIP,
                           minimum=hardware.COALL_MIN,
                           maximum=hardware.COALL_MAX, step=1,
                           settle_ms=SETTLE_MS)
@@ -208,7 +237,7 @@ class CpuPage(Gtk.Box):
 
         boost = Adw.SwitchRow()
         boost.set_title("Turbo boost")
-        boost.set_subtitle(BOOST_SUBTITLE)
+        boost.set_tooltip_text(BOOST_TOOLTIP)
         boost.connect("notify::active", self._on_switch_changed)
         tuning.add(boost)
         self.rows["boost"] = boost
@@ -221,9 +250,8 @@ class CpuPage(Gtk.Box):
         clock = SliderRow(
             title="Maximum core clock", minimum=self.min_ghz,
             maximum=self.max_ghz, step=0.1, digits=1, unit="GHz",
-            settle_ms=SETTLE_MS,
-            subtitle=f"Hard ceiling; cores still idle down freely. "
-                     f"{self.max_ghz:.1f} means no limit.")
+            settle_ms=SETTLE_MS, tooltip=CLOCK_TOOLTIP,
+            subtitle=f"{self.max_ghz:.1f} GHz means no limit")
         clock.connect("changed", self._on_control_changed)
         tuning.add(clock)
         self.rows["clock"] = clock
@@ -234,8 +262,8 @@ class CpuPage(Gtk.Box):
     def _build_actions_group(self):
         group = Adw.PreferencesGroup(title="Apply")
         self.apply_row = Adw.ActionRow(title="Apply CPU settings",
-                                       subtitle=APPLY_SUBTITLE)
-        self.apply_row.set_subtitle_lines(0)
+                                       subtitle="Takes a second or two")
+        self.apply_row.set_tooltip_text(APPLY_TOOLTIP)
         self.apply_button = Gtk.Button(label="Apply")
         self.apply_button.set_valign(Gtk.Align.CENTER)
         self.apply_button.add_css_class("suggested-action")
@@ -247,9 +275,8 @@ class CpuPage(Gtk.Box):
         self.revert_button = Gtk.Button(label="Revert")
         self.revert_button.set_valign(Gtk.Align.CENTER)
         self.revert_button.connect("clicked", self._on_revert_clicked)
-        revert_row = Adw.ActionRow(
-            title="Discard unapplied changes",
-            subtitle="Puts every control back to what the profile holds.")
+        revert_row = Adw.ActionRow(title="Discard unapplied changes")
+        revert_row.set_tooltip_text(REVERT_TOOLTIP)
         revert_row.add_suffix(self.revert_button)
         revert_row.set_activatable_widget(self.revert_button)
         group.add(revert_row)

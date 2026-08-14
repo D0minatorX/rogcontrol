@@ -114,23 +114,38 @@ ASUSD_DESCRIPTION = (
     "lighting changes on its own. Run one of them, not both."
 )
 
-ASUSD_DISABLE_SUBTITLE = (
-    "systemctl disable --now asusd — stops it and keeps it stopped across "
-    "reboots. Needs root, so it goes through this app's privileged helper. "
-    "Nothing is removed and it is reversible with the row below."
+# The three asusd rows are actions, so they get the same treatment as the
+# settings on the tuning pages: the command or the consequence stays on the
+# row, the paragraph explaining it is on hover. What asusd *is* and why it
+# conflicts stays in visible text (ASUSD_DESCRIPTION, ASUSD_STATE_SUBTITLE) --
+# that is the page telling the user what is going on, not a control
+# describing itself.
+ASUSD_DISABLE_SUBTITLE = "systemctl disable --now asusd — reversible below"
+
+ASUSD_DISABLE_TOOLTIP = (
+    "Stops asusd and keeps it stopped across reboots. Needs root, so it goes "
+    "through this app's privileged helper. Nothing is removed and it is "
+    "reversible with the row below."
 )
 
-ASUSD_ENABLE_SUBTITLE = (
+ASUSD_ENABLE_SUBTITLE = "Both will compete for the hardware again"
+
+ASUSD_ENABLE_TOOLTIP = (
     "Puts asusd back exactly as it was, running and starting at boot. Expect "
     "the fans and the keyboard lighting to start disagreeing with this app "
     "again while both are running."
 )
 
-ASUSD_REMOVE_SUBTITLE = (
+ASUSD_REMOVE_TOOLTIP = (
     "This app does not run your package manager. Removing a package is a "
     "transaction you should see, with its own confirmation and its own list "
-    "of what else goes with it — so here is the command, to run in a "
-    "terminal yourself:"
+    "of what else goes with it — so the command is printed here to run in a "
+    "terminal yourself."
+)
+
+NO_PACKAGE_MANAGER_SUBTITLE = (
+    "No package manager this app recognises was found — remove the asusctl "
+    "package the way you installed it."
 )
 
 ASUSD_STATE_TEXT = {
@@ -271,6 +286,7 @@ class SystemPage(Adw.PreferencesPage):
         self.asusd_disable_row = Adw.ActionRow(
             title="Stop and disable asusd", subtitle=ASUSD_DISABLE_SUBTITLE)
         self.asusd_disable_row.set_subtitle_lines(0)
+        self.asusd_disable_row.set_tooltip_text(ASUSD_DISABLE_TOOLTIP)
         self.asusd_disable_button = Gtk.Button(label="Stop and disable")
         self.asusd_disable_button.set_valign(Gtk.Align.CENTER)
         self.asusd_disable_button.add_css_class("destructive-action")
@@ -283,6 +299,7 @@ class SystemPage(Adw.PreferencesPage):
         self.asusd_enable_row = Adw.ActionRow(
             title="Enable and start asusd", subtitle=ASUSD_ENABLE_SUBTITLE)
         self.asusd_enable_row.set_subtitle_lines(0)
+        self.asusd_enable_row.set_tooltip_text(ASUSD_ENABLE_TOOLTIP)
         self.asusd_enable_button = Gtk.Button(label="Enable")
         self.asusd_enable_button.set_valign(Gtk.Align.CENTER)
         self.asusd_enable_button.connect("clicked", self._on_asusd_enable)
@@ -295,12 +312,13 @@ class SystemPage(Adw.PreferencesPage):
         self.uninstall_command = hardware.asusd_uninstall_command()
         self.asusd_remove_row = Adw.ActionRow(title="Uninstall asusctl")
         self.asusd_remove_row.set_subtitle_lines(0)
-        self.asusd_remove_row.set_subtitle(
-            f"{ASUSD_REMOVE_SUBTITLE}\n\n{self.uninstall_command}"
-            if self.uninstall_command else
-            f"{ASUSD_REMOVE_SUBTITLE}\n\nNo package manager this app "
-            f"recognises was found — remove the asusctl package the way you "
-            f"installed it.")
+        # The command itself stays on the row -- it is the whole point of the
+        # row, the Copy button beside it copies exactly that, and a command
+        # you have to hover to read is a command you cannot type. Why this app
+        # will not run it for you is on hover.
+        self.asusd_remove_row.set_subtitle(self.uninstall_command
+                                           or NO_PACKAGE_MANAGER_SUBTITLE)
+        self.asusd_remove_row.set_tooltip_text(ASUSD_REMOVE_TOOLTIP)
         if self.uninstall_command:
             self.copy_button = Gtk.Button(label="Copy")
             self.copy_button.set_valign(Gtk.Align.CENTER)

@@ -32,17 +32,19 @@ COALESCE_MS = 20
 REFRESH_SECONDS = 5
 DASH = "—"
 
-CHARGE_SUBTITLE = (
+CHARGE_TOOLTIP = (
     "Caps charging at this percentage, which preserves the cell over the "
-    "years a laptop spends plugged in.\n"
+    "years a laptop spends plugged in.\n\n"
     "Independent of profiles — it applies whichever one is active. 100% is "
     "no cap at all."
 )
 
 AUTO_SWITCH_DESCRIPTION = (
-    "Which profile to move to when the power source changes. The switch "
-    "happens on plug and unplug, not now — choosing one here does not change "
-    "the profile you are running."
+    "Which profile to move to when the power source changes.")
+
+AUTO_SWITCH_TOOLTIP = (
+    "The switch happens on plug and unplug, not now — choosing one here does "
+    "not change the profile you are running."
 )
 
 
@@ -83,26 +85,32 @@ class BatteryPage(Adw.PreferencesPage):
         limit = Adw.PreferencesGroup(title="Charging")
         self.add(limit)
         self.limit_row = SliderRow(
-            title="Charge limit", subtitle=CHARGE_SUBTITLE,
+            title="Charge limit", subtitle="100% is no cap at all",
+            tooltip=CHARGE_TOOLTIP,
             minimum=0, maximum=100, step=1, unit="%", settle_ms=DEBOUNCE_MS)
         self.limit_row.connect("changed", self._on_limit_changed)
         limit.add(self.limit_row)
         if not self.caps.get("charge_limit"):
             self.limit_row.set_sensitive(False)
+            # Ahead of what the setting does rather than instead of it: the
+            # tooltip is where this row is explained now.
             self.limit_row.set_tooltip_text(
                 "Not available on this machine: this battery has no "
-                "charge_control_end_threshold")
+                "charge_control_end_threshold.\n\n" + CHARGE_TOOLTIP)
 
         switching = Adw.PreferencesGroup(title="Automatic profile switching",
                                          description=AUTO_SWITCH_DESCRIPTION)
+        switching.set_tooltip_text(
+            AUTO_SWITCH_DESCRIPTION + " " + AUTO_SWITCH_TOOLTIP)
         self.add(switching)
         self.combos = {}
-        for source, title, subtitle in (
-                ("ac", "On AC power", "Profile to switch to when mains power "
-                                      "is connected"),
-                ("battery", "On battery", "Profile to switch to when the "
-                                          "mains is unplugged")):
-            row = Adw.ComboRow(title=title, subtitle=subtitle)
+        # No subtitles: "On AC power" under "Automatic profile switching" is
+        # already the whole sentence, and the caveat that matters -- this does
+        # not switch anything now -- is on hover.
+        for source, title in (("ac", "On AC power"),
+                              ("battery", "On battery")):
+            row = Adw.ComboRow(title=title)
+            row.set_tooltip_text(AUTO_SWITCH_TOOLTIP)
             row.set_model(Gtk.StringList.new(
                 config_mod.auto_switch_choices(self.window.config)))
             row.connect("notify::selected", self._on_auto_switch_changed,

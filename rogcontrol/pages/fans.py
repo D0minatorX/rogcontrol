@@ -58,13 +58,13 @@ CHANNEL_GAP_S = 8
 CAL_PERCENTS = (20, 45, 70)
 CAL_SETTLE_S = 22
 
-APPLY_SUBTITLE = (
+APPLY_TOOLTIP = (
     "Writes all three curves to the fan controller. Takes about 16 seconds: "
     "the controller drops curve writes sent less than 8 seconds apart, so "
     "each fan is written on its own and waited out."
 )
 
-CALIBRATE_SUBTITLE = (
+CALIBRATE_TOOLTIP = (
     "Measures how these fans actually respond, so the rpm figures on the "
     "graphs are this machine's rather than the developer's. Takes about two "
     "and a half minutes and the fans will audibly speed up and slow down."
@@ -79,6 +79,11 @@ CALIBRATE_BODY = (
     "• Your saved curves are not modified, and are written back at the end\n\n"
     "Best run while the machine is idle."
 )
+
+# Kept in visible text rather than on hover: it is not an explanation of the
+# button, it is the state of the numbers already on screen -- every rpm
+# figure on this page is somebody else's laptop until this is run once.
+UNCALIBRATED_SUBTITLE = "The rpm figures on these graphs are not yet yours"
 
 UNCALIBRATED_NOTE = (
     "The rpm figures on these graphs are estimates measured on the "
@@ -135,8 +140,9 @@ class FansPage(Gtk.Box):
         if not self.window.caps.get("fan_curve"):
             self._disable_everything()
         elif not self.window.config.get("fan_rpm_cal"):
-            self.calibrate_row.set_subtitle(
-                CALIBRATE_SUBTITLE + "\n\n" + UNCALIBRATED_NOTE)
+            self.calibrate_row.set_subtitle(UNCALIBRATED_SUBTITLE)
+            self.calibrate_row.set_tooltip_text(
+                UNCALIBRATED_NOTE + "\n\n" + CALIBRATE_TOOLTIP)
 
     def _build_fan_group(self, channel):
         name = hardware.FAN_LABELS[channel]
@@ -144,10 +150,13 @@ class FansPage(Gtk.Box):
         if channel == hardware.FAN_CHANNELS[0]:
             # Once, on the first graph. Repeating it under all three would
             # cost three lines of vertical space to say the same thing.
+            # The keyboard controls used to be spelled out here, three lines
+            # of it above the first graph. They are on the graph's own
+            # tooltip -- and in its accessible description, which is what a
+            # screen reader reads out -- so this only has to point at them.
             group.set_description(
-                "Drag a point to move it. Tab to a graph and the arrow keys "
-                "move the selected point one degree or one percent at a "
-                "time; Ctrl and left or right picks a different point.")
+                "Drag a point to move it; hover a graph for the keyboard "
+                "controls.")
 
         # The live speed belongs in the group header, beside the fan's name:
         # it is what the curve below is being judged against.
@@ -181,7 +190,8 @@ class FansPage(Gtk.Box):
         group = Adw.PreferencesGroup(title="Fan controller")
 
         self.apply_row = Adw.ActionRow(title="Apply fan curves",
-                                       subtitle=APPLY_SUBTITLE)
+                                       subtitle="Takes about 16 seconds")
+        self.apply_row.set_tooltip_text(APPLY_TOOLTIP)
         self.apply_button = Gtk.Button(label="Apply")
         self.apply_button.set_valign(Gtk.Align.CENTER)
         self.apply_button.add_css_class("suggested-action")
@@ -190,8 +200,10 @@ class FansPage(Gtk.Box):
         self.apply_row.set_activatable_widget(self.apply_button)
         group.add(self.apply_row)
 
-        self.calibrate_row = Adw.ActionRow(title="Calibrate fan RPM",
-                                           subtitle=CALIBRATE_SUBTITLE)
+        self.calibrate_row = Adw.ActionRow(
+            title="Calibrate fan RPM",
+            subtitle="Takes about two and a half minutes, audibly")
+        self.calibrate_row.set_tooltip_text(CALIBRATE_TOOLTIP)
         self.calibrate_button = Gtk.Button(label="Calibrate")
         self.calibrate_button.set_valign(Gtk.Align.CENTER)
         self.calibrate_button.connect("clicked", self._on_calibrate_clicked)

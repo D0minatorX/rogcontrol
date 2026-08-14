@@ -52,18 +52,30 @@ REFRESH_SECONDS = 2
 BRIGHTNESS_LEVELS = ("Off", "Low", "Medium", "Full")
 SPEED_LEVELS = {1: "Slow", 2: "Medium", 3: "Fast"}
 
-BRIGHTNESS_SUBTITLE = (
+BRIGHTNESS_TOOLTIP = (
     "The backlight the keys are lit at, which is separate from their colour. "
     "At Off the keyboard is dark whatever effect is chosen below."
 )
 
-EFFECT_DESCRIPTION = (
+# Short on the page, the rest on hover. What each effect *does* stays visible
+# (see MODE_HINTS): that one changes with the picker and is the answer to
+# "why are the keys not the colour I chose".
+EFFECT_DESCRIPTION = "Applied through rogauracore."
+
+EFFECT_TOOLTIP = (
     "Applied through rogauracore, which talks to the ASUS Aura controller "
     "directly. Effects the firmware animates itself keep running after this "
     "app exits; Ambient does not, because it needs the screen."
 )
 
-SPEED_SUBTITLE = "How fast the chosen animation runs."
+COLOUR_TOOLTIP = "The colour the effect is drawn in."
+
+COLOUR2_TOOLTIP = (
+    "Breathing fades to this one; Gradient Static blends towards it across "
+    "the keyboard's four zones. The other effects ignore it."
+)
+
+SPEED_TOOLTIP = "How fast the chosen animation runs."
 
 # What each effect actually does, shown under the picker. Modes whose colour
 # is not the one in the button below need saying out loud -- otherwise a
@@ -153,7 +165,7 @@ class KeyboardPage(Adw.PreferencesPage):
         self.add(backlight)
         self.brightness_row = _LevelRow(
             dict(enumerate(BRIGHTNESS_LEVELS)),
-            title="Brightness", subtitle=BRIGHTNESS_SUBTITLE,
+            title="Brightness", tooltip=BRIGHTNESS_TOOLTIP,
             minimum=kbdcolor.KBD_MIN, maximum=kbdcolor.KBD_MAX, step=1,
             settle_ms=DEBOUNCE_MS)
         self.brightness_row.connect("changed", self._on_brightness_changed)
@@ -161,9 +173,11 @@ class KeyboardPage(Adw.PreferencesPage):
 
         lighting = Adw.PreferencesGroup(title="Lighting",
                                         description=EFFECT_DESCRIPTION)
+        lighting.set_tooltip_text(EFFECT_TOOLTIP)
         self.add(lighting)
 
         self.mode_row = Adw.ComboRow(title="Effect")
+        self.mode_row.set_tooltip_text(EFFECT_TOOLTIP)
         self.mode_row.set_model(Gtk.StringList.new(
             self.modes or list(kbdcolor.KBD_RGB_MODES)))
         # Connected in reload(), after the saved mode is selected: setting the
@@ -172,14 +186,12 @@ class KeyboardPage(Adw.PreferencesPage):
         lighting.add(self.mode_row)
 
         self.color_row, self.color_button = self._color_row(
-            lighting, "Colour", "The colour the effect is drawn in.")
+            lighting, "Colour", COLOUR_TOOLTIP)
         self.color2_row, self.color2_button = self._color_row(
-            lighting, "Second colour",
-            "Breathing fades to this one; Gradient Static blends towards it "
-            "across the zones.")
+            lighting, "Second colour", COLOUR2_TOOLTIP)
 
         self.speed_row = _LevelRow(
-            SPEED_LEVELS, title="Speed", subtitle=SPEED_SUBTITLE,
+            SPEED_LEVELS, title="Speed", tooltip=SPEED_TOOLTIP,
             minimum=kbdcolor.SPEED_MIN, maximum=kbdcolor.SPEED_MAX, step=1,
             settle_ms=DEBOUNCE_MS)
         self.speed_row.connect("changed", lambda _row, _v: self._on_edited())
@@ -202,9 +214,14 @@ class KeyboardPage(Adw.PreferencesPage):
             lighting.set_description(
                 f"{EFFECT_DESCRIPTION}\n\n{NO_ROGAURACORE_HINT}")
 
-    def _color_row(self, group, title, subtitle):
-        """An action row whose control is a colour button."""
-        row = Adw.ActionRow(title=title, subtitle=subtitle)
+    def _color_row(self, group, title, tooltip):
+        """An action row whose control is a colour button.
+
+        The title carries the row; which effects read which button is on
+        hover, because the two of them together were four lines of text
+        above the picker that decides whether either is used at all."""
+        row = Adw.ActionRow(title=title)
+        row.set_tooltip_text(tooltip)
         dialog = Gtk.ColorDialog()
         # The keyboard has no alpha channel, so offering one would let the
         # user set a transparency that is silently discarded on the way out.
