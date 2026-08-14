@@ -430,6 +430,83 @@ class TestBusctlParsing(unittest.TestCase):
             self.assertIsNone(hardware.parse_busctl_string(text), text)
 
 
+class TestSetPowerMode(unittest.TestCase):
+    """The profile -> OS power mode decision.
+
+    Only the decision is tested: whether a mode change is attempted at all,
+    and which mode is asked for. The busctl call itself is one subprocess
+    line, and a test that asserted its argv would only restate it -- while
+    the thing that actually broke was a profile switch that asked for no
+    mode whatsoever, and an enforcer that undid the switch a minute later
+    because of it."""
+
+    def setUp(self):
+        self.asked = []
+        real = hardware.set_power_mode
+
+        def record(mode, timeout=5):
+            self.asked.append(mode)
+            return True, mode
+
+        hardware.set_power_mode = record
+        self.addCleanup(setattr, hardware, "set_power_mode", real)
+
+    def test_each_stock_profile_asks_for_its_own_mode(self):
+        for name, mode in (("Quiet", "power-saver"),
+                           ("Balanced Power", "balanced"),
+                           ("Balanced Performance", "balanced"),
+                           ("Performance", "performance")):
+            self.assertEqual(hardware.set_power_mode_for_profile(name),
+                             (True, mode), name)
+        self.assertEqual(self.asked, ["power-saver", "balanced", "balanced",
+                                      "performance"])
+
+    def test_a_profile_of_the_users_own_changes_no_mode(self):
+        # None, not (False, ...): there is nothing wrong here. PPD has three
+        # modes and this profile is not one of them, so the OS mode is left
+        # exactly where the user put it.
+        self.assertIsNone(hardware.set_power_mode_for_profile("My Profile"))
+        self.assertEqual(self.asked, [])
+
+    def test_no_profile_at_all_changes_no_mode(self):
+        self.assertIsNone(hardware.set_power_mode_for_profile(None))
+        self.assertEqual(self.asked, [])
+
+    def test_only_modes_ppd_actually_has_are_ever_asked_for(self):
+        # A mode outside this set is not a wrong setting, it is a failed
+        # set-property -- the profile switch would silently leave the OS
+        # behind, which is the bug this whole path exists to close.
+        from rogcontrol.profiles import PROFILE_TO_PPD_MODE
+        self.assertEqual(set(PROFILE_TO_PPD_MODE.values()),
+                         {"power-saver", "balanced", "performance"})
+
+
+class TestPpdServiceName(unittest.TestCase):
+    def test_both_bus_names_the_daemon_has_shipped_under_are_tried(self):
+        tried = []
+
+        def fake_run(argv, **_kwargs):
+            tried.append(argv[3])
+            raise OSError("no busctl here")
+
+        real = hardware.subprocess.run
+        hardware.subprocess.run = fake_run
+        self.addCleanup(setattr, hardware.subprocess, "run", real)
+        self.assertIsNone(hardware.ppd_service_name())
+        self.assertEqual(tried, list(hardware.PPD_BUS_NAMES))
+
+    def test_no_daemon_means_no_mode_change_rather_than_a_crash(self):
+        def fake_name(timeout=5):
+            return None
+
+        real = hardware.ppd_service_name
+        hardware.ppd_service_name = fake_name
+        self.addCleanup(setattr, hardware, "ppd_service_name", real)
+        ok, message = hardware.set_power_mode("balanced")
+        self.assertFalse(ok)
+        self.assertIn("power-profiles-daemon", message)
+
+
 class TestLogTail(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

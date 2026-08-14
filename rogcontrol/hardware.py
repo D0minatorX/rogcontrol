@@ -18,6 +18,8 @@ import os
 import subprocess
 import sys
 
+from .profiles import PROFILE_TO_PPD_MODE
+
 HELPER = "/usr/local/bin/rogcontrol-helper"
 ASUS_WMI_DIR = "/sys/devices/platform/asus-nb-wmi"
 HWMON_DIR = "/sys/class/hwmon"
@@ -527,6 +529,25 @@ def parse_busctl_string(text):
     return parts[1].strip().strip('"') or None
 
 
+def ppd_service_name(timeout=5):
+    """The bus name power-profiles-daemon is actually answering on, or None.
+
+    Introspection rather than a hardcoded name for the same reason as
+    PPD_BUS_NAMES: the daemon is mid-rename across distro versions and both
+    names are in the wild. Same detection the enforcer does."""
+    for name in PPD_BUS_NAMES:
+        try:
+            result = subprocess.run(
+                ["busctl", "--system", "introspect", name,
+                 "/" + name.replace(".", "/")],
+                capture_output=True, text=True, timeout=timeout)
+        except Exception:
+            continue
+        if result.returncode == 0:
+            return name
+    return None
+
+
 def read_power_mode(timeout=5):
     """The OS power mode (PPD's ActiveProfile), or None.
 
@@ -555,6 +576,52 @@ def read_power_mode(timeout=5):
             if mode:
                 return mode
     return None
+
+
+def set_power_mode(mode, timeout=5):
+    """Set the OS power mode (PPD's ActiveProfile). Returns ``(ok, message)``.
+
+    This is not cosmetic and it is not optional. Selecting a profile without
+    it leaves the OS on the old mode, and the enforcer -- which treats an
+    external mode change as the OS asking for a profile -- then switches the
+    profile back within its 60 second cycle and re-pushes all three fan
+    curves to do it. The result is ~16 seconds of fan writes for the profile
+    the user chose, ~16 seconds for the one they did not, and the switch
+    silently undone. Set the mode first, and there is nothing to disagree
+    with.
+
+    No exception on failure: PPD is not guaranteed to be installed, and a
+    machine without it must still be able to switch profiles."""
+    service = ppd_service_name(timeout=timeout)
+    if not service:
+        return False, "power-profiles-daemon is not answering"
+    path = "/" + service.replace(".", "/")
+    try:
+        result = subprocess.run(
+            ["busctl", "--system", "set-property", service, path, service,
+             "ActiveProfile", "s", str(mode)],
+            capture_output=True, text=True, timeout=timeout)
+    except Exception as e:
+        return False, str(e)
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout or "unknown error").strip()
+    return True, str(mode)
+
+
+def set_power_mode_for_profile(profile_name, timeout=5):
+    """Take the OS power mode along with a profile switch.
+
+    Returns ``(ok, message)``, or None when this profile maps to no OS mode.
+
+    None is the whole point of the split: PPD has exactly three modes, and a
+    profile the user invented maps to none of them. Forcing one anyway would
+    park every custom profile on some arbitrary mode and -- because the mode
+    is what the enforcer compares against -- hand the EC a power-mode change
+    (and a wiped fan curve) on every switch to it."""
+    mode = PROFILE_TO_PPD_MODE.get(profile_name)
+    if mode is None:
+        return None
+    return set_power_mode(mode, timeout=timeout)
 
 
 # -- Log ---------------------------------------------------------------------
