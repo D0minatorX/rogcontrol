@@ -1,0 +1,123 @@
+ROG CONTROL — HOW TO INSTALL
+============================
+
+For ASUS ROG laptops running Linux. Tested on a ROG Strix G614PR
+(Ryzen 9 8940HX, RTX 5070 Ti) on Arch/CachyOS with GNOME on Wayland.
+
+
+WHAT YOU NEED FIRST
+-------------------
+
+GTK4 and libadwaita. The installer checks for them before touching anything
+and stops with the package names if they are missing:
+
+    Arch/CachyOS   sudo pacman -S gtk4 libadwaita python-gobject
+    Fedora         sudo dnf install gtk4 libadwaita python3-gobject
+    Debian/Ubuntu  sudo apt install libgtk-4-1 libadwaita-1-0 python3-gi
+
+Everything else is optional and only costs the feature that needs it. The
+installer detects what is missing and offers to install it:
+
+    ryzenadj        CPU power limits and undervolt (AMD only)
+    nvidia-utils    GPU temperature and power limit
+    nvidia-settings GPU clock offsets
+    supergfxctl     switching between integrated and hybrid graphics
+    rogauracore     keyboard colours and lighting modes
+    libayatana-appindicator   the tray icon
+    libnotify       desktop notifications
+
+
+INSTALLING
+----------
+
+Unzip it, then from inside the folder:
+
+    ./install.sh
+
+Do NOT run it as root. It asks for your password twice, and only for the two
+things that genuinely need it:
+
+  * installing the privileged helper to /usr/local/bin/rogcontrol-helper
+  * adding a sudoers rule so the app can call that one helper without a
+    password prompt every time you move a slider
+
+The rule grants exactly one binary to your user. It is validated with visudo
+before being put in place, because a malformed sudoers file can lock you out
+of sudo entirely.
+
+The installer will:
+
+  * check GTK4 and libadwaita, and stop if they are absent
+  * confirm the machine is an ASUS
+  * install missing optional dependencies, with your permission
+  * build ryzenadj from source if your distro has no package for it
+  * install the app to ~/.local/lib/rogcontrol and a launcher on your PATH
+  * install the tray, the background services, the icon and the menu entry
+  * on a FRESH install, write the default settings and apply them
+  * on an UPDATE, keep every setting you have and back the file up first
+
+It ends by listing which features work on your machine and which do not, and
+why.
+
+
+AFTER INSTALLING
+
+    rogcontrol            open the window
+    rogcontrol-tray       the tray icon (starts by itself at every login)
+
+The window is also in your applications menu as "ROG Control".
+
+One thing worth doing once: open the Fans page and press "Calibrate fan RPM".
+It takes about two minutes and measures how your fans actually respond, so
+the graphs show real numbers for your machine instead of the ones measured on
+the developer's laptop.
+
+
+UPDATING
+--------
+
+Run ./install.sh from the newer version. It detects the existing install and
+keeps your profiles, fan curves, calibration and keyboard settings. Your
+settings file is copied to a dated backup beside it first.
+
+
+YOUR SETTINGS
+
+Everything you configure lives in ONE file:
+
+    ~/.config/rogcontrol.json
+
+Profiles, fan curves, CPU and GPU limits, keyboard colours, charge limit, fan
+calibration — all of it. Copy that file to move your setup to another machine
+or to keep a backup. Nothing is stored anywhere else.
+
+
+UNINSTALLING
+------------
+
+    ~/.local/bin/rogcontrol-uninstall.sh
+
+It removes the app, the helper, the sudoers rule and the services. It leaves
+your settings file alone unless you ask for it to go.
+
+
+IF SOMETHING IS WRONG
+---------------------
+
+The window will not open
+    Run `rogcontrol --self-test` in a terminal. It builds every page and
+    prints the first thing that fails.
+
+Nothing happens when you click the icon in the applications menu
+    Log out and back in once. The menu database caches entries.
+
+A control is greyed out
+    Hover it — the tooltip names the missing dependency.
+
+CPU limits do nothing
+    ryzenadj needs a supported AMD chip and, on some kernels, the ryzen_smu
+    module. The app reports what the helper said rather than failing quietly.
+
+The fans do not follow the curve
+    Read the fan section of 2-FEATURES.txt. This is a real and well
+    understood hardware behaviour, and the answer is in the curve's shape.

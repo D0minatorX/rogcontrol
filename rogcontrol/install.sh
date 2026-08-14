@@ -82,7 +82,7 @@ case "$MODE" in
         # to walk: the app only ever fills in config keys that are absent
         # and never rewrites ones that are present.
         if [ "$PREV_VER" != "$VERSION" ]; then
-            echo "  Upgrading from $PREV_VER. See CHANGES.txt for what is new."
+            echo "  Upgrading from $PREV_VER. See 2-FEATURES.txt for what the app does."
         fi
 
         # Belt and braces: the app migrates in place and the installer never
@@ -494,6 +494,30 @@ elif [ "$(prev_get cap_fan_curve)" = 1 ] || grep -qx asus_custom_fan_curve /sys/
         echo "     \"Calibrate fan RPM\" once (about two minutes) to measure your own."
     else
         warn "Fans still not calibrated - see the Fans tab, \"Calibrate fan RPM\""
+    fi
+fi
+
+# --- fresh install: create the settings file and put it on the hardware ------
+# Without this a fresh install leaves no config at all, and the boot-apply
+# service returns immediately because there is nothing to apply -- so a new
+# user gets whatever the firmware happened to be doing until they open the
+# window. Creating it here means the stock profiles exist and the chosen one
+# is actually running the moment the install finishes.
+#
+# load_config() writes the defaults out when the file is absent, and leaves an
+# existing file untouched, so this is safe to run unconditionally.
+if [ ! -f "$APP_CONFIG" ]; then
+    if PYTHONPATH="$HOME/.local/lib" python3 -c "from rogcontrol import config; config.load_config()" 2>/dev/null
+    then
+        say "Default settings written to $(basename "$APP_CONFIG")"
+        # Applying takes about 20 seconds, most of it the mandatory 8-second
+        # gaps between fan channels, so it runs in the background rather than
+        # holding the installer open.
+        ("$HOME/.local/bin/rogcontrol-apply.py" >/dev/null 2>&1 &) 2>/dev/null \
+            || (python3 "$HOME/.local/bin/rogcontrol-apply.py" >/dev/null 2>&1 &)
+        say "Applying the default profile in the background (about 20 seconds)"
+    else
+        warn "Could not write the default settings - open the app once to create them"
     fi
 fi
 
