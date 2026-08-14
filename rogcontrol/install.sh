@@ -284,6 +284,21 @@ mkdir -p "$HOME/.local/bin"
 # stay behind and keep being importable, and a stale __pycache__ next to a
 # newer source file is its own class of confusing. Nothing of the user's
 # lives here -- settings are in ~/.config/rogcontrol.json.
+#
+# The enforcer imports out of this directory and is Restart=always, so it has
+# to be stopped for the moment the directory does not exist. Left running, it
+# dies on ImportError, systemd restarts it, and it dies again -- and an
+# install interrupted anywhere in here (set -e, a full disk, Ctrl-C) leaves
+# it crash-looping for as long as the machine is up. Stopped, the worst case
+# is a service that is not running until the next install or login, which is
+# visible and harmless. It is started again at the end of the services step.
+ENFORCER_WAS_RUNNING=0
+if systemctl --user is-active --quiet rogcontrol-enforcer.service 2>/dev/null; then
+    ENFORCER_WAS_RUNNING=1
+    systemctl --user stop rogcontrol-enforcer.service >/dev/null 2>&1 || true
+    say "Stopped the enforcer while the library is replaced"
+fi
+
 LIBDIR="$HOME/.local/lib/rogcontrol"
 rm -rf "$LIBDIR"
 mkdir -p "$LIBDIR/pages" "$LIBDIR/widgets"
@@ -359,9 +374,21 @@ install -m 644 "$SCRIPT_DIR/rogcontrol-apply.service" \
                "$SCRIPT_DIR/rogcontrol-enforcer.service" "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
 systemctl --user enable --now rogcontrol-apply.service    >/dev/null 2>&1 || true
+# This is also what brings the enforcer back up after it was stopped for the
+# library replacement above -- restart starts a stopped unit.
 systemctl --user restart      rogcontrol-enforcer.service >/dev/null 2>&1 || true
 systemctl --user enable       rogcontrol-enforcer.service >/dev/null 2>&1 || true
 say "Boot-reapply and enforcer services enabled"
+
+# Checked rather than assumed, because this install stopped it on purpose:
+# an enforcer that fails to come back is the one failure mode that is
+# invisible from the window and only shows up as fan curves quietly drifting.
+if systemctl --user is-active --quiet rogcontrol-enforcer.service 2>/dev/null; then
+    say "Enforcer is running on the new library"
+elif [ "$ENFORCER_WAS_RUNNING" = 1 ]; then
+    warn "The enforcer did not come back up after the update."
+    warn "  systemctl --user status rogcontrol-enforcer.service"
+fi
 
 # Leftovers from an older build that used keyboard power-event hooks.
 if [ -f /etc/systemd/system-sleep/rogcontrol-sleep-hook.py ] || \
@@ -483,10 +510,44 @@ say "Install state recorded (next run will detect this as an update)"
 install -m 755 "$SCRIPT_DIR/uninstall.sh" "$HOME/.local/bin/rogcontrol-uninstall.sh" 2>/dev/null \
     && say "Uninstaller available: ~/.local/bin/rogcontrol-uninstall.sh"
 
+# --- start the tray ---------------------------------------------------------
+# The autostart entry only fires at login, so without this a fresh install
+# ends with the installer saying "the window opens from the tray icon" and no
+# tray icon anywhere until the user logs out and back in.
+#
+# Last, and only on a run that got this far: everything above has to have
+# succeeded (set -e) before a process is left behind. Skipped when there is
+# no session to put an icon in -- an install from a TTY or over SSH -- and
+# when a tray is already running, since two of them would fight over the
+# config and show two icons.
+if [ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
+    say "No graphical session here - the tray starts at your next login"
+elif pgrep -f 'python3? .*/rogcontrol-tray$' >/dev/null 2>&1; then
+    say "Tray already running - restart it (or log back in) to pick up this version"
+else
+    # nohup + & rather than systemd-run: the tray is a session-lifetime
+    # sidecar started by an autostart entry, and giving it a unit here would
+    # make this install the odd one out.
+    #
+    # The pattern is anchored on the interpreter and the end of the command
+    # line so that it matches the tray itself and not, say, an editor open on
+    # the same file or the shell that ran this installer -- a bare
+    # "rogcontrol-tray" matches any command line containing those letters.
+    nohup "$HOME/.local/bin/rogcontrol-tray" >/dev/null 2>&1 &
+    sleep 1
+    if pgrep -f 'python3? .*/rogcontrol-tray$' >/dev/null 2>&1; then
+        say "Tray started - look for the icon in your status area"
+    else
+        warn "The tray did not stay running. Try it by hand to see why:"
+        warn "  ~/.local/bin/rogcontrol-tray"
+    fi
+fi
+
 echo
 echo "Done."
 echo "  Launch from the app grid ('ROG Control'), or just: rogcontrol"
-echo "  The tray icon starts at login; the window opens from it."
+echo "  The tray icon is running now (see above) and starts at every login;"
+echo "  the window opens from it."
 echo "  Services:  systemctl --user status rogcontrol-enforcer.service"
 echo
 echo "  Optional keyboard shortcuts (bind in your desktop settings):"
