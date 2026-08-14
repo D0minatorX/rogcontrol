@@ -211,6 +211,14 @@ class SystemPage(Adw.PreferencesPage):
             "What the daemon will accept on this machine — nothing else can "
             "be selected.")
 
+        # Why there is no picker, when there is no picker. A separate row and
+        # not the ComboRow's own subtitle, because an insensitive row draws
+        # its text dimmed -- and the one thing this text must be is readable.
+        self.mode_blocked_row = Adw.ActionRow(title="Switch mode")
+        self.mode_blocked_row.set_subtitle_lines(0)
+        self.mode_blocked_row.set_visible(False)
+        group.add(self.mode_blocked_row)
+
         self.mode_row = Adw.ComboRow(title="Switch mode",
                                      subtitle=GPU_MODE_SUBTITLE)
         # Populated from the daemon in _refresh_now: what this machine
@@ -225,14 +233,25 @@ class SystemPage(Adw.PreferencesPage):
         group.add(self.mode_row)
 
         if not self.caps.get("supergfxctl"):
-            self.mode_row.set_sensitive(False)
-            self.mode_row.set_subtitle(
+            self._block_switching(
                 "supergfxctl is not installed, so the graphics mode cannot "
                 "be read or changed from here. Install supergfxctl and its "
                 "supergfxd service to switch between integrated and hybrid "
                 "graphics.")
             self.mode_now_row.set_subtitle(
                 "supergfxctl is not installed — the mode cannot be read.")
+
+    def _block_switching(self, reason):
+        """Replace the picker with the reason there is nothing to pick."""
+        self.mode_row.set_visible(False)
+        self.mode_blocked_row.set_subtitle(reason)
+        self.mode_blocked_row.set_visible(True)
+
+    def _allow_switching(self):
+        self.mode_blocked_row.set_visible(False)
+        self.mode_row.set_subtitle(GPU_MODE_SUBTITLE)
+        self.mode_row.set_sensitive(True)
+        self.mode_row.set_visible(True)
 
     def _build_asusd(self):
         """Whether the other daemon for this hardware is on the machine."""
@@ -380,7 +399,12 @@ class SystemPage(Adw.PreferencesPage):
         label = Gtk.Label(label=DASH)
         label.add_css_class("heading" if strong else "dim-label")
         label.set_wrap(True)
-        label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        # WORD, not WORD_CHAR. These values are single words as often as not
+        # -- AsusMuxDgpu, balanced, yes -- and breaking inside one produced
+        # "Asus-Mux-Dgpu" and "bala-nced" in a window with room to spare.
+        # Word wrapping keeps the whole word and takes the width it needs;
+        # a two-word value like "Balanced Power" still wraps cleanly.
+        label.set_wrap_mode(Pango.WrapMode.WORD)
         label.set_xalign(1.0)
         row.add_suffix(label)
         group.add(row)
@@ -503,19 +527,17 @@ class SystemPage(Adw.PreferencesPage):
         # its mode list can change under a running window, and a row latched
         # insensitive on one sample would never come back.
         if active is None:
-            self.mode_row.set_sensitive(False)
-            self.mode_row.set_subtitle(NO_DAEMON_SUBTITLE)
+            self._block_switching(NO_DAEMON_SUBTITLE)
             self.mode_now_row.set_subtitle(
                 "supergfxd is not answering, so the mode cannot be read.")
             return
-        only_one = len(modes) <= 1
-        self.mode_row.set_sensitive(not only_one)
-        # The reason goes in the subtitle, where it is visible, rather than
-        # in a tooltip nobody hovers over and a touchpad cannot produce at
-        # all. This is the row the user could not find.
-        self.mode_row.set_subtitle(
-            SINGLE_MODE_SUBTITLE.format(mode=modes[0]) if only_one
-            else GPU_MODE_SUBTITLE)
+        # The reason goes on the page in full, where it is visible, rather
+        # than in a tooltip nobody hovers over and a touchpad cannot produce
+        # at all. This is the control the user could not find.
+        if len(modes) <= 1:
+            self._block_switching(SINGLE_MODE_SUBTITLE.format(mode=modes[0]))
+        else:
+            self._allow_switching()
 
     def _render_asusd(self, state):
         """Say what asusd is doing, and offer only what makes sense."""
