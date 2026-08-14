@@ -179,6 +179,11 @@ class Cycle(unittest.TestCase):
                 (config.get("current_profile"), kwargs)))
         self.enforcer.set_ppd_active_profile = (
             lambda service, mode: self.modes.append((service, mode)))
+        self.notifications = []
+        # notify() shells out to notify-send, which would put a real
+        # notification on the developer's screen for every test in here.
+        self.enforcer.notify = (
+            lambda title, body: self.notifications.append((title, body)))
 
     def cycle(self, config, service="net.hadess.PowerProfiles"):
         return self.enforcer.check_ac_auto_switch(config, service)
@@ -286,6 +291,61 @@ class Cycle(unittest.TestCase):
         self.assertFalse(self.cycle(config))
         self.assertEqual(self.applied, [])
         self.assertEqual(self.modes, [])
+
+    def test_a_switch_is_announced(self):
+        """An automatic switch happens with nobody watching the log. Without
+        a notification the fans change pitch a minute after the plug moved
+        and nothing on screen connects the two."""
+        config = make_config()
+        self.cycle(config)
+        self.ac = ON_AC
+        self.cycle(config)
+        self.assertEqual(len(self.notifications), 1)
+        _title, body = self.notifications[0]
+        self.assertIn("Performance", body)
+        self.assertIn("AC", body)
+
+    def test_unplugging_says_battery(self):
+        config = make_config()
+        self.ac = ON_AC
+        self.cycle(config)
+        self.ac = ON_BATTERY
+        self.cycle(config)
+        self.assertIn("battery", self.notifications[0][1])
+        self.assertIn("Quiet", self.notifications[0][1])
+
+    def test_nothing_is_announced_when_nothing_changed(self):
+        # This runs every 60 seconds for the life of the session; a
+        # notification per cycle would be unusable.
+        config = make_config()
+        for _ in range(4):
+            self.cycle(config)
+        self.assertEqual(self.notifications, [])
+
+    def test_a_switch_that_does_not_happen_is_not_announced(self):
+        # The user picked that profile in the window during this cycle, so
+        # there is nothing to tell them.
+        config = make_config()
+        self.cycle(config)
+        already = make_config(current_profile="Performance")
+        with open(self.config_path, "w") as f:
+            json.dump(already, f)
+        self.ac = ON_AC
+        self.assertFalse(self.cycle(config))
+        self.assertEqual(self.notifications, [])
+
+    def test_the_notification_comes_before_the_slow_apply(self):
+        # ~16 seconds of fan writes follow. A notification after them is
+        # explaining something the user has finished wondering about.
+        config = make_config()
+        order = []
+        self.enforcer.notify = lambda *a: order.append("notify")
+        self.enforcer.apply_full_profile = (
+            lambda *a, **k: order.append("apply"))
+        self.cycle(config)
+        self.ac = ON_AC
+        self.cycle(config)
+        self.assertEqual(order, ["notify", "apply"])
 
     def test_no_power_profiles_daemon_still_switches(self):
         config = make_config()

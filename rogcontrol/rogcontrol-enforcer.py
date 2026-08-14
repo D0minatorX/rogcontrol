@@ -154,6 +154,26 @@ def log(message, level="INFO", dedupe_key=None, dedupe_seconds=300):
         pass
 
 
+def notify(title, body):
+    """A desktop notification, best effort.
+
+    The AC/battery switch is the only thing this service does that the user
+    did not ask for at that moment: the plug moves, and a minute later the
+    fans and the power limits are somewhere else. The GTK3 version showed a
+    notification for it and the rewrite lost it, which made an automatic
+    switch indistinguishable from the machine changing its mind on its own.
+
+    Every failure is swallowed. There may be no notification daemon, no
+    session bus, or no notify-send at all, and none of those are a reason to
+    take a service down -- or even to fill the log, since it would repeat on
+    every switch forever."""
+    try:
+        subprocess.run(["notify-send", "-a", "ROG Control", title, body],
+                       capture_output=True, timeout=5)
+    except Exception:
+        pass
+
+
 def run_helper(*args):
     """Run a privileged action and REPORT failure.
 
@@ -531,6 +551,13 @@ def check_ac_auto_switch(config, service_name):
     log(f"power source changed to {source} -- switching profile to '{target}'")
     config["current_profile"] = target
     save_config(config, "auto-switched profile")
+
+    # Before the apply, not after: the apply takes ~16 seconds (the fan
+    # channels need 8 seconds between them), and a notification that arrives
+    # a quarter of a minute after the fans have already changed pitch is
+    # explaining something the user has finished wondering about.
+    notify("ROG Control",
+           f"On {source} power — switched to “{target}”")
 
     # Take the OS power mode with us, exactly as a profile switch in the app
     # does. Without this the enforcer's own PPD check would find the mode
