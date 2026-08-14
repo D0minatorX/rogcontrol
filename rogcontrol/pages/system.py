@@ -1,6 +1,6 @@
-"""System: graphics mode, power-mode sync, and what was detected.
+"""System: graphics mode, power-mode sync, the log, and what was detected.
 
-Two read-mostly things and one genuinely dangerous control.
+Three read-mostly things and one genuinely dangerous control.
 
 The dangerous one is the graphics mode. Switching it tears down and rebuilds
 the display stack, which on this machine means the session goes away and
@@ -41,6 +41,11 @@ from .. import profiles as profiles_mod  # noqa: E402
 REFRESH_SECONDS = 5
 DASH = "—"
 
+# Lines of log kept in the view. Enough to cover a boot's worth of applies
+# and the failure before it; more than this and the widget costs more to
+# render than the page is worth.
+LOG_LINES = 300
+
 GPU_MODE_SUBTITLE = (
     "Integrated turns the NVIDIA card off entirely for battery life; hybrid "
     "leaves it available for games. Changing this restarts the display "
@@ -68,6 +73,7 @@ class SystemPage(Adw.PreferencesPage):
         self.modes = []
 
         self._build()
+        self._reload_log()
         self.reload()
         self._loading = False
         self._refresh_now()
@@ -79,6 +85,7 @@ class SystemPage(Adw.PreferencesPage):
     def _build(self):
         self._build_gpu_mode()
         self._build_sync()
+        self._build_log()
         self._build_about()
 
     def _build_gpu_mode(self):
@@ -112,6 +119,51 @@ class SystemPage(Adw.PreferencesPage):
         self.osmode_row, self.osmode_value = self._value_row(
             group, "OS power mode", "power-profiles-daemon's active profile")
         self.sync_row, self.sync_value = self._value_row(group, "In sync")
+
+    def _build_log(self):
+        group = Adw.PreferencesGroup(
+            title="Log",
+            description=f"{hardware.LOG_PATH} — written by this app, the "
+                        f"boot-apply service and the background enforcer.")
+        self.add(group)
+
+        refresh = Gtk.Button(label="Refresh")
+        refresh.set_valign(Gtk.Align.CENTER)
+        refresh.connect("clicked", lambda _b: self._reload_log())
+        group.set_header_suffix(refresh)
+
+        self.log_view = Gtk.TextView()
+        self.log_view.set_editable(False)
+        self.log_view.set_cursor_visible(False)
+        self.log_view.set_monospace(True)
+        # Wrapping, not scrolling sideways: a log line is long, and a
+        # horizontal scrollbar inside a page that is meant to work at 360px
+        # is exactly the failure this rewrite exists to remove.
+        self.log_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        for setter in (self.log_view.set_top_margin,
+                       self.log_view.set_bottom_margin,
+                       self.log_view.set_left_margin,
+                       self.log_view.set_right_margin):
+            setter(8)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        # Tall enough to be a log rather than a peephole, short enough that
+        # the About group below it is still reachable without a long scroll.
+        scroller.set_min_content_height(220)
+        scroller.set_max_content_height(360)
+        scroller.set_child(self.log_view)
+
+        row = Adw.PreferencesRow()
+        row.set_activatable(False)
+        row.set_focusable(False)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        for setter in (box.set_margin_top, box.set_margin_bottom,
+                       box.set_margin_start, box.set_margin_end):
+            setter(8)
+        box.append(scroller)
+        row.set_child(box)
+        group.add(row)
 
     def _build_about(self):
         group = Adw.PreferencesGroup(title="About")
@@ -280,6 +332,19 @@ class SystemPage(Adw.PreferencesPage):
                 f"{power_mode} — the enforcer settles this within a minute "
                 f"by switching to the profile {power_mode} maps to")
 
+    def _reload_log(self):
+        text = hardware.read_log_tail(LOG_LINES)
+        buffer = self.log_view.get_buffer()
+        if text is None:
+            buffer.set_text(f"No log yet at {hardware.LOG_PATH}.")
+            return
+        buffer.set_text(text or "The log is empty.")
+        # Sit at the newest line: the reason to open a log is what happened
+        # last, and a view that opens at the oldest entry has to be scrolled
+        # every single time.
+        buffer.place_cursor(buffer.get_end_iter())
+        self.log_view.scroll_to_mark(buffer.get_insert(), 0.0, True, 0.0, 1.0)
+
     # -- graphics mode -------------------------------------------------------
 
     def _on_mode_changed(self, row, _param):
@@ -344,3 +409,4 @@ class SystemPage(Adw.PreferencesPage):
     def self_test_tick(self):
         """One synchronous read-and-render of every section. No writes."""
         self._render(self._sample())
+        self._reload_log()
