@@ -1,8 +1,14 @@
 """The stock power profiles and the power-profiles-daemon mapping.
 
-Shared between the app and the helper scripts, which previously each kept
-their own copy of these tables. Pure data plus one scaling helper -- no GTK,
-no hardware access, so it can be imported and tested anywhere.
+Pure data plus one scaling helper -- no GTK, no hardware access, so it can
+be imported and tested anywhere.
+
+This is where the app, the config module, the System page and the tray read
+these tables from; it is not yet the only copy. rogcontrol-enforcer.py still
+defines its own PROFILE_TO_PPD_MODE/PPD_MODE_TO_PROFILE at the top of the
+file even though it imports this package, so a name added or a mapping
+changed here has to be changed there too or the service will disagree with
+the window about which OS mode a profile means.
 
 The numbers here are field-tuned against real hardware; treat a change to
 one as a hardware retune, not a tidy-up.
@@ -34,6 +40,9 @@ PROFILE_TO_PPD_MODE = {
 PPD_MODE_TO_PROFILE = {}
 for _name, _mode in PROFILE_TO_PPD_MODE.items():
     PPD_MODE_TO_PROFILE.setdefault(_mode, _name)
+# The loop variables would otherwise stay behind as module attributes --
+# rogcontrol.profiles._name is not something this module means to export.
+del _name, _mode
 
 
 def expected_ppd_mode(profile_name):
