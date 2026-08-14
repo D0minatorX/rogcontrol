@@ -4,12 +4,26 @@ rogcontrol-cycle-profile.py
 Cycles to the next profile and applies it, without needing the GUI open.
 Bind this to a keyboard shortcut.
 """
-import json
 import os
 import subprocess
+import sys
 import time
 
-CONFIG_PATH = os.path.expanduser("~/.config/rogcontrol.json")
+# The shared modules sit beside this script's package in the repo, and under
+# ~/.local/lib once installed -- this script is installed into ~/.local/bin,
+# where there is no package next to it. Same probe the tray and the enforcer
+# do, repo first so a checkout tests the checkout.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
+    if os.path.isfile(os.path.join(_candidate, "rogcontrol", "__init__.py")):
+        if _candidate not in sys.path:
+            sys.path.insert(0, _candidate)
+        break
+
+from rogcontrol import config as config_mod  # noqa: E402
+from rogcontrol import hardware  # noqa: E402
+
+CONFIG_PATH = config_mod.CONFIG_PATH
 
 
 def run_helper(*args):
@@ -131,10 +145,9 @@ def apply_profile(profile):
 def main():
     if not os.path.exists(CONFIG_PATH):
         return
-    with open(CONFIG_PATH) as f:
-        config = json.load(f)
+    config = config_mod.load_config()
 
-    names = list(config["profiles"].keys())
+    names = list(config.get("profiles", {}).keys())
     if not names:
         return
     current = config.get("current_profile")
@@ -142,8 +155,20 @@ def main():
     next_name = names[(idx + 1) % len(names)]
 
     config["current_profile"] = next_name
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(config, f, indent=2)
+    # Through config.save_config, which writes a temporary file and renames
+    # it over the config. Writing in place -- which this did -- truncates the
+    # real file the moment it is opened, so an interrupted write left the
+    # user with no profiles at all. That is the entire reason config.py
+    # exists, and this script is bound to a keyboard shortcut, so it is the
+    # one most likely to be fired twice in a second.
+    config_mod.save_config(config)
+
+    # Before applying, and before the fan writes in particular: the OS power
+    # mode has to move with the profile or the enforcer switches the profile
+    # back within a minute, and changing the mode is what makes the EC drop
+    # the custom curve. Returns None, changing nothing, for a profile of the
+    # user's own that maps to no OS mode.
+    hardware.set_power_mode_for_profile(next_name)
 
     apply_profile(config["profiles"][next_name])
     notify("ROG Control", f"Profile switched to {next_name}")

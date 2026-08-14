@@ -10,7 +10,21 @@ at login. Retries several times with delays, since some services
 import json
 import os
 import subprocess
+import sys
 import time
+
+# The shared modules sit beside this script's package in the repo, and under
+# ~/.local/lib once installed -- this script is installed into ~/.local/bin,
+# where there is no package next to it. Same probe the tray and the enforcer
+# do, repo first so a checkout tests the checkout.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
+    if os.path.isfile(os.path.join(_candidate, "rogcontrol", "__init__.py")):
+        if _candidate not in sys.path:
+            sys.path.insert(0, _candidate)
+        break
+
+from rogcontrol import hardware  # noqa: E402
 
 CONFIG_PATH = os.path.expanduser("~/.config/rogcontrol.json")
 RETRIES = 3
@@ -93,6 +107,18 @@ def apply_gpu_clock_offsets(gpu):
 def apply_once(config):
     profile_name = config.get("current_profile")
     profile = config.get("profiles", {}).get(profile_name)
+
+    # First, before anything else is written. This script is what the tray
+    # runs to make a profile switch real, and without it the tray switched
+    # the profile while leaving power-profiles-daemon on the old mode -- so
+    # the enforcer read the disagreement as the OS asking for the old
+    # profile, switched back within a minute and re-pushed all three fan
+    # curves to do it. It also has to come before the fan writes: changing
+    # the mode is what makes the EC drop the custom curve, so a curve
+    # written first is handed to a controller about to throw it away.
+    #
+    # A profile that maps to no OS mode returns None and changes nothing.
+    hardware.set_power_mode_for_profile(profile_name)
 
     if profile:
         cpu = profile.get("cpu")
