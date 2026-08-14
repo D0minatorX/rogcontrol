@@ -19,6 +19,8 @@ import importlib.util
 import json
 import os
 import tempfile
+import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -165,6 +167,11 @@ class Cycle(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.config_path = os.path.join(tmp.name, "rogcontrol.json")
         self.enforcer.CONFIG_PATH = self.config_path
+        # Redirected before anything runs: the enforcer now remembers the
+        # power source on disk, and the real path is in the user's own state
+        # directory next to their log.
+        self.state_path = os.path.join(tmp.name, "last-power-source")
+        self.enforcer.AC_STATE_PATH = self.state_path
 
         self.ac = ON_BATTERY
         self.applied = []
@@ -356,13 +363,475 @@ class Cycle(unittest.TestCase):
         self.assertEqual(config["current_profile"], "Performance")
 
 
-class Cadence(unittest.TestCase):
-    """The 60 second granularity is a design decision, not an accident: it
-    is the enforcer's existing cycle, and the alternative is a second poll
-    loop for something that takes ~16 seconds to apply anyway."""
+class RestartMemory(unittest.TestCase):
+    """What a *fresh start* does, which is the half of this feature that was
+    silently broken.
 
-    def test_the_switch_runs_on_the_enforcer_cycle(self):
+    The remembered power source used to be an in-memory global starting at
+    None, so the first sample after any start was recorded and never acted
+    on. The service is Restart=always and every install restarts it, so
+    starting while on battery with the AC profile active left a real mismatch
+    in place until the plug next moved -- possibly never.
+
+    Acting on the first sample instead would trade that for a worse bug: a
+    restart would override a profile the user had just chosen by hand. So the
+    power source is remembered on disk, and a restart is compared against it
+    rather than being treated as a transition in itself. These tests pin all
+    three arms of that: unchanged across a restart, changed across a restart,
+    and nothing known yet.
+    """
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.config_path = os.path.join(tmp.name, "rogcontrol.json")
+        self.state_path = os.path.join(tmp.name, "last-power-source")
+        self.ac = ON_BATTERY
+        self.applied = []
+
+    def write_config(self, config):
+        with open(self.config_path, "w") as f:
+            json.dump(config, f)
+
+    def start(self):
+        """One service start: a fresh module, pointed at this test's files,
+        with the power source loaded back exactly as main() does."""
+        enforcer = load_enforcer()
+        enforcer.CONFIG_PATH = self.config_path
+        enforcer.AC_STATE_PATH = self.state_path
+        enforcer.hardware = types.SimpleNamespace(
+            is_ac_connected=lambda: self.ac)
+        enforcer.log = lambda *a, **k: None
+        enforcer.notify = lambda *a, **k: None
+        enforcer.set_ppd_active_profile = lambda *a: None
+        enforcer.apply_full_profile = (
+            lambda config, profile, **kw: self.applied.append(
+                config.get("current_profile")))
+        enforcer._last_ac_state = enforcer.load_last_ac_state()
+        return enforcer
+
+    def first_cycle(self, enforcer, config):
+        """The first pass of main()'s loop, which is where a start either
+        corrects a mismatch or leaves the user alone."""
+        self.write_config(config)
+        return enforcer.check_ac_auto_switch(config, None)
+
+    def test_the_very_first_run_ever_only_records(self):
+        """No state file yet -- nothing can be inferred, so nothing is done.
+        This is the one case that keeps the old conservative behaviour."""
+        enforcer = self.start()
+        config = make_config(current_profile="Performance")
+        self.assertFalse(self.first_cycle(enforcer, config))
+        self.assertEqual(self.applied, [])
+        self.assertEqual(config["current_profile"], "Performance")
+        # ...but it is recorded, so the *next* start knows something.
+        self.assertEqual(enforcer.load_last_ac_state(), ON_BATTERY)
+
+    def test_a_plain_restart_does_not_override_a_profile_chosen_by_hand(self):
+        """The plug has not moved; the user picked Performance on battery on
+        purpose. A restart must not undo that."""
+        first = self.start()
+        self.first_cycle(first, make_config())
+
+        # The user now picks something the battery rule would not have.
+        chosen = make_config(current_profile="Performance")
+        self.applied.clear()
+
+        second = self.start()          # systemd restarts the service
+        self.assertFalse(self.first_cycle(second, chosen))
+        self.assertEqual(self.applied, [])
+        self.assertEqual(chosen["current_profile"], "Performance")
+
+    def test_a_plug_that_moved_while_the_service_was_down_is_acted_on(self):
+        """The other arm, and the reason the file exists at all: the change
+        really happened, so a restart is the first chance to notice it."""
+        self.ac = ON_AC
+        first = self.start()
+        self.first_cycle(first, make_config(current_profile="Performance"))
+        self.applied.clear()
+
+        self.ac = ON_BATTERY           # unplugged while the service was down
+        second = self.start()
+        config = make_config(current_profile="Performance")
+        self.assertTrue(self.first_cycle(second, config))
+        self.assertEqual(config["current_profile"], "Quiet")
+        self.assertEqual(self.applied, ["Quiet"])
+
+    def test_the_transition_is_only_acted_on_once_across_a_restart(self):
+        """Having acted on it, the new source is what gets remembered -- a
+        second restart must not switch again."""
+        self.ac = ON_AC
+        self.first_cycle(self.start(), make_config(current_profile="Performance"))
+        self.ac = ON_BATTERY
+        self.first_cycle(self.start(), make_config(current_profile="Performance"))
+        self.applied.clear()
+        third = self.start()
+        self.assertFalse(self.first_cycle(third, make_config(current_profile="Quiet")))
+        self.assertEqual(self.applied, [])
+
+    def test_the_remembered_source_is_readable(self):
+        """Someone debugging this at 1am should be able to cat the file."""
+        self.ac = ON_AC
+        self.first_cycle(self.start(), make_config())
+        with open(self.state_path) as f:
+            self.assertEqual(f.read().strip(), "AC")
+        self.ac = ON_BATTERY
+        self.first_cycle(self.start(), make_config())
+        with open(self.state_path) as f:
+            self.assertEqual(f.read().strip(), "battery")
+
+    def test_a_corrupt_state_file_is_treated_as_nothing_known(self):
+        """Half a file, or someone else's file. Falling back to "record, act
+        next time" is the safe reading -- inventing a previous state would
+        invent a transition."""
+        with open(self.state_path, "w") as f:
+            f.write("")
+        enforcer = self.start()
+        self.assertIsNone(enforcer._last_ac_state)
+        config = make_config(current_profile="Performance")
+        self.assertFalse(self.first_cycle(enforcer, config))
+        self.assertEqual(self.applied, [])
+
+    def test_an_unreadable_state_directory_does_not_break_the_switch(self):
+        """Persistence is an improvement, not a dependency: if it cannot be
+        written the enforcer must still behave exactly as it did before."""
+        enforcer = self.start()
+        enforcer.AC_STATE_PATH = "/proc/definitely-not-writable/state"
+        config = make_config()
+        self.assertFalse(enforcer.check_ac_auto_switch(config, None))
+        self.ac = ON_AC
+        self.write_config(config)
+        self.assertTrue(enforcer.check_ac_auto_switch(config, None))
+        self.assertEqual(config["current_profile"], "Performance")
+
+    def test_the_state_file_is_written_only_when_the_source_changes(self):
+        """This is checked on every cycle and on every udev event. Writing
+        it each time would be ~1440 writes a day for a fact that changes
+        twice."""
+        enforcer = self.start()
+        writes = []
+        real = enforcer.store_last_ac_state
+        enforcer.store_last_ac_state = lambda v: (writes.append(v), real(v))[1]
+        config = make_config()
+        for _ in range(4):
+            enforcer.check_ac_auto_switch(config, None)
+        self.assertEqual(writes, [ON_BATTERY])
+        self.ac = ON_AC
+        self.write_config(config)
+        enforcer.check_ac_auto_switch(config, None)
+        self.assertEqual(writes, [ON_BATTERY, ON_AC])
+
+
+class FakeMonitor:
+    """Stands in for the running ``udevadm monitor`` process.
+
+    A real pipe, not a list of lines: the watcher blocks on reading it in its
+    own thread, so a test that handed it an already-finished iterator would
+    prove nothing about whether events arrive promptly."""
+
+    def __init__(self):
+        read_fd, write_fd = os.pipe()
+        self.stdout = os.fdopen(read_fd, "r")
+        self._write = os.fdopen(write_fd, "w")
+        self.returncode = None
+
+    def emit(self, line):
+        self._write.write(line if line.endswith("\n") else line + "\n")
+        self._write.flush()
+
+    def end(self):
+        try:
+            self._write.close()
+        except OSError:
+            pass
+
+    def wait(self):
+        self.returncode = 0
+        return 0
+
+    def kill(self):
+        self.end()
+
+
+EVENT_LINE = ("UDEV  [12345.678901] change   "
+              "/devices/LNXSYSTM:00/ACPI0003:00/power_supply/ADP0 "
+              "(power_supply)")
+BANNER_LINES = ["monitor will print the received events for:",
+                "UDEV - the event which udev sends out after rule processing",
+                ""]
+
+
+class Watcher(unittest.TestCase):
+    """The udev watcher: the plug moving is acted on when it moves, not up to
+    INTERVAL_SECONDS later.
+
+    Up to a minute of nothing happening after unplugging is what "the
+    auto-switch does not work" actually looked like -- the decision was right
+    the whole time, it was just late enough to read as absent. These tests
+    drive the real watcher loop with a monitor whose events are under the
+    test's control, because the real one only speaks when the plug moves and
+    the plug is not the test's to move."""
+
+    def setUp(self):
+        self.enforcer = load_enforcer()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.config_path = os.path.join(tmp.name, "rogcontrol.json")
+        self.enforcer.CONFIG_PATH = self.config_path
+        self.enforcer.AC_STATE_PATH = os.path.join(tmp.name, "state")
+        self.ac = ON_AC
+        self.applied = threading.Event()
+        self.switched_to = []
+        self.enforcer.hardware = types.SimpleNamespace(
+            is_ac_connected=lambda: self.ac)
+        self.enforcer.log = lambda *a, **k: None
+        self.enforcer.notify = lambda *a, **k: None
+        self.enforcer.set_ppd_active_profile = lambda *a: None
+
+        def applied(config, profile, **kwargs):
+            self.switched_to.append(config.get("current_profile"))
+            self.applied.set()
+        self.enforcer.apply_full_profile = applied
+
+    def write_config(self, config):
+        with open(self.config_path, "w") as f:
+            json.dump(config, f)
+
+    def run_watcher(self, monitor_factory):
+        self.enforcer.spawn_power_supply_monitor = monitor_factory
+        thread = threading.Thread(
+            target=self.enforcer.power_supply_watcher_thread, args=(None,),
+            daemon=True)
+        thread.start()
+        return thread
+
+    # -- the point of the whole thing ----------------------------------------
+
+    def test_unplugging_switches_within_a_second_not_within_a_minute(self):
+        config = make_config()
+        self.write_config(config)
+        # Prime the remembered state the way a first cycle on mains would.
+        self.enforcer.check_ac_auto_switch(dict(config), None)
+
+        monitor = FakeMonitor()
+        self.run_watcher(lambda: monitor)
+
+        self.ac = ON_BATTERY          # the plug moves
+        started = time.monotonic()
+        monitor.emit(EVENT_LINE)
+
+        self.assertTrue(self.applied.wait(timeout=10),
+                        "the udev event did not produce a switch at all")
+        elapsed = time.monotonic() - started
+        self.assertEqual(self.switched_to, ["Quiet"])
+        # The bar is "before the poll would have got there", and the poll is
+        # a minute away; the settle delay is the only thing in the path.
+        self.assertLess(elapsed, 5)
+        self.assertLess(elapsed, self.enforcer.INTERVAL_SECONDS)
+        with open(self.config_path) as f:
+            self.assertEqual(json.load(f)["current_profile"], "Quiet")
+        monitor.end()
+
+    def test_the_banner_is_not_mistaken_for_an_event(self):
+        """udevadm prints two lines before any event. Treating those as a
+        power-source change would switch profile at startup every time."""
+        config = make_config()
+        self.write_config(config)
+        self.enforcer.check_ac_auto_switch(dict(config), None)
+        monitor = FakeMonitor()
+        self.run_watcher(lambda: monitor)
+        self.ac = ON_BATTERY
+        for line in BANNER_LINES:
+            monitor.emit(line)
+        self.assertFalse(self.applied.wait(timeout=1.5))
+        self.assertEqual(self.switched_to, [])
+        monitor.end()
+
+    def test_a_burst_of_events_produces_one_switch(self):
+        """A plug change emits an event for the mains supply and one for the
+        battery. Two switches would mean two ~16 second fan applies."""
+        config = make_config()
+        self.write_config(config)
+        self.enforcer.check_ac_auto_switch(dict(config), None)
+        monitor = FakeMonitor()
+        self.run_watcher(lambda: monitor)
+        self.ac = ON_BATTERY
+        for _ in range(3):
+            monitor.emit(EVENT_LINE)
+        self.assertTrue(self.applied.wait(timeout=10))
+        time.sleep(1.5)               # let the rest of the burst through
+        self.assertEqual(self.switched_to, ["Quiet"])
+        monitor.end()
+
+    def test_an_event_with_no_config_on_disk_is_survivable(self):
+        """The watcher reads the config itself; there may not be one yet."""
+        monitor = FakeMonitor()
+        thread = self.run_watcher(lambda: monitor)
+        monitor.emit(EVENT_LINE)
+        self.assertFalse(self.applied.wait(timeout=1.5))
+        self.assertEqual(self.switched_to, [])
+        self.assertTrue(thread.is_alive())
+        monitor.end()
+
+    # -- degrading to the poll, never failing closed -------------------------
+
+    def test_a_monitor_that_cannot_start_stops_the_thread(self):
+        """No udevadm, or a Popen that raised. Retrying cannot help, and the
+        60s poll still catches every transition."""
+        thread = self.run_watcher(lambda: None)
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+
+    def test_the_poll_still_switches_when_the_watcher_is_unavailable(self):
+        """The fallback is the whole reason a dead watcher is allowed to give
+        up quietly, so it is worth showing it actually works."""
+        thread = self.run_watcher(lambda: None)
+        thread.join(timeout=5)
+        config = make_config()
+        self.write_config(config)
+        self.assertFalse(self.enforcer.check_ac_auto_switch(config, None))
+        self.ac = ON_BATTERY
+        self.assertTrue(self.enforcer.check_ac_auto_switch(config, None))
+        self.assertEqual(self.switched_to, ["Quiet"])
+
+    def test_a_monitor_that_keeps_dying_is_given_up_on(self):
+        """The lesson already paid for once in this file: the PPD watcher
+        respawned an instantly-exiting monitor with no delay and burned ~8.5%
+        of a core. Bounded retries, then fall back to polling."""
+        self.enforcer.WATCH_BACKOFF_SECONDS = 0
+        spawns = []
+
+        def dying_monitor():
+            monitor = FakeMonitor()
+            monitor.end()            # exits before producing anything
+            spawns.append(monitor)
+            return monitor
+
+        thread = self.run_watcher(dying_monitor)
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive(), "watcher retried forever")
+        self.assertEqual(len(spawns), self.enforcer.WATCH_MAX_FAILED_STARTS)
+
+    def test_a_monitor_that_worked_and_then_ended_is_reconnected_to(self):
+        """udevd restarting is not a reason to stop watching for the rest of
+        the session."""
+        self.enforcer.WATCH_BACKOFF_SECONDS = 0
+        self.enforcer.WATCH_MIN_HEALTHY_SECONDS = 0   # every start counts as healthy
+        spawns = []
+
+        def monitor_factory():
+            monitor = FakeMonitor()
+            spawns.append(monitor)
+            if len(spawns) >= 3:
+                # Third one stays up, so the thread parks there instead of
+                # spinning and the test can stop counting.
+                return monitor
+            monitor.end()
+            return monitor
+
+        thread = self.run_watcher(monitor_factory)
+        for _ in range(50):
+            if len(spawns) >= 3:
+                break
+            time.sleep(0.1)
+        self.assertGreaterEqual(len(spawns), 3)
+        self.assertTrue(thread.is_alive())
+        spawns[-1].end()
+
+    def test_a_broken_event_does_not_take_the_watcher_down(self):
+        """Losing the watcher on one bad event would drop the machine back to
+        60s lag silently, which is the bug this replaces."""
+        boom = []
+
+        def exploding(service_name):
+            boom.append(service_name)
+            raise RuntimeError("no")
+        self.enforcer.handle_power_supply_event = exploding
+        monitor = FakeMonitor()
+        thread = self.run_watcher(lambda: monitor)
+        monitor.emit(EVENT_LINE)
+        for _ in range(50):
+            if boom:
+                break
+            time.sleep(0.1)
+        self.assertEqual(len(boom), 1)
+        self.assertTrue(thread.is_alive())
+        monitor.end()
+
+
+class MonitorCommand(unittest.TestCase):
+    """How the monitor is actually started -- the part a test with a fake
+    monitor cannot see."""
+
+    def setUp(self):
+        self.enforcer = load_enforcer()
+
+    def spawn_with(self, which):
+        calls = []
+        self.enforcer.shutil = types.SimpleNamespace(which=which)
+        self.enforcer.subprocess = types.SimpleNamespace(
+            Popen=lambda cmd, **kwargs: calls.append(cmd) or "proc",
+            PIPE=-1, DEVNULL=-3)
+        return self.enforcer.spawn_power_supply_monitor(), calls
+
+    def test_it_watches_the_power_supply_subsystem_unprivileged(self):
+        proc, calls = self.spawn_with(lambda name: "/usr/bin/" + name)
+        self.assertEqual(proc, "proc")
+        cmd = calls[0]
+        self.assertIn("udevadm", cmd)
+        self.assertIn("monitor", cmd)
+        self.assertIn("--subsystem-match=power_supply", cmd)
+        # --udev reads udev's multicast group, which an ordinary user can
+        # read. --kernel would need root, and would fail the same silent way
+        # `busctl --system monitor` does in the PPD watcher.
+        self.assertIn("--udev", cmd)
+        self.assertNotIn("--kernel", cmd)
+        # Line buffered, or a 4KB block buffer would hold an event back
+        # indefinitely -- which would look exactly like the lag being fixed.
+        self.assertEqual(cmd[:2], ["stdbuf", "-oL"])
+
+    def test_no_udevadm_means_no_monitor_rather_than_a_crash(self):
+        proc, calls = self.spawn_with(lambda name: None)
+        self.assertIsNone(proc)
+        self.assertEqual(calls, [])
+
+    def test_a_missing_stdbuf_is_not_fatal(self):
+        proc, calls = self.spawn_with(
+            lambda name: None if name == "stdbuf" else "/usr/bin/udevadm")
+        self.assertEqual(proc, "proc")
+        self.assertEqual(calls[0][0], "udevadm")
+
+    def test_the_real_monitor_starts_on_this_machine(self):
+        """Not a mock: the whole design rests on `udevadm monitor --udev`
+        being usable by the unprivileged user this service runs as, which is
+        precisely what the equivalent D-Bus call is not."""
+        proc = self.enforcer.spawn_power_supply_monitor()
+        if proc is None:
+            self.skipTest("no udevadm on this machine")
+        try:
+            # Still running a moment later, i.e. it did not exit on a
+            # permission error the way `busctl --system monitor` does.
+            time.sleep(0.5)
+            self.assertIsNone(proc.poll())
+        finally:
+            proc.kill()
+            proc.wait()
+            proc.stdout.close()
+
+
+class Cadence(unittest.TestCase):
+    """The 60 second cycle stays what it is -- shortening it would make
+    everything else in the loop run 60x more often for one feature's sake.
+    It is the fallback now; the udev watcher is the fast path."""
+
+    def test_the_cycle_is_unchanged(self):
         self.assertEqual(load_enforcer().INTERVAL_SECONDS, 60)
+
+    def test_the_fast_path_does_not_depend_on_the_cycle(self):
+        enforcer = load_enforcer()
+        self.assertTrue(callable(enforcer.power_supply_watcher_thread))
+        self.assertLess(enforcer.POWER_SUPPLY_SETTLE_SECONDS,
+                        enforcer.INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":

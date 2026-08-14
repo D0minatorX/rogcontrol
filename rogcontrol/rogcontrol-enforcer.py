@@ -34,12 +34,18 @@ waiting for the next 15s poll.
 AC/BATTERY AUTO-SWITCH: the config's ac_profile/battery_profile are acted
 on here too. They used to be checked by the GTK3 window's own poll loop,
 which meant unplugging the laptop with the app closed did nothing at all --
-and the app is closed most of the time. See the section further down.
+and the app is closed most of the time. It then moved into this service's
+60s cycle, which fixed that but made every switch land up to a minute after
+the plug moved -- long enough to read as "auto-switching does not work".
+It now has its own udev watcher for the plug moving, plus the 60s cycle as
+the fallback, plus a remembered power source that survives a restart. See
+the section further down.
 """
 
 import glob
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -463,19 +469,84 @@ def adopt_external_ppd_mode(config, actual_mode, service_name):
 # app closed did nothing at all. It belongs here instead -- this service is
 # always running, and it already owns "apply the profile the config names".
 #
-# The power source is sampled once per cycle, so a switch lands up to
-# INTERVAL_SECONDS (60s) after the plug moves. That delay is deliberate:
-# reacting faster would mean either a second poll loop or a udev/upower
-# subscription, and the thing being changed takes ~16 seconds to apply
-# anyway (each fan channel needs an 8 second gap from the next), so a minute
-# of granularity costs nothing a user can feel.
+# The power source used to be sampled once per cycle and nowhere else, so a
+# switch landed up to INTERVAL_SECONDS (60s) after the plug moved. That was
+# argued for on the grounds that the apply takes ~16 seconds anyway so a
+# minute of granularity costs nothing -- which is wrong about the part that
+# matters. Sixteen seconds of fans ramping is feedback that something
+# happened; up to sixty seconds of *nothing* happening is indistinguishable
+# from a broken feature, and that is exactly how it was reported. So the plug
+# moving is now watched for directly (power_supply_watcher_thread below) and
+# the cycle is kept only as the fallback.
+#
+# Both paths go through check_ac_auto_switch, and _ac_lock serialises them:
+# a switch holds the lock for the whole ~16 second apply, so the watcher and
+# the cycle can never be halfway through two different profiles at once.
+_ac_lock = threading.Lock()
 
-# Whether the machine was on mains last time we looked. None until the first
-# sample, which is what stops startup from counting as a transition -- the
-# profile the config names is applied at startup regardless, and treating
-# "we have just started up on battery" as an unplug would override a profile
-# the user picked deliberately.
+# Whether the machine was on mains last time we looked, and where that is
+# remembered across restarts.
+#
+# WHY PERSIST IT: this was a plain in-memory global starting at None, and the
+# first sample after any start was only recorded, never acted on. The service
+# is Restart=always and every install restarts it, so "start while on battery
+# with the AC profile active" left a real mismatch uncorrected until the plug
+# next moved. Acting on the first sample instead would be worse -- a restart
+# would then override a profile the user had deliberately picked by hand.
+#
+# Remembering the power source on disk dissolves the tension rather than
+# picking a side: a restart is no longer confused with a transition, because
+# there is something to compare against. Plain restart, power source
+# unchanged -> previous == current -> nothing happens, the user's manual
+# choice stands. Service was down (or the machine was off) while the plug
+# actually moved -> previous != current -> the change is acted on, which is
+# the correct answer for a change that really did happen. Genuinely first
+# ever run, no file yet -> previous is None -> record only, act on the next
+# one, which stays the conservative default for the one case where nothing
+# can be inferred.
+#
+# It is written only when the value changes, not once a cycle: this is a
+# 1440-writes-a-day loop otherwise, for a fact that changes twice a day.
 _last_ac_state = None
+AC_STATE_PATH = os.path.expanduser(
+    "~/.local/share/rogcontrol/last-power-source")
+
+
+def load_last_ac_state():
+    """The power source this service saw last time it ran, or None if there
+    is no usable record (first run, wiped state dir, unreadable file).
+
+    None is the safe answer for every failure: it means "record the next
+    sample, act on the one after", which is what the code did unconditionally
+    before this file existed."""
+    try:
+        with open(AC_STATE_PATH) as f:
+            value = f.read().strip()
+    except OSError:
+        return None
+    if value == "AC":
+        return True
+    if value == "battery":
+        return False
+    return None
+
+
+def store_last_ac_state(on_ac):
+    """Remember the power source for the next start. Best effort.
+
+    Written via a temp file and rename so a start that races a write reads
+    either the old value or the new one, never a half-written one -- a
+    truncated file would parse as None and silently cost one transition.
+    Words rather than 0/1 so the file is readable when someone is trying to
+    work out why a switch did or did not happen."""
+    try:
+        os.makedirs(os.path.dirname(AC_STATE_PATH), exist_ok=True)
+        tmp = AC_STATE_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("AC" if on_ac else "battery")
+        os.replace(tmp, AC_STATE_PATH)
+    except OSError as e:
+        log(f"could not remember power source: {e}", "WARN", dedupe_key="acstate")
 
 
 def ac_switch_target(previous_ac, current_ac, config):
@@ -487,8 +558,11 @@ def ac_switch_target(previous_ac, current_ac, config):
 
     * ``current_ac`` None means there is no Mains supply to read (a desktop,
       or a kernel that does not expose one). Nothing can be inferred.
-    * ``previous_ac`` None is the first sample. Remember it, act on the next
-      one; see _last_ac_state.
+    * ``previous_ac`` None means nothing is known about the power source
+      yet -- the genuinely-first run, before anything was ever recorded.
+      Remember it, act on the next one; see _last_ac_state. Note this is now
+      rare rather than once-per-restart, because the previous state is loaded
+      back from disk at startup.
     * Unchanged state is the overwhelmingly common case -- this runs every
       60 seconds and the plug moves maybe twice a day. Acting on it would
       re-apply the auto-switch profile over anything the user chose in
@@ -516,16 +590,35 @@ def ac_switch_target(previous_ac, current_ac, config):
     return target
 
 
-def check_ac_auto_switch(config, service_name):
+def check_ac_auto_switch(config, service_name, trigger="poll"):
     """Sample the power source and switch profile if it has just changed.
+
+    Called from two places -- the udev watcher the moment the plug moves, and
+    the periodic cycle as the fallback -- so it takes _ac_lock for its whole
+    body, apply included. Without that, a udev event arriving while the cycle
+    was mid-apply would start a second ~16 second apply of a different profile
+    over the top of the first, and the fan channels would be interleaved.
+    Blocking the cycle behind the watcher is the right way round: the watcher
+    is reacting to something that actually happened.
+
+    ``trigger`` is only for the log, and only so that "the switch was late"
+    and "the switch never fired at all" stop looking the same in there.
 
     Returns True if a profile was switched and applied, so the caller knows
     the hardware has already been dealt with this cycle."""
+    with _ac_lock:
+        return _check_ac_auto_switch(config, service_name, trigger)
+
+
+def _check_ac_auto_switch(config, service_name, trigger):
     global _last_ac_state
     current_ac = hardware.is_ac_connected()
     previous_ac = _last_ac_state
-    if current_ac is not None:
+    if current_ac is not None and current_ac != _last_ac_state:
         _last_ac_state = current_ac
+        # Only on a change: this runs every cycle and on every udev event,
+        # and the answer is the same almost every time.
+        store_last_ac_state(current_ac)
 
     target = ac_switch_target(previous_ac, current_ac, config)
     if target is None:
@@ -555,10 +648,17 @@ def check_ac_auto_switch(config, service_name):
     if target not in (config.get("profiles") or {}):
         return False
     if target == config.get("current_profile"):
-        log(f"power source changed to {source} -- already on '{target}'")
+        log(f"power source changed to {source} (via {trigger}) -- "
+            f"already on profile '{target}', nothing to do", "INFO")
         return False
 
-    log(f"power source changed to {source} -- switching profile to '{target}'")
+    # INFO, and naming both the source and the profile, because this is the
+    # one line that answers "did the auto-switch fire?". The last time this
+    # was reported broken the log had nothing in it at all for the feature,
+    # so there was no way to tell a wrong decision from a decision never
+    # reached.
+    log(f"power source changed to {source} (via {trigger}) -- "
+        f"switching profile to '{target}'", "INFO")
     config["current_profile"] = target
     save_config(config, "auto-switched profile")
 
@@ -585,6 +685,156 @@ def check_ac_auto_switch(config, service_name):
     apply_full_profile(config, (config.get("profiles") or {}).get(target),
                        force_fan_reapply=True, full=True)
     return True
+
+
+# -- reacting to the plug the moment it moves ---------------------------------
+#
+# WHY UDEV, and not the two obvious alternatives:
+#
+# * UPower's PropertiesChanged on OnBattery would work and is the tidier API,
+#   but it adds a dependency on a daemon that need not be installed. This
+#   service already talks to power-profiles-daemon, and it is tempting to
+#   assume that implies UPower -- it does not; PPD does not require it. A
+#   watcher that silently never fires because a package is absent is the
+#   failure mode being fixed here, not one to reintroduce.
+#
+# * Watching /sys/.../online with inotify cannot work at all. sysfs does not
+#   raise inotify events when an attribute's value changes, and the
+#   power_supply core does not sysfs_notify() that file either, so a poll() or
+#   an inotify watch on it would sit there forever looking healthy and never
+#   fire once. That is the worst of the three failure modes: undetectable.
+#
+# udev is what is left, and it is also the most direct: the kernel's
+# power_supply driver emits a change uevent for exactly this event, and the
+# `online` file this service already reads is written by the same driver in
+# the same operation. Same source of truth, no new daemon, and udev is present
+# on any system that can run this service at all.
+#
+# Unprivileged is the deciding practical detail. The PPD watcher below wanted
+# `busctl --system monitor`, which needs root and quietly does nothing without
+# it; `udevadm monitor --udev` reads udev's multicast group, which is readable
+# by ordinary users -- verified on this machine as the user this service runs
+# as.
+
+# The uevent is emitted around the same moment the driver updates `online`,
+# and a plug also produces a small burst of events (the mains supply and the
+# battery both change). A short settle both avoids reading mid-update and
+# collapses the burst into effectively one check -- the rest find nothing
+# changed and cost a sysfs read each.
+POWER_SUPPLY_SETTLE_SECONDS = 0.5
+
+# Restart policy for the monitor, and the whole of the lesson from the PPD
+# watcher below: an earlier version of that thread respawned a monitor that
+# exited instantly, with no delay, and burned ~8.5% of a core doing it. So:
+# never respawn without backing off, and give up entirely on a monitor that
+# will not stay up, because a watcher that cannot run is not an emergency --
+# INTERVAL_SECONDS polling still catches every transition, just later.
+WATCH_BACKOFF_SECONDS = 5
+WATCH_MIN_HEALTHY_SECONDS = 30
+WATCH_MAX_FAILED_STARTS = 5
+
+
+def spawn_power_supply_monitor():
+    """A running `udevadm monitor` on the power_supply subsystem, or None if
+    one cannot be started.
+
+    None is a supported answer, not an error: every caller falls back to the
+    periodic poll. Split out from the thread below mostly so the thread can be
+    tested against a monitor whose events are under the test's control --
+    the real one only speaks when the plug moves.
+
+    stdbuf, when present, guarantees line buffering. udevadm was measured to
+    flush its own output promptly through a pipe here, so this is belt and
+    braces against a build that does not -- full 4KB block buffering would
+    hold an event line back for hours, which would look exactly like the lag
+    this whole watcher exists to remove."""
+    if shutil.which("udevadm") is None:
+        return None
+    cmd = ["udevadm", "monitor", "--udev", "--subsystem-match=power_supply"]
+    if shutil.which("stdbuf") is not None:
+        cmd = ["stdbuf", "-oL"] + cmd
+    try:
+        return subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True)
+    except OSError:
+        return None
+
+
+def handle_power_supply_event(service_name):
+    """One power_supply uevent: re-read the config and re-check the plug.
+
+    The config is read here rather than passed in because this thread has no
+    cycle to inherit one from, and the file is the only thing that knows which
+    profile is current."""
+    if not os.path.exists(CONFIG_PATH):
+        return False
+    try:
+        with open(CONFIG_PATH) as f:
+            config = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(config, dict):
+        return False
+    return check_ac_auto_switch(config, service_name, trigger="udev")
+
+
+def power_supply_watcher_thread(service_name):
+    """Runs in the background for the life of the service. Turns "the plug
+    moved" into a profile switch straight away instead of up to
+    INTERVAL_SECONDS later.
+
+    Everything here degrades to the poll rather than failing closed: no
+    udevadm, a monitor that will not start, a monitor that keeps dying -- all
+    end this thread quietly and leave the cycle in main() doing the same job
+    a minute at a time."""
+    failed_starts = 0
+    while True:
+        started = time.monotonic()
+        proc = spawn_power_supply_monitor()
+        if proc is None:
+            log("no usable udevadm -- AC/battery switching falls back to the "
+                f"{INTERVAL_SECONDS}s poll", "WARN", dedupe_key="acwatch")
+            return
+        try:
+            for line in proc.stdout:
+                # udevadm prints a two-line banner first; only real events
+                # name the subsystem.
+                if "power_supply" not in line:
+                    continue
+                if POWER_SUPPLY_SETTLE_SECONDS:
+                    time.sleep(POWER_SUPPLY_SETTLE_SECONDS)
+                try:
+                    handle_power_supply_event(service_name)
+                except Exception as e:
+                    # One bad event must not take the watcher down -- that
+                    # would silently drop the machine back to 60s lag.
+                    log(f"power-supply watcher event failed: {e}", "WARN",
+                        dedupe_key="acwatchev")
+            proc.wait()
+        except Exception as e:
+            log(f"power-supply watcher error: {e}", "WARN",
+                dedupe_key="acwatch")
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+        # Only reached when the monitor ended. A monitor that ran for a decent
+        # while and then stopped (udevd restarted, say) is worth reconnecting
+        # to; one that dies immediately, every time, is not going to start
+        # working, and retrying it forever is the tight loop this file has
+        # already paid for once.
+        if time.monotonic() - started < WATCH_MIN_HEALTHY_SECONDS:
+            failed_starts += 1
+        else:
+            failed_starts = 0
+        if failed_starts >= WATCH_MAX_FAILED_STARTS:
+            log(f"udev power-supply monitor would not stay up "
+                f"({failed_starts} short-lived starts) -- giving up, "
+                f"AC/battery switching falls back to the {INTERVAL_SECONDS}s "
+                "poll", "WARN", dedupe_key="acwatch")
+            return
+        time.sleep(WATCH_BACKOFF_SECONDS)
 
 
 def ppd_watcher_thread():
@@ -766,6 +1016,20 @@ def main():
 
     ppd_service_name = get_ppd_service_name()
 
+    # Pick the power source back up from where the last run left it, BEFORE
+    # the first cycle samples it. This is what makes the first cycle able to
+    # tell "the service restarted" (same source: do nothing, leave the user's
+    # profile alone) from "the plug moved while the service was down or the
+    # machine was off" (different source: switch, it really did change).
+    global _last_ac_state
+    _last_ac_state = load_last_ac_state()
+
+    # And react to the plug the moment it moves, rather than up to
+    # INTERVAL_SECONDS later. Falls back to the cycle below if it cannot run.
+    ac_watcher = threading.Thread(target=power_supply_watcher_thread,
+                                  args=(ppd_service_name,), daemon=True)
+    ac_watcher.start()
+
     while True:
         try:
             if os.path.exists(CONFIG_PATH):
@@ -775,7 +1039,14 @@ def main():
                 # First, because it can change which profile the rest of this
                 # cycle is about. It applies the new profile itself when it
                 # switches.
-                switched = check_ac_auto_switch(config, ppd_service_name)
+                #
+                # This is the fallback path now -- the udev watcher normally
+                # gets there within a second of the plug moving -- but it is
+                # still what catches a transition on a system where the
+                # watcher could not start, and it is what acts on a plug that
+                # moved while this service was not running.
+                switched = check_ac_auto_switch(config, ppd_service_name,
+                                                trigger="poll")
 
                 current_profile_name = config.get("current_profile")
                 profile = config.get("profiles", {}).get(current_profile_name)
