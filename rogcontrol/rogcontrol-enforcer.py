@@ -502,6 +502,32 @@ def check_ac_auto_switch(config, service_name):
         return False
 
     source = "AC" if current_ac else "battery"
+
+    # Re-read before writing back, exactly as adopt_external_ppd_mode does.
+    # ``config`` was read at the top of this cycle and the window, the tray
+    # or the hotkey cycler can have written the file since; saving the stale
+    # copy would throw away whatever they changed -- a curve the user had
+    # just edited, a charge limit, a keyboard colour. Updated in place, not
+    # rebound, because the caller keeps using this dict for the rest of the
+    # cycle.
+    try:
+        with open(CONFIG_PATH) as f:
+            fresh = json.load(f)
+        if isinstance(fresh, dict):
+            config.clear()
+            config.update(fresh)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    # And re-decide against what is actually on disk now: the user may have
+    # chosen this very profile in the window while we were reading. Applying
+    # it again would push all three fan curves for nothing.
+    if target not in (config.get("profiles") or {}):
+        return False
+    if target == config.get("current_profile"):
+        log(f"power source changed to {source} -- already on '{target}'")
+        return False
+
     log(f"power source changed to {source} -- switching profile to '{target}'")
     config["current_profile"] = target
     save_config(config, "auto-switched profile")

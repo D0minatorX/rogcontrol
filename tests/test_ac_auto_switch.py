@@ -248,6 +248,45 @@ class Cycle(unittest.TestCase):
         self.assertEqual(config["current_profile"], "Mine")
         self.assertEqual(self.modes, [])
 
+    def test_a_write_from_the_window_is_not_clobbered_by_the_switch(self):
+        """``config`` was read at the top of the cycle. The window, the tray
+        and the hotkey cycler can all have written the file since, and
+        saving the stale copy back would throw their change away."""
+        config = make_config()
+        self.cycle(config)
+        # Meanwhile, the window saves an edited curve and a charge limit.
+        edited = make_config()
+        edited["charge_limit"] = 61
+        edited["profiles"]["Performance"] = {"fans": {"1": [[40, 55]]}}
+        with open(self.config_path, "w") as f:
+            json.dump(edited, f)
+
+        self.ac = ON_AC
+        self.assertTrue(self.cycle(config))
+        with open(self.config_path) as f:
+            saved = json.load(f)
+        self.assertEqual(saved["charge_limit"], 61)
+        self.assertEqual(saved["profiles"]["Performance"],
+                         {"fans": {"1": [[40, 55]]}})
+        self.assertEqual(saved["current_profile"], "Performance")
+        # And the caller's dict is the fresh one, since the rest of the cycle
+        # goes on using it.
+        self.assertEqual(config["charge_limit"], 61)
+
+    def test_a_profile_chosen_elsewhere_is_not_re_applied(self):
+        """The user picked the same profile in the window during this cycle.
+        Applying it again would push all three fan curves for nothing."""
+        config = make_config()
+        self.cycle(config)
+        already = make_config(current_profile="Performance")
+        with open(self.config_path, "w") as f:
+            json.dump(already, f)
+
+        self.ac = ON_AC
+        self.assertFalse(self.cycle(config))
+        self.assertEqual(self.applied, [])
+        self.assertEqual(self.modes, [])
+
     def test_no_power_profiles_daemon_still_switches(self):
         config = make_config()
         self.cycle(config)

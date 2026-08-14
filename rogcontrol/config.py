@@ -13,7 +13,9 @@ a config that cannot be parsed is moved aside rather than replaced.
 
 import json
 import os
+import stat
 import sys
+import tempfile
 import time
 
 from .profiles import DEFAULT_PROFILES, tailored_default_profiles
@@ -212,17 +214,31 @@ def save_config(cfg, path=None):
     serialise left the user with an empty or half-written config and no
     profiles."""
     path = CONFIG_PATH if path is None else path
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    tmp = f"{path}.tmp"
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    # A unique temporary file, not a fixed "<path>.tmp". Five processes save
+    # this config -- the window, the tray, the hotkey cycler, the boot apply
+    # and the enforcer -- and two of them saving at once would open, truncate
+    # and write the same temp file, then rename the interleaved result over
+    # the user's config. mkstemp in the same directory keeps the rename on
+    # one filesystem, which is what makes it atomic.
+    fd, tmp = tempfile.mkstemp(dir=directory,
+                               prefix=os.path.basename(path) + ".",
+                               suffix=".tmp")
     try:
-        with open(tmp, "w") as f:
+        with os.fdopen(fd, "w") as f:
             json.dump(cfg, f, indent=2)
             # The rename is only atomic with respect to the file's contents
             # if those contents have actually reached the disk first.
             f.flush()
             os.fsync(f.fileno())
+        # mkstemp creates 0600. Carry the real config's own permissions over
+        # so saving cannot quietly change them; a config that does not exist
+        # yet keeps the private 0600, which is the safer of the two.
+        try:
+            os.chmod(tmp, stat.S_IMODE(os.stat(path).st_mode))
+        except OSError:
+            pass
         os.replace(tmp, path)
     except BaseException:
         # Never leave a half-written .tmp sitting next to the real config.

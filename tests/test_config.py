@@ -10,6 +10,7 @@ default at call time rather than binding it in the signature.
 import json
 import os
 import shutil
+import stat
 import tempfile
 import unittest
 from unittest import mock
@@ -210,10 +211,44 @@ class SaveAndLoad(unittest.TestCase):
         self.assertEqual(config.load_config(self.path)["profiles"].keys(),
                          cfg["profiles"].keys())
 
-    def test_save_is_atomic(self):
+    def test_save_leaves_no_temporary_file_behind(self):
         cfg = config.migrate_config({})
         config.save_config(cfg, self.path)
-        self.assertFalse(os.path.exists(self.path + ".tmp"))
+        self.assertEqual(os.listdir(self.dir), ["rogcontrol.json"])
+
+    def test_two_saves_at_once_do_not_share_a_temporary_file(self):
+        # Five processes save this config. With a fixed "<path>.tmp" the
+        # second save opened and truncated the file the first was still
+        # writing, and whichever renamed last put the interleaved result over
+        # the user's profiles.
+        cfg = config.migrate_config({})
+        seen = []
+        real_replace = os.replace
+
+        def capture(src, dst):
+            seen.append(src)
+            # Save again from "another process" while this one is mid-save,
+            # at the exact moment the two would collide.
+            if len(seen) == 1:
+                config.save_config(cfg, self.path)
+            return real_replace(src, dst)
+
+        with mock.patch.object(os, "replace", capture):
+            config.save_config(cfg, self.path)
+        self.assertEqual(len(seen), 2)
+        self.assertNotEqual(seen[0], seen[1])
+        self.assertEqual(os.listdir(self.dir), ["rogcontrol.json"])
+        with open(self.path) as f:
+            self.assertEqual(json.load(f), cfg)
+
+    def test_saving_keeps_the_permissions_the_config_already_had(self):
+        # mkstemp creates 0600; an existing config must not silently change
+        # mode just because it was saved.
+        cfg = config.migrate_config({})
+        config.save_config(cfg, self.path)
+        os.chmod(self.path, 0o644)
+        config.save_config(cfg, self.path)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o644)
 
     def test_corrupt_config_is_preserved_not_replaced(self):
         with open(self.path, "w") as f:
