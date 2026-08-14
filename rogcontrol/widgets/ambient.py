@@ -252,18 +252,29 @@ class AmbientSampler:
             self.on_status(f"Ambient: capture failed ({e.message})")
             self.stop()
             return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._sample_loop, daemon=True)
+        # A fresh event per pipeline, and both it and the sink are handed to
+        # the thread rather than read off ``self``. The sampler then owns
+        # everything it touches: stop() can clear the fields, and a thread
+        # that outlived its join still winds itself down against the event it
+        # was started with instead of being resurrected by the next start.
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._sample_loop, args=(self._appsink, self._stop),
+            daemon=True)
         self._thread.start()
         self.on_status("Ambient: following the screen")
 
-    def _sample_loop(self):
+    def _sample_loop(self, appsink, stop):
         gi.require_version("Gst", "1.0")
         from gi.repository import Gst
         last = None
-        while not self._stop.is_set():
-            sample = self._appsink.emit("try-pull-sample", Gst.SECOND)
+        while not stop.is_set():
+            sample = appsink.emit("try-pull-sample", Gst.SECOND)
             if sample is None:
+                # Normally a one second timeout on a stream that has nothing
+                # new. On a pipeline that has been shut down underneath us it
+                # returns at once, so wait rather than spin.
+                stop.wait(AMBIENT_INTERVAL_S)
                 continue
             colors = self._sample_to_zones(sample)
             if colors is None:
@@ -271,7 +282,7 @@ class AmbientSampler:
             if kbdcolor.changed_enough(colors, last):
                 last = colors
                 self.on_colors(colors)
-            self._stop.wait(AMBIENT_INTERVAL_S)
+            stop.wait(AMBIENT_INTERVAL_S)
 
     def _sample_to_zones(self, sample):
         """Average each vertical band of the frame into one colour."""
@@ -293,6 +304,15 @@ class AmbientSampler:
         return kbdcolor.zones_from_frame(data, width, height, stride)
 
     def stop(self):
+        """Tear the capture down. Safe to call twice, and safe to call while
+        the sampler is mid-frame.
+
+        Order matters: the thread is asked to stop and joined *before* the
+        pipeline and the sink are dropped. It used to clear ``_appsink``
+        with the sampler possibly still blocked inside ``try-pull-sample``,
+        so the very next iteration called ``.emit`` on None. The sampler now
+        holds its own references (see _build_pipeline), which makes that
+        impossible even when the join times out."""
         self._stop.set()
         if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=2)
