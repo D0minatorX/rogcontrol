@@ -12,10 +12,19 @@ list of one, and a picker offering the other two would be offering two ways
 to fail.
 
 The sync row exists because this app and the OS both think they own the
-power mode. Selecting a profile sets power-profiles-daemon to match, but
-GNOME's power menu can set it back, and until the enforcer notices, the
-machine is running one thing and reporting another. Rather than hide that,
-the page names both sides and says whether they agree.
+power mode. Selecting a profile sets power-profiles-daemon to match (the
+window's profile switch pushes the mode before anything else, because
+changing it is what wipes the EC's fan curve). GNOME's power menu can set
+it back, and until the enforcer notices, the machine is running one thing
+and reporting another. Rather than hide that, the page names both sides and
+says whether they agree.
+
+What the enforcer then does is adopt, not revert: an externally set mode is
+treated as a request to switch profile, so the disagreement is resolved by
+this app moving to the profile that mode maps to. The row used to tell the
+user to "re-select the profile to push it back", which was never possible
+-- selecting the profile that is already current is a no-op in the switcher,
+by design, since it would otherwise cost a full ~20 second re-apply.
 """
 
 import gi
@@ -45,9 +54,10 @@ GPU_MODE_SUBTITLE = (
 
 SYNC_DESCRIPTION = (
     "This app and the OS both hold an opinion about the power mode. "
-    "Selecting a profile sets the OS mode to match; anything else that "
-    "changes it — GNOME's power menu, a keyboard key — leaves the two "
-    "disagreeing until the background enforcer notices."
+    "Selecting a profile here sets the OS mode to match. Changing it the "
+    "other way — GNOME's power menu, a keyboard key — is taken as a request "
+    "to switch profile: the background enforcer picks it up within a minute "
+    "and moves this app to the profile that mode maps to."
 )
 
 
@@ -319,7 +329,8 @@ class SystemPage(Adw.PreferencesPage):
             self.sync_value.add_css_class("warning")
             self.sync_row.set_subtitle(
                 f"“{name}” expects {expected}, but the OS is on "
-                f"{power_mode} — re-select the profile to push it back")
+                f"{power_mode} — the enforcer settles this within a minute "
+                f"by switching to the profile {power_mode} maps to")
 
     def _reload_log(self):
         text = hardware.read_log_tail(LOG_LINES)

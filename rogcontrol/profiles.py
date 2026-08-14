@@ -21,9 +21,10 @@ import json
 # than one profile may map to the same mode -- the two Balanced profiles
 # differ in EPP, which PPD has no concept of.
 #
-# Control is one-way (app -> OS): selecting a profile sets PPD's mode to
-# match; the enforcer service is what actively reverts PPD if it is changed
-# from elsewhere.
+# Selecting a profile sets PPD's mode to match. The reverse direction is not
+# a revert: the enforcer treats a mode set from elsewhere as a request to
+# switch profile and adopts it (see PPD_MODE_TO_PROFILE below), and only
+# forces PPD back when the mode maps to no profile that still exists.
 PROFILE_TO_PPD_MODE = {
     "Performance": "performance",
     "Balanced Performance": "balanced",
