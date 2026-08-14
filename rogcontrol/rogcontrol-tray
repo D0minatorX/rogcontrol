@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""The system tray icon, as a separate GTK3 process on purpose.
+
+This cannot live inside the GTK4 app. Both AppIndicator bindings --
+AyatanaAppIndicator3 and the older AppIndicator3 -- link against Gtk-3.0,
+and GTK 3 and GTK 4 cannot be loaded into one process: the second
+gi.require_version fails, and forcing it past that segfaults. So the tray is
+a sidecar. It talks to the app the same way a keyboard shortcut does, by
+running a command, and to the rest of the system through the config file --
+which is the one thing every part of ROG Control already agrees on.
+
+That split is also why this file holds no hardware code at all. Applying a
+profile is rogcontrol-apply.py's job; this only decides which profile the
+config names and asks for it to be applied.
+"""
+
+import os
+import signal
+import subprocess
+import sys
+
+# The shared modules live next to this script's package in the repo, and
+# under ~/.local/lib once installed (this script itself is installed into
+# ~/.local/bin, where there is no package beside it). Try the repo first so
+# that running from a checkout tests the checkout rather than whatever is
+# installed.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
+    if os.path.isfile(os.path.join(_candidate, "rogcontrol", "__init__.py")):
+        if _candidate not in sys.path:
+            sys.path.insert(0, _candidate)
+        break
+
+import gi  # noqa: E402
+
+gi.require_version("Gtk", "3.0")
+try:
+    gi.require_version("AppIndicator3", "0.1")
+    from gi.repository import AppIndicator3 as AppIndicator
+except (ImportError, ValueError):
+    gi.require_version("AyatanaAppIndicator3", "0.1")
+    from gi.repository import AyatanaAppIndicator3 as AppIndicator
+
+from gi.repository import GLib, Gtk  # noqa: E402
+
+try:
+    # PyGObject 3.52 moved the unix signal helpers into their own namespace
+    # and deprecated the GLib ones, which now print a warning on every
+    # start. Older versions have no GLibUnix at all, hence both paths.
+    gi.require_version("GLibUnix", "2.0")
+    from gi.repository import GLibUnix
+
+    add_unix_signal = GLibUnix.signal_add
+except (ImportError, ValueError):
+    add_unix_signal = GLib.unix_signal_add
+
+from rogcontrol import config as config_mod  # noqa: E402
+from rogcontrol.profiles import DEFAULT_PROFILES  # noqa: E402
+
+# How often the config is re-read. The tray is not the only thing that
+# changes the active profile -- the window does, the hotkey cycler does, and
+# the enforcer does when it adopts an OS power-mode change or the power
+# source changes -- and a tray showing the wrong profile is worse than no
+# tray at all. Polling a small local file this often is free.
+POLL_SECONDS = 5
+
+# Absolute path rather than an icon-theme name lookup ("rogcontrol"): a name
+# lookup depends on the icon cache and can resolve to a stale leftover icon
+# if one still sits in the theme directory under the same name.
+ICON_PATH = os.path.expanduser(
+    "~/.local/share/icons/hicolor/256x256/apps/rogcontrol.png")
+
+
+def apply_command():
+    """How to re-apply the config to the hardware.
+
+    rogcontrol-apply.py sits beside this script in both layouts -- next to
+    it in the repo, next to it in ~/.local/bin once installed -- so a
+    sibling lookup covers both without a special case."""
+    sibling = os.path.join(_HERE, "rogcontrol-apply.py")
+    installed = os.path.expanduser("~/.local/bin/rogcontrol-apply.py")
+    script = sibling if os.path.exists(sibling) else installed
+    return [sys.executable, script]
+
+
+def app_command(flag):
+    """How to talk to the window, with the given flag.
+
+    The installed launcher if there is one; otherwise this checkout's
+    package, which is what makes the tray usable before anything has been
+    installed. Returns (argv, env)."""
+    env = dict(os.environ)
+    launcher = GLib.find_program_in_path("rogcontrol")
+    if launcher:
+        return [launcher, flag], env
+    package_root = os.path.dirname(_HERE)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (f"{package_root}:{existing}" if existing
+                         else package_root)
+    return [sys.executable, "-m", "rogcontrol", flag], env
+
+
+def spawn(argv, env=None):
+    """Start a command and forget about it.
+
+    Nothing here is worth waiting for: rogcontrol-apply.py takes over a
+    minute (each fan channel needs an 8 second gap from the next), and a
+    tray menu that blocks while a profile applies is a tray menu that looks
+    broken. start_new_session so the child is not killed with the tray."""
+    try:
+        subprocess.Popen(argv, env=env, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        print(f"rogcontrol-tray: could not run {argv[0]}: {e}",
+              file=sys.stderr)
+
+
+class Tray:
+    def __init__(self):
+        self.config = config_mod.load_config()
+        # Set while the menu is being pointed at a profile chosen somewhere
+        # else. RadioMenuItem fires "toggled" for the item being deselected
+        # as well as the one being selected, and again when we mirror an
+        # external change back into the menu -- without this guard, following
+        # a change made in the window would re-trigger a full apply here.
+        self._updating = False
+        self._items = {}
+        self._shown = []
+        self._none_item = None
+
+        icon = ICON_PATH if os.path.exists(ICON_PATH) else "rogcontrol"
+        self.indicator = AppIndicator.Indicator.new(
+            "rogcontrol", icon, AppIndicator.IndicatorCategory.HARDWARE)
+        self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
+        self.indicator.set_title("ROG Control")
+        self._build_menu()
+        GLib.timeout_add_seconds(POLL_SECONDS, self._poll)
+
+    # -- menu ----------------------------------------------------------------
+
+    def _stock_profiles(self):
+        """The profiles to offer, in config order.
+
+        Only the built-in ones: a tray menu is a switcher, not a profile
+        manager, and a long list of custom profiles would push Quit off the
+        screen. Custom profiles stay switchable in the window."""
+        return [name for name in self.config.get("profiles", {})
+                if name in DEFAULT_PROFILES]
+
+    def _build_menu(self):
+        self._shown = self._stock_profiles()
+        self._items = {}
+        self._none_item = None
+        current = self.config.get("current_profile")
+
+        menu = Gtk.Menu()
+        group = None
+        for name in self._shown:
+            item = Gtk.RadioMenuItem.new_with_label_from_widget(group, name)
+            if group is None:
+                group = item
+            item.set_active(name == current)
+            # Connected after set_active, so building the menu does not look
+            # like the user picking a profile.
+            item.connect("toggled", self._on_profile_toggled, name)
+            menu.append(item)
+            self._items[name] = item
+        if self._items:
+            # A radio group always has exactly one member selected. With the
+            # user on a profile they invented -- which this menu
+            # deliberately does not list -- nothing here matches, and GTK
+            # marks the first item anyway: the tray would claim "Quiet"
+            # while something else was running. This member is never added
+            # to the menu, so selecting it leaves every visible item
+            # unmarked, which is the honest answer.
+            self._none_item = Gtk.RadioMenuItem.new_with_label_from_widget(
+                group, "")
+            self._sync_menu(current)
+            menu.append(Gtk.SeparatorMenuItem())
+
+        show_item = Gtk.MenuItem(label="Show window")
+        show_item.connect("activate", self._on_show)
+        menu.append(show_item)
+
+        quit_item = Gtk.MenuItem(label="Quit")
+        quit_item.connect("activate", self._on_quit)
+        menu.append(quit_item)
+
+        menu.show_all()
+        self.indicator.set_menu(menu)
+        # Held on to deliberately. This is the only Python reference to the
+        # menu and its items; dropping it on a rebuild would leave the
+        # handlers connected to objects Python is free to collect.
+        self.menu = menu
+
+    def _sync_menu(self, current):
+        """Point the radio at ``current`` without that looking like a user
+        selection. A profile that is not in the menu selects nothing."""
+        item = self._items.get(current, self._none_item)
+        if item is None or item.get_active():
+            return
+        self._updating = True
+        try:
+            item.set_active(True)
+        finally:
+            self._updating = False
+
+    # -- events --------------------------------------------------------------
+
+    def _on_profile_toggled(self, item, name):
+        if self._updating or not item.get_active():
+            return
+        # Re-read rather than trusting the copy in memory: it is up to
+        # POLL_SECONDS old, and writing it back would undo anything the
+        # window or the enforcer changed in that window.
+        self.config = config_mod.load_config()
+        if name == self.config.get("current_profile"):
+            return
+        self.config["current_profile"] = name
+        config_mod.save_config(self.config)
+        # Applied now rather than left to the enforcer, which would take up
+        # to its 60 second cycle to notice -- a tray switch has to feel
+        # immediate or it reads as having done nothing.
+        spawn(apply_command())
+
+    def _on_show(self, _item):
+        argv, env = app_command("--toggle")
+        spawn(argv, env)
+
+    def _on_quit(self, _item):
+        # The window is a separate process, so it has to be asked to go;
+        # --quit is handled by the application without building a window,
+        # which also means this is harmless when nothing is running.
+        argv, env = app_command("--quit")
+        spawn(argv, env)
+        self.stop()
+
+    def stop(self, *_args):
+        Gtk.main_quit()
+        return GLib.SOURCE_REMOVE
+
+    # -- polling -------------------------------------------------------------
+
+    def _poll(self):
+        """Follow the config, whoever changed it."""
+        self.config = config_mod.load_config()
+        if self._stock_profiles() != self._shown:
+            # A profile was added, renamed or deleted. Rebuilding is the only
+            # honest answer -- a stale menu offers a switch to a profile that
+            # is no longer there.
+            self._build_menu()
+        else:
+            self._sync_menu(self.config.get("current_profile"))
+        return GLib.SOURCE_CONTINUE
+
+
+def main():
+    tray = Tray()
+    # Gtk.main() blocks inside C, where Python's own SIGINT handler only runs
+    # once some event happens to wake the loop -- so Ctrl-C on a tray sitting
+    # idle would appear to be ignored. These deliver through the GLib loop
+    # instead, which is awake for them.
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        add_unix_signal(GLib.PRIORITY_DEFAULT, sig, tray.stop)
+    Gtk.main()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

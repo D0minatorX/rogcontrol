@@ -25,6 +25,11 @@ daemon's mode is ever changed by anything else (GNOME's own quick
 settings, a hardware key, etc.), this enforcer forces it back to match
 our active profile AND immediately re-applies the fan curve, rather than
 waiting for the next 15s poll.
+
+AC/BATTERY AUTO-SWITCH: the config's ac_profile/battery_profile are acted
+on here too. They used to be checked by the GTK3 window's own poll loop,
+which meant unplugging the laptop with the app closed did nothing at all --
+and the app is closed most of the time. See the section further down.
 """
 
 import glob
@@ -34,6 +39,20 @@ import subprocess
 import sys
 import threading
 import time
+
+# The shared modules sit beside this script's package in the repo, and under
+# ~/.local/lib once installed -- this script is installed into ~/.local/bin,
+# where there is no package next to it. The repo is tried first so that
+# running from a checkout tests the checkout rather than what is installed.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
+    if os.path.isfile(os.path.join(_candidate, "rogcontrol", "__init__.py")):
+        if _candidate not in sys.path:
+            sys.path.insert(0, _candidate)
+        break
+
+from rogcontrol import config as config_mod  # noqa: E402
+from rogcontrol import hardware  # noqa: E402
 
 CONFIG_PATH = os.path.expanduser("~/.config/rogcontrol.json")
 # Upkeep cadence. Only the CPU limits and the fan-curve safety
@@ -336,6 +355,21 @@ def mode_change_is_settled(service_name, actual_mode):
     return True
 
 
+def save_config(config, why):
+    """Write the config back out, atomically, and log a failure rather than
+    raising into the cycle.
+
+    Atomic because the app polls this file: an in-place write is visible
+    half-written, and what a reader would see is a truncated config with no
+    profiles in it. ``why`` names the caller, because more than one thing in
+    here now writes this file and "could not save" on its own says nothing
+    about which."""
+    try:
+        config_mod.save_config(config, CONFIG_PATH)
+    except OSError as e:
+        log(f"could not save {why}: {e}", "ERROR", dedupe_key="save")
+
+
 def adopt_external_ppd_mode(config, actual_mode, service_name):
     """React to a power mode changed outside this app.
 
@@ -383,19 +417,109 @@ def adopt_external_ppd_mode(config, actual_mode, service_name):
     log(f"power mode changed externally to '{actual_mode}' -- "
         f"switching profile to '{target}'")
     config["current_profile"] = target
-    # Written atomically so the app (which polls this file) never reads a
-    # half-written config.
-    try:
-        tmp = CONFIG_PATH + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(config, f, indent=2)
-        os.replace(tmp, CONFIG_PATH)
-    except OSError as e:
-        log(f"could not save adopted profile: {e}", "ERROR", dedupe_key="ppdsave")
+    save_config(config, "adopted profile")
 
     # A mode change is exactly when the EC drops the custom fan curve, so
     # this must be a full re-apply, not the usual drift check.
     apply_full_profile(config, profiles.get(target),
+                       force_fan_reapply=True, full=True)
+    return True
+
+
+# -- AC / battery auto-switch -------------------------------------------------
+#
+# This used to live in the GTK3 window's own poll loop, which meant it only
+# worked while the window happened to be open: unplugging the laptop with the
+# app closed did nothing at all. It belongs here instead -- this service is
+# always running, and it already owns "apply the profile the config names".
+#
+# The power source is sampled once per cycle, so a switch lands up to
+# INTERVAL_SECONDS (60s) after the plug moves. That delay is deliberate:
+# reacting faster would mean either a second poll loop or a udev/upower
+# subscription, and the thing being changed takes ~16 seconds to apply
+# anyway (each fan channel needs an 8 second gap from the next), so a minute
+# of granularity costs nothing a user can feel.
+
+# Whether the machine was on mains last time we looked. None until the first
+# sample, which is what stops startup from counting as a transition -- the
+# profile the config names is applied at startup regardless, and treating
+# "we have just started up on battery" as an unplug would override a profile
+# the user picked deliberately.
+_last_ac_state = None
+
+
+def ac_switch_target(previous_ac, current_ac, config):
+    """The profile the power source change calls for, or None for "do
+    nothing".
+
+    Pure: state in, a name out, no I/O -- which is what makes the rules
+    below testable, and they are all rules about when NOT to act:
+
+    * ``current_ac`` None means there is no Mains supply to read (a desktop,
+      or a kernel that does not expose one). Nothing can be inferred.
+    * ``previous_ac`` None is the first sample. Remember it, act on the next
+      one; see _last_ac_state.
+    * Unchanged state is the overwhelmingly common case -- this runs every
+      60 seconds and the plug moves maybe twice a day. Acting on it would
+      re-apply the auto-switch profile over anything the user chose in
+      between, once a minute, forever.
+    * A null (or missing) ``ac_profile``/``battery_profile`` is how the
+      Battery page stores "don't auto-switch" for that power source. It is
+      not a failure and must not fall back to a default.
+    * A stored profile that no longer exists -- renamed or deleted since it
+      was chosen -- has nothing to switch to.
+    * A target that is already current needs no switch. Applying it anyway
+      would push all three fan curves for no reason.
+    """
+    if current_ac is None or previous_ac is None:
+        return None
+    if current_ac == previous_ac:
+        return None
+    key = "ac_profile" if current_ac else "battery_profile"
+    target = config.get(key)
+    if not target:
+        return None
+    if target not in (config.get("profiles") or {}):
+        return None
+    if target == config.get("current_profile"):
+        return None
+    return target
+
+
+def check_ac_auto_switch(config, service_name):
+    """Sample the power source and switch profile if it has just changed.
+
+    Returns True if a profile was switched and applied, so the caller knows
+    the hardware has already been dealt with this cycle."""
+    global _last_ac_state
+    current_ac = hardware.is_ac_connected()
+    previous_ac = _last_ac_state
+    if current_ac is not None:
+        _last_ac_state = current_ac
+
+    target = ac_switch_target(previous_ac, current_ac, config)
+    if target is None:
+        return False
+
+    source = "AC" if current_ac else "battery"
+    log(f"power source changed to {source} -- switching profile to '{target}'")
+    config["current_profile"] = target
+    save_config(config, "auto-switched profile")
+
+    # Take the OS power mode with us, exactly as a profile switch in the app
+    # does. Without this the enforcer's own PPD check would find the mode
+    # disagreeing with the profile we just chose on the very next cycle, and
+    # adopt the stale mode back -- undoing the auto-switch within a minute.
+    # It also stamps the self-apply quiet window, so the adoption gate knows
+    # the mode change that follows is ours.
+    mode = PROFILE_TO_PPD_MODE.get(target)
+    if mode and service_name:
+        set_ppd_active_profile(service_name, mode)
+
+    # Full apply, forcing the fans: a power-mode change is exactly when the
+    # EC silently drops the custom curve, so the curve has to be pushed after
+    # the mode write above rather than left to the signature check.
+    apply_full_profile(config, (config.get("profiles") or {}).get(target),
                        force_fan_reapply=True, full=True)
     return True
 
@@ -580,15 +704,24 @@ def main():
                 with open(CONFIG_PATH) as f:
                     config = json.load(f)
 
+                # First, because it can change which profile the rest of this
+                # cycle is about. It applies the new profile itself when it
+                # switches.
+                switched = check_ac_auto_switch(config, ppd_service_name)
+
                 current_profile_name = config.get("current_profile")
                 profile = config.get("profiles", {}).get(current_profile_name)
                 # A platform_profile / throttle_thermal_policy change means
                 # the EC just dropped the curve, so force a re-push even if
-                # the curve data itself is unchanged.
+                # the curve data itself is unchanged. Sampled even after an
+                # auto-switch, so that the mode change the switch just made
+                # itself becomes the new baseline instead of looking like an
+                # external one next cycle.
                 thermal_changed = thermal_state_changed()
-                apply_full_profile(config, profile,
-                                   force_fan_reapply=thermal_changed,
-                                   full=thermal_changed)
+                if not switched:
+                    apply_full_profile(config, profile,
+                                       force_fan_reapply=thermal_changed,
+                                       full=thermal_changed)
 
                 # Keyboard brightness and charge limit are NOT re-applied
                 # here. Both were measured to hold their values with the

@@ -416,6 +416,15 @@ class RogControlApp(Adw.Application):
         if "--self-test" in args:
             self.exit_code = self._do_self_test()
             return self.exit_code
+        if "--quit" in args:
+            # The tray's Quit item. The tray is a separate GTK3 process (it
+            # has to be -- see rogcontrol-tray) so it cannot reach into this
+            # one; sending a flag through the single-instance handoff is the
+            # same route it uses to show the window. Handled before the
+            # window is built, so quitting an app that is not running starts
+            # nothing: this process becomes the instance, quits, and exits.
+            self.quit()
+            return 0
         win = self._ensure_window()
         if "--toggle" in args:
             # Second launch of an already-visible window means "put it away".
