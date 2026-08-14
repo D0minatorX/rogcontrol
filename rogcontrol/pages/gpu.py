@@ -1,9 +1,9 @@
-"""GPU page: power, clocks and the two firmware knobs.
+"""GPU page: power, clocks and the two firmware knobs, written on Apply.
 
-Same rule as the CPU page -- no Apply button, a control that has sat still
-for 400 ms is applied on a worker thread and confirmed by a toast, and a
-refusal puts the control back rather than leaving it claiming a value the
-hardware never took.
+Same rule as the CPU page, and for the same reason -- nothing here reaches
+the card until Apply is pressed. Moving a slider changes a pending value and
+raises the banner; the banner names what is unapplied and carries its own
+Apply button, as the Fans page does.
 
 What is different here is that there is no single call that sets everything.
 The six settings go to four different places:
@@ -13,9 +13,11 @@ The six settings go to four different places:
 * the two clock offsets -> nvidia-settings, *not* through the helper, because
   it needs the user's own display connection and root has none
 
-So each control is its own apply group. A failure in one cannot invalidate
-the others, which is why nothing here restores in a batch the way the CPU
-page's five ryzenadj values do.
+So one Apply is up to six independent writes. They all run, in order, even if
+one of them fails: a refused power limit says nothing about whether a clock
+offset can be set. Only the settings that took are saved to the profile, and
+a control whose write was refused goes back to the value the card accepted
+last, so nothing on screen claims a setting the hardware never held.
 
 The ranges come off the card at startup rather than being hardcoded: this
 laptop's 5-140 W is not another laptop's, and a slider that stops at the
@@ -34,8 +36,9 @@ from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
 from ..widgets.slider_row import SliderRow, align_value_widths  # noqa: E402
 
-DEBOUNCE_MS = 400
-COALESCE_MS = 20
+# The sliders report as soon as they move: nothing is applied on this page
+# any more, so the only thing a change drives is the banner.
+SETTLE_MS = 0
 REFRESH_SECONDS = 2
 DASH = "—"
 
@@ -43,6 +46,30 @@ DASH = "—"
 # comes from hardware too, so this page, the CPU page and the Overview all
 # call the same fan the same thing.
 FAN_CHANNEL = "2"
+
+# Apply order. Nothing here is as load-bearing as the CPU page's, but the
+# power budget is set before the clocks that spend it, and it matches the
+# order a whole-profile apply uses.
+APPLY_ORDER = ("watts", "clock_limit", "dyn_boost", "temp_target",
+               "clock_offset", "mem_clock_offset")
+
+# Which capability each setting needs. Four independent questions, because
+# the four back ends fail independently: a machine can have nvidia-smi
+# without nvidia-settings, and the asus-wmi knobs are absent on every
+# non-ASUS machine regardless of the card.
+CAPABILITY = {"watts": "nvidia",
+              "clock_limit": "nvidia",
+              "clock_offset": "nvidia_settings",
+              "mem_clock_offset": "nvidia_settings",
+              "dyn_boost": "nv_dynamic_boost",
+              "temp_target": "nv_temp_target"}
+
+TITLES = {"watts": "Power limit",
+          "clock_limit": "Clock ceiling",
+          "dyn_boost": "Dynamic Boost",
+          "temp_target": "GPU temperature target",
+          "clock_offset": "Core clock offset",
+          "mem_clock_offset": "Memory clock offset"}
 
 CLOCK_LIMIT_SUBTITLE = (
     "A ceiling, not a target — the GPU still idles and boosts freely below "
@@ -71,10 +98,24 @@ TEMP_TARGET_SUBTITLE = (
     "by the firmware."
 )
 
+APPLY_SUBTITLE = (
+    "Writes everything on this page to the card: the power limit and clock "
+    "ceiling through nvidia-smi, Dynamic Boost and the temperature target "
+    "through asus-wmi, and the two offsets through nvidia-settings. Takes a "
+    "second or two."
+)
 
-class GpuPage(Adw.PreferencesPage):
+
+class GpuPage(Gtk.Box):
+    """A banner, the controls, and one Apply button.
+
+    A plain Box rather than an Adw.PreferencesPage because the banner has to
+    stay put; see the CPU page, which is built the same way for the same
+    reason.
+    """
+
     def __init__(self, window):
-        super().__init__()
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.window = window
         self.caps = window.caps
         limits = self.caps.get("gpu_limits") or hardware.default_gpu_limits()
@@ -93,9 +134,7 @@ class GpuPage(Adw.PreferencesPage):
                                      or hardware.TEMP_TARGET_MIN)
 
         self._loading = True
-        self._timers = {}
-        self._pending = {}
-        self._busy = {}
+        self._applying = False
         self._applied = {}
         self._sampling = False
         self._timer_id = None
@@ -110,36 +149,48 @@ class GpuPage(Adw.PreferencesPage):
         self._start_sample()
         self._timer_id = GLib.timeout_add_seconds(REFRESH_SECONDS, self._tick)
         self.connect("destroy", self._on_destroy)
+        # Walking away from unapplied changes discards them rather than
+        # applying them behind the user's back.
+        self.connect("unmap", self._on_unmap)
 
     # -- construction --------------------------------------------------------
 
     def _build(self):
+        self.banner = Adw.Banner()
+        self.banner.set_revealed(False)
+        self.banner.connect("button-clicked", self._on_apply_clicked)
+        self.append(self.banner)
+
+        page = Adw.PreferencesPage()
+        page.set_vexpand(True)
+        self.append(page)
+
         status = Adw.PreferencesGroup(
             title="Graphics card",
             description=self.gpu_name or "No NVIDIA card detected")
-        self.add(status)
+        page.add(status)
         self.temp_row, self.temp_value = self._live_row(status, "Temperature")
         self.fan_row, self.fan_value = self._live_row(
             status, hardware.FAN_LABELS[FAN_CHANNEL])
 
         power = Adw.PreferencesGroup(title="Power")
-        self.add(power)
+        page.add(power)
 
         watts = SliderRow(
             title="Power limit",
             subtitle=f"The board power the card is allowed to draw. This "
                      f"card reports {self.min_w}–{self.max_w} W.",
             minimum=self.min_w, maximum=self.max_w, step=1, unit="W",
-            settle_ms=DEBOUNCE_MS)
-        watts.connect("changed", self._on_changed, "watts")
+            settle_ms=SETTLE_MS)
+        watts.connect("changed", self._on_changed)
         power.add(watts)
         self.rows["watts"] = watts
 
         boost = SliderRow(
             title="NVIDIA Dynamic Boost", subtitle=BOOST_SUBTITLE,
             minimum=hardware.DYN_BOOST_MIN, maximum=hardware.DYN_BOOST_MAX,
-            step=1, unit="W", settle_ms=DEBOUNCE_MS)
-        boost.connect("changed", self._on_changed, "dyn_boost")
+            step=1, unit="W", settle_ms=SETTLE_MS)
+        boost.connect("changed", self._on_changed)
         power.add(boost)
         self.rows["dyn_boost"] = boost
 
@@ -147,20 +198,20 @@ class GpuPage(Adw.PreferencesPage):
             title="Temperature target", subtitle=TEMP_TARGET_SUBTITLE,
             minimum=hardware.TEMP_TARGET_MIN,
             maximum=hardware.TEMP_TARGET_MAX,
-            step=1, unit="°C", settle_ms=DEBOUNCE_MS)
-        temp_target.connect("changed", self._on_changed, "temp_target")
+            step=1, unit="°C", settle_ms=SETTLE_MS)
+        temp_target.connect("changed", self._on_changed)
         power.add(temp_target)
         self.rows["temp_target"] = temp_target
         align_value_widths([watts, boost, temp_target])
 
         clocks = Adw.PreferencesGroup(title="Clocks")
-        self.add(clocks)
+        page.add(clocks)
 
         ceiling = SliderRow(
             title="Clock ceiling", subtitle=CLOCK_LIMIT_SUBTITLE,
             minimum=hardware.CLOCK_LIMIT_MIN, maximum=self.clock_limit_max,
-            step=15, unit="MHz", settle_ms=DEBOUNCE_MS)
-        ceiling.connect("changed", self._on_changed, "clock_limit")
+            step=15, unit="MHz", settle_ms=SETTLE_MS)
+        ceiling.connect("changed", self._on_changed)
         clocks.add(ceiling)
         self.rows["clock_limit"] = ceiling
 
@@ -168,8 +219,8 @@ class GpuPage(Adw.PreferencesPage):
             title="Core clock offset", subtitle=OFFSET_SUBTITLE,
             minimum=hardware.CLOCK_OFFSET_MIN,
             maximum=hardware.CLOCK_OFFSET_MAX,
-            step=25, unit="MHz", settle_ms=DEBOUNCE_MS)
-        core.connect("changed", self._on_changed, "clock_offset")
+            step=25, unit="MHz", settle_ms=SETTLE_MS)
+        core.connect("changed", self._on_changed)
         clocks.add(core)
         self.rows["clock_offset"] = core
 
@@ -177,13 +228,38 @@ class GpuPage(Adw.PreferencesPage):
             title="Memory clock offset", subtitle=OFFSET_SUBTITLE,
             minimum=hardware.MEM_CLOCK_OFFSET_MIN,
             maximum=hardware.MEM_CLOCK_OFFSET_MAX,
-            step=25, unit="MHz", settle_ms=DEBOUNCE_MS)
-        memory.connect("changed", self._on_changed, "mem_clock_offset")
+            step=25, unit="MHz", settle_ms=SETTLE_MS)
+        memory.connect("changed", self._on_changed)
         clocks.add(memory)
         self.rows["mem_clock_offset"] = memory
         align_value_widths([ceiling, core, memory])
 
+        page.add(self._build_actions_group())
         self._apply_capability_gating()
+
+    def _build_actions_group(self):
+        group = Adw.PreferencesGroup(title="Apply")
+        self.apply_row = Adw.ActionRow(title="Apply GPU settings",
+                                       subtitle=APPLY_SUBTITLE)
+        self.apply_row.set_subtitle_lines(0)
+        self.apply_button = Gtk.Button(label="Apply")
+        self.apply_button.set_valign(Gtk.Align.CENTER)
+        self.apply_button.add_css_class("suggested-action")
+        self.apply_button.connect("clicked", self._on_apply_clicked)
+        self.apply_row.add_suffix(self.apply_button)
+        self.apply_row.set_activatable_widget(self.apply_button)
+        group.add(self.apply_row)
+
+        self.revert_button = Gtk.Button(label="Revert")
+        self.revert_button.set_valign(Gtk.Align.CENTER)
+        self.revert_button.connect("clicked", self._on_revert_clicked)
+        revert_row = Adw.ActionRow(
+            title="Discard unapplied changes",
+            subtitle="Puts every control back to what the profile holds.")
+        revert_row.add_suffix(self.revert_button)
+        revert_row.set_activatable_widget(self.revert_button)
+        group.add(revert_row)
+        return group
 
     def _live_row(self, group, title):
         """An ActionRow whose suffix label carries the live reading."""
@@ -198,12 +274,7 @@ class GpuPage(Adw.PreferencesPage):
         return row, label
 
     def _apply_capability_gating(self):
-        """Grey out what this machine cannot do, and say why on hover.
-
-        Four independent questions, because the four back ends fail
-        independently: a machine can have nvidia-smi without
-        nvidia-settings, and the asus-wmi knobs are absent on every
-        non-ASUS machine regardless of the card."""
+        """Grey out what this machine cannot do, and say why on hover."""
         if not self.caps.get("nvidia"):
             for key in ("watts", "clock_limit"):
                 self._disable(key, "nvidia-smi is not installed")
@@ -239,7 +310,10 @@ class GpuPage(Adw.PreferencesPage):
         return max(adj.get_lower(), min(adj.get_upper(), value))
 
     def reload(self):
-        """Put the active profile's values on screen without applying them."""
+        """Put the active profile's values on screen without applying them.
+
+        Also what discards unapplied edits: the profile is the truth, and
+        ``_applied`` is reset from it, so the banner goes with them."""
         was_loading = self._loading
         self._loading = True
         try:
@@ -261,13 +335,20 @@ class GpuPage(Adw.PreferencesPage):
                 self._applied[key] = row.get_value()
         finally:
             self._loading = was_loading
+        self._update_banner()
 
-    # -- live temperature ----------------------------------------------------
+    # -- live readings -------------------------------------------------------
 
     def _on_destroy(self, _widget):
         if self._timer_id is not None:
             GLib.source_remove(self._timer_id)
             self._timer_id = None
+
+    def _on_unmap(self, _widget):
+        """The page went off screen; unapplied edits go with it."""
+        if self._applying or not self._dirty_keys():
+            return
+        self.reload()
 
     def _tick(self):
         # nvidia-smi costs a couple of hundred milliseconds a call, so it is
@@ -309,116 +390,167 @@ class GpuPage(Adw.PreferencesPage):
         # hunting a hardware fault that is not there.
         self.fan_value.set_text(DASH if rpm is None else f"{rpm} rpm")
 
-    # -- change handling -----------------------------------------------------
+    # -- unapplied changes ---------------------------------------------------
 
-    def _on_changed(self, row, _value, key):
+    def _dirty_keys(self):
+        """Controls whose value is not the one the card was last given."""
+        out = []
+        for key, row in self.rows.items():
+            was = self._applied.get(key)
+            if was is None:
+                continue
+            if abs(float(was) - float(row.get_value())) > 1e-9:
+                out.append(key)
+        return out
+
+    def _on_changed(self, _row, _value):
         if self._loading:
             return
-        self._schedule(key, self._label_for(key, row))
+        self._update_banner()
 
-    def _label_for(self, key, row):
-        if key == "clock_limit":
-            mhz = int(row.get_value())
-            if hardware.gpu_clock_limit_arg(mhz,
-                                            self.clock_limit_max) == "reset":
-                return "Clock ceiling removed"
-            return f"Clock ceiling set to {mhz} MHz"
-        titles = {"watts": "Power limit",
-                  "dyn_boost": "Dynamic Boost",
-                  "temp_target": "GPU temperature target",
-                  "clock_offset": "Core clock offset",
-                  "mem_clock_offset": "Memory clock offset"}
-        return f"{titles[key]} set to {row.get_display_value()}"
+    def _update_banner(self):
+        if self._applying:
+            # The banner is the progress line while an apply is running.
+            return
+        dirty = self._dirty_keys()
+        if not dirty:
+            self.banner.set_revealed(False)
+            return
+        names = [TITLES[key] for key in APPLY_ORDER if key in dirty]
+        self._show_banner("Not applied yet — " + ", ".join(names)
+                          + (" is" if len(names) == 1 else " are")
+                          + " not on the card.", button="Apply")
 
-    def _schedule(self, key, label, delay=COALESCE_MS):
-        self._pending[key] = label
-        source = self._timers.pop(key, None)
-        if source is not None:
-            GLib.source_remove(source)
-        self._timers[key] = GLib.timeout_add(delay, self._fire, key)
+    def _show_banner(self, text, button=None):
+        self.banner.set_title(text)
+        # An empty label is how AdwBanner hides its button.
+        self.banner.set_button_label(button or "")
+        self.banner.set_revealed(True)
 
-    def _fire(self, key):
-        self._timers.pop(key, None)
-        if self._busy.get(key):
-            # An apply for this control is still in flight. Two nvidia-smi
-            # writes for the same knob at once would race over which value
-            # the card ends up holding.
-            self._timers[key] = GLib.timeout_add(DEBOUNCE_MS, self._fire, key)
-            return GLib.SOURCE_REMOVE
-        label = self._pending.pop(key, "Setting")
-        self._busy[key] = True
-        self._apply(key, label)
-        return GLib.SOURCE_REMOVE
+    def _on_revert_clicked(self, _button):
+        if self._applying:
+            return
+        if not self._dirty_keys():
+            self.window.toast("Nothing to discard — this is what is running.")
+            return
+        self.reload()
+        self.window.toast("Unapplied GPU changes discarded.")
 
     # -- applying ------------------------------------------------------------
 
-    def _apply(self, key, label):
-        value = int(self.rows[key].get_value())
-        gate = {"watts": "nvidia",
-                "clock_limit": "nvidia",
-                "clock_offset": "nvidia_settings",
-                "mem_clock_offset": "nvidia_settings",
-                "dyn_boost": "nv_dynamic_boost",
-                "temp_target": "nv_temp_target"}[key]
-        if not self.caps.get(gate):
-            # Reachable by keyboard on a machine that grew the capability
-            # after startup; nothing here may pretend it worked.
-            self._busy[key] = False
-            self.window.toast(f"{label} failed: not available on this machine")
+    def _pending_values(self):
+        """What the controls hold, for the settings this machine can write."""
+        return [(key, int(self.rows[key].get_value())) for key in APPLY_ORDER
+                if self.caps.get(CAPABILITY[key])]
+
+    def _set_busy(self, busy):
+        self._applying = busy
+        self.apply_button.set_sensitive(not busy)
+        self.revert_button.set_sensitive(not busy)
+
+    def _on_apply_clicked(self, _widget):
+        if self._applying:
+            return
+        wanted = self._pending_values()
+        if not wanted:
+            self.window.toast("Nothing on this page can be set on this "
+                              "machine.")
+            return
+        self._set_busy(True)
+        self._show_banner("Writing the GPU settings…")
+        self.window.apply_async(lambda: self._apply_worker(wanted),
+                                self._on_applied)
+
+    def _apply_worker(self, wanted):
+        """Write every setting in order. Worker thread.
+
+        Every one runs even if an earlier one failed: they go to three
+        different back ends, and a refused power limit says nothing about
+        whether a clock offset can be set."""
+        results = []
+        for key, value in wanted:
+            ok, message = self._write(key, value)
+            results.append((key, value, ok, message))
+        return results
+
+    def _write(self, key, value):
+        """One setting, on the worker thread. Returns ``(ok, message)``."""
+        if key == "watts":
+            return hardware.run_helper("gpu", value)
+        if key == "clock_limit":
+            return hardware.run_helper(
+                "gpuclocklimit",
+                hardware.gpu_clock_limit_arg(value, self.clock_limit_max))
+        if key == "dyn_boost":
+            return hardware.run_helper("nvboost", value)
+        if key == "temp_target":
+            return hardware.run_helper("nvtemp", value)
+        if key == "clock_offset":
+            return hardware.set_nvidia_clock_offset("core", value)
+        return hardware.set_nvidia_clock_offset("memory", value)
+
+    def _on_applied(self, results, error):
+        self._set_busy(False)
+        if error is not None:
+            self._show_banner(f"Applying the GPU settings failed: {error}",
+                              button="Apply")
+            self.window.toast(f"GPU settings failed: {error}")
             return
 
-        if key == "watts":
-            def work():
-                return hardware.run_helper("gpu", value)
-        elif key == "clock_limit":
-            arg = hardware.gpu_clock_limit_arg(value, self.clock_limit_max)
+        failures = []
+        applied = {}
+        for key, value, ok, message in results:
+            if ok:
+                applied[key] = value
+            else:
+                failures.append(f"{TITLES[key]}: {message}")
+        if applied:
+            self._save(applied)
+        # Anything the card refused goes back to the value it accepted last.
+        failed = [key for key, _value, ok, _message in results if not ok]
+        if failed:
+            self._restore(failed)
 
-            def work():
-                return hardware.run_helper("gpuclocklimit", arg)
-        elif key == "dyn_boost":
-            def work():
-                return hardware.run_helper("nvboost", value)
-        elif key == "temp_target":
-            def work():
-                return hardware.run_helper("nvtemp", value)
-        elif key == "clock_offset":
-            def work():
-                return hardware.set_nvidia_clock_offset("core", value)
+        if failures:
+            self._show_banner("Some GPU settings were not applied — "
+                              + "; ".join(failures), button="Apply")
+            self.window.toast("GPU: " + "; ".join(failures))
         else:
-            def work():
-                return hardware.set_nvidia_clock_offset("memory", value)
+            # Not an unconditional hide: a slider moved while the write was
+            # running is genuinely unapplied, and the banner has to say so.
+            self._update_banner()
+            self.window.toast("GPU settings applied and saved to "
+                              f"{self.window.current_profile_name()}.")
 
-        self.window.apply_async(work, lambda result, error: self._finish(
-            key, label, value, result, error))
+    def _save(self, applied):
+        """Write what reached the card into the profile.
 
-    def _finish(self, key, label, value, result, error):
-        self._busy[key] = False
-        if error is not None:
-            ok, message = False, str(error)
-        else:
-            ok, message = result
-        if ok:
-            data = (self.window.current_profile() or {}).setdefault("gpu", {})
+        Only what took: a profile holding a setting the card refused is a
+        profile that silently disagrees with the machine."""
+        profile = self.window.current_profile()
+        if not profile:
+            return
+        data = profile.setdefault("gpu", {})
+        for key, value in applied.items():
             # The ceiling is stored even at the top of the range, where it
             # means "no limit": a profile that wants no ceiling still has to
             # say so, or switching away from a limited profile would leave
             # the old cap in place.
             data[key] = value
-            self._applied[key] = self.rows[key].get_value()
-            config_mod.save_config(self.window.config)
-            self.window.toast(f"{label}.")
-        else:
-            self.window.toast(f"{label} failed: {message}")
-            self._restore(key)
+            # The value that was written, not what the row holds now: the
+            # sliders stay live during an apply, and recording the current
+            # position would mark a change made mid-write as already applied.
+            self._applied[key] = float(value)
+        config_mod.save_config(self.window.config)
 
-    def _restore(self, key):
-        """Put one control back to the last value the hardware accepted."""
-        value = self._applied.get(key)
-        if value is None:
-            return
+    def _restore(self, keys):
+        """Put controls back to the last values the card accepted."""
         self._loading = True
         try:
-            self.rows[key].set_value(value)
+            for key in keys:
+                value = self._applied.get(key)
+                if value is not None:
+                    self.rows[key].set_value(value)
         finally:
             self._loading = False
 
@@ -428,3 +560,6 @@ class GpuPage(Adw.PreferencesPage):
         """Load the profile and render one live read. No writes."""
         self.reload()
         self._render(self._sample())
+        # What Apply would write, built but not run: a key with no capability
+        # entry or no row would fail here rather than on a click.
+        self._pending_values()

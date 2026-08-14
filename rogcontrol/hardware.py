@@ -315,6 +315,50 @@ def read_current_epp(root=None):
     return None
 
 
+# The four steps of a CPU apply, in the only order that works. This is a
+# hardware constraint, not a preference: writing cpufreq's ``boost`` refreshes
+# every policy and takes ``scaling_max_freq`` back up to hardware maximum with
+# it, so a clock cap written before boost is silently undone. The same order
+# is spelled out again in app.py's whole-profile apply and in
+# rogcontrol-apply.py, which is why it is worth having one tested definition
+# of it here.
+CPU_APPLY_STEPS = ("limits", "boost", "epp", "clock")
+
+
+def cpu_apply_plan(values, caps=None):
+    """The helper calls one CPU apply makes, as ``[(step, args), ...]``.
+
+    Pure: no hardware, no widgets, no subprocess -- it turns a set of wanted
+    values plus what the machine can do into the exact argument lists to hand
+    to :func:`run_helper`, in order. The CPU page and the tests both use it,
+    so the order the page applies in is the order that is tested.
+
+    ``values`` uses the config's own units and names: ``stapm``/``fast``/
+    ``slow`` in milliwatts, ``temp`` in degrees, ``coall``, ``boost`` as a
+    bool, ``epp`` as a name, ``max_freq`` in kHz with 0 meaning "no ceiling".
+
+    A step is left out when the machine cannot do it or the values say
+    nothing about it -- a missing key means the caller has no opinion, and
+    forcing a default would make every profile carry one.
+    """
+    caps = caps or {}
+    plan = []
+    if caps.get("ryzenadj") and all(
+            key in values for key in ("stapm", "fast", "slow", "temp")):
+        plan.append(("limits", ("cpu", values["stapm"], values["fast"],
+                                values["slow"], values["temp"],
+                                values.get("coall", 0))))
+    if "boost" in values and caps.get("cpu_boost"):
+        plan.append(("boost", ("cpuboost", 1 if values["boost"] else 0)))
+    if values.get("epp") and caps.get("cpu_epp"):
+        plan.append(("epp", ("cpuepp", values["epp"])))
+    # Last, after boost. 0 means "no ceiling" and still has to be written, or
+    # a cap from a previous profile survives the switch.
+    if "max_freq" in values and caps.get("cpu_clock"):
+        plan.append(("clock", ("cpuclock", values["max_freq"] or "max")))
+    return plan
+
+
 # -- GPU ---------------------------------------------------------------------
 
 def read_nvidia_stats(timeout=5):

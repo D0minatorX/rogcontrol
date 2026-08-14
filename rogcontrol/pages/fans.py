@@ -9,12 +9,12 @@ every time. So writing all three curves takes about sixteen seconds.
 
 Everything else here follows from that:
 
-* **Nothing is applied on drag.** The CPU page applies a slider 400 ms after
-  it stops moving because that costs one ryzenadj call. Doing the same here
-  would mean a sixteen second hardware write per dragged point, with the
-  next drag interrupting the last one mid-gap -- which is exactly how the
-  old version managed to look like it was ignoring the curve while it was
-  in fact re-pushing it constantly. There is an Apply button instead.
+* **Nothing is applied on drag.** A hardware write per dragged point would
+  be sixteen seconds long here, with the next drag interrupting the last one
+  mid-gap -- which is exactly how the old version managed to look like it
+  was ignoring the curve while it was in fact re-pushing it constantly.
+  There is an Apply button instead, and the CPU and GPU pages now follow
+  this page rather than the other way round.
 * **The apply runs on a worker thread with a progress bar**, because a
   sixteen second freeze is indistinguishable from a hang.
 * **The page says when the curves on screen are not the ones the fans are
