@@ -43,6 +43,14 @@ CPU
 STAPM, fast and slow power limits, temperature target, Curve Optimizer
 undervolt, turbo boost, and a maximum core clock.
 
+Nothing is written until you press Apply. Moving a control changes what the
+page is asking for and says so in a banner at the top; the chip is untouched
+until you decide. Apply writes the whole page in the one order that works —
+the limits, then boost, then the energy preference, then the clock ceiling,
+because the boost switch resets every policy's ceiling — and saves it to the
+active profile only once the hardware has taken it. Leaving the page without
+applying discards the change; it is never applied behind your back.
+
 The clock setting is a ceiling, not a fixed speed — cores still drop to idle
 underneath it. Measured with a 3.0 GHz cap: a loaded core sat at 2974 MHz
 while idle cores sat at 1492 MHz.
@@ -56,6 +64,13 @@ GPU
 
 Power limit, core and memory clock offsets, a clock ceiling, NVIDIA Dynamic
 Boost and temperature target. Ranges are read from your card, not hardcoded.
+
+Applied on the same terms as the CPU page: an Apply button, a banner naming
+what is not on the card yet, and a profile that is only written once the card
+has accepted the setting.
+
+Live CPU and GPU temperatures and the speed of the fan cooling each are shown
+on their own pages, refreshed every two seconds.
 
 
 KEYBOARD
@@ -77,6 +92,21 @@ BATTERY
 A charge limit, and automatic profile switching on plug and unplug — pick a
 profile for mains and one for battery. That runs in the background service, so
 it works whether or not the window is open.
+
+
+SYSTEM
+
+The graphics mode supergfxd reports, what it will let you switch to, and — if
+it will not let you switch at all — why, in plain text on the page rather than
+hidden in a tooltip. On a laptop whose hardware MUX is set in the firmware,
+supergfxd offers exactly one mode, and that is what it says.
+
+Whether asusctl's daemon, asusd, is installed and running. It matters because
+it drives the same hardware as this app — the same platform knobs, fan curves
+and keyboard lighting — so with both running they fight over the fans and the
+lights. There are buttons to stop and disable it and to put it back. There is
+no uninstall button: removing a package is a transaction you should see, so
+the exact command for your distro is shown for you to run yourself.
 
 
 ALSO
@@ -110,6 +140,10 @@ The fans "ignoring" your curve
     those hidden readings reach (roughly 50-90 °C) and put the real ramp above
     it. The excursion then has nothing to climb to. Measured: fan swing dropped
     from 600 rpm to 100-300 rpm, with nothing above 2400 rpm.
+
+    All four stock profiles ship with that shape — flat from 50 °C to 86 °C,
+    the ramp above 90 °C, scaled per profile — so a fresh install is quiet
+    without having to find this out first.
 
 There is a minimum fan speed, and it is not zero
     5 %, 10 % and 15 % all produce 2100-2600 rpm on this machine — that is the
