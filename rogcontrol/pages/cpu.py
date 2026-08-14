@@ -509,11 +509,17 @@ class CpuPage(Gtk.Box):
         # position afterwards would mark a change made mid-apply as already
         # on the hardware.
         snapshot = {key: self._current(key) for key in self.rows}
+        # And which profile they belong to, for the same reason: the write
+        # runs off the main loop, and the enforcer switches profile on
+        # AC/battery without asking. Resolving the profile when the write
+        # finishes would save these limits into whichever one is current
+        # then. See config.deferred_save_target.
+        target = self.window.current_profile_name()
         self._set_busy(True)
         self._show_banner("Writing the CPU settings…")
         self.window.apply_async(lambda: self._apply_worker(plan),
                                 lambda result, error: self._on_applied(
-                                    values, snapshot, result, error))
+                                    target, values, snapshot, result, error))
 
     @staticmethod
     def _apply_worker(plan):
@@ -529,7 +535,7 @@ class CpuPage(Gtk.Box):
             results.append((step, ok, message))
         return results
 
-    def _on_applied(self, values, snapshot, results, error):
+    def _on_applied(self, target, values, snapshot, results, error):
         self._set_busy(False)
         if error is not None:
             self._show_banner(f"Applying the CPU settings failed: {error}",
@@ -544,7 +550,11 @@ class CpuPage(Gtk.Box):
             else:
                 failures.append(f"{STEP_LABELS[step]}: {message}")
 
-        self._save(values, snapshot, applied_steps)
+        # Only when something reached the chip: an apply the chip refused
+        # outright has nothing to save, and saying "written to the hardware
+        # but not saved" about it would be untrue in both halves.
+        refused = (self._save(target, values, snapshot, applied_steps)
+                   if applied_steps else None)
         # Everything a failed step owns goes back to the last value the
         # hardware accepted, so no control is left claiming a setting the
         # chip refused.
@@ -553,7 +563,10 @@ class CpuPage(Gtk.Box):
         if failed_rows:
             self._restore(failed_rows)
 
-        if failures:
+        if refused is not None:
+            self._show_banner(refused, button="Apply")
+            self.window.toast(refused)
+        elif failures:
             self._show_banner("Some CPU settings were not applied — "
                               + "; ".join(failures), button="Apply")
             self.window.toast("CPU: " + "; ".join(failures))
@@ -561,38 +574,46 @@ class CpuPage(Gtk.Box):
             # Not an unconditional hide: a control moved while the write was
             # running is genuinely unapplied, and the banner has to say so.
             self._update_banner()
-            self.window.toast("CPU settings applied and saved to "
-                              f"{self.window.current_profile_name()}.")
+            self.window.toast(
+                f"CPU settings applied and saved to {target}.")
 
-    def _save(self, values, snapshot, steps):
-        """Write what reached the hardware into the profile.
+    def _save(self, target, values, snapshot, steps):
+        """Write what reached the hardware into profile ``target``.
 
-        Only the steps that took: a profile holding a limit the chip refused
-        is a profile that silently disagrees with the machine, and the next
-        window to open would show it as fact."""
-        profile = self.window.current_profile()
-        if not profile:
-            return
-        data = profile.setdefault("cpu", {})
-        wrote = False
+        ``target`` is the profile that was active when Apply was pressed,
+        not whichever one is active now. Returns None when the save
+        happened, or the sentence to show when it was refused.
+
+        Only the steps that took are written: a profile holding a limit the
+        chip refused is a profile that silently disagrees with the machine,
+        and the next window to open would show it as fact."""
+        data = {}
         for step in steps:
             if step == "limits":
                 for key in ("stapm", "fast", "slow", "temp", "coall"):
                     data[key] = values[key]
-                wrote = True
             elif step == "boost":
                 data["boost"] = values["boost"]
-                wrote = True
             elif step == "clock":
                 # Stored even when 0: that means "this profile wants no
                 # ceiling" and still has to be applied, or switching away
                 # from a limited profile would leave its cap behind.
                 data["max_freq"] = values["max_freq"]
-                wrote = True
+            # "epp" keeps nothing here: the profile already owns it, and the
+            # apply only re-asserts it.
+        refused = config_mod.save_deferred(
+            self.window.config, target, "cpu", data, "CPU settings")
+        if refused is not None:
+            # ``_applied`` is deliberately left alone too. reload() has
+            # already reset it from the profile that is current now, and
+            # marking these values as applied on top of that would have the
+            # banner claim the new profile is running settings that belong
+            # to the old one.
+            return refused
+        for step in steps:
             for key in STEP_ROWS[step]:
                 self._applied[key] = snapshot[key]
-        if wrote:
-            config_mod.save_config(self.window.config)
+        return None
 
     def _restore(self, keys):
         """Put controls back to the last values the hardware accepted."""

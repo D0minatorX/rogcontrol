@@ -297,6 +297,100 @@ def reload_decision(current, fresh):
     return profile_changed, contents_changed
 
 
+# --- where the result of a deferred apply may be written ---------------------
+#
+# Every Apply in this app is deferred, and the fan page's is deferred by
+# sixteen seconds: three curve writes eight seconds apart, because the EC
+# drops curves fired closer together than that. Pressing Apply and learning
+# the answer are therefore sixteen seconds apart, and the active profile can
+# move in between -- the user can pick another one, so can the tray and the
+# hotkey cycler, and the enforcer does it unprompted when the charger comes
+# out or the OS power mode changes.
+#
+# So "which profile is current?" asked when the work FINISHES answers a
+# different question from the one the user asked when they pressed the
+# button, and the answer is written over a profile they were never editing.
+# That is not a hypothetical: it silently collapsed four deliberately
+# different fan curves into nearly the same one and destroyed the real
+# settings. Capture the name at press time; decide here.
+
+SAVE_OK = "ok"
+SAVE_PROFILE_CHANGED = "profile-changed"
+SAVE_PROFILE_GONE = "profile-gone"
+SAVE_NO_PROFILE = "no-profile"
+
+
+def deferred_save_target(cfg, captured_name):
+    """Where a background apply's result may be saved, if anywhere.
+
+    ``captured_name`` is the profile that was active when the user pressed
+    Apply. Returns ``(SAVE_OK, profile_dict)`` when writing is safe, or
+    ``(<a refusal status>, None)`` when it is not.
+
+    A profile that moved is deliberately not guessed at from either end.
+    The result belongs to the profile the user was editing, which they may
+    no longer be looking at, and it plainly does not belong to the one that
+    is current now -- writing it there is the data loss. Neither is written,
+    and the caller is expected to say so rather than fail silently: the
+    settings did reach the hardware, they just are not saved.
+
+    The profile is looked up by NAME here rather than the caller keeping the
+    dict it had at press time, and that matters as much as the name check.
+    A window that follows an external config write does
+    ``config.clear()``/``update()``, which replaces every profile object in
+    it; a reference captured before that is still writable and still saves
+    -- into an orphan dict that nothing will ever read back."""
+    if not captured_name:
+        return SAVE_NO_PROFILE, None
+    if cfg.get("current_profile") != captured_name:
+        return SAVE_PROFILE_CHANGED, None
+    profile = (cfg.get("profiles") or {}).get(captured_name)
+    if not isinstance(profile, dict):
+        # Renamed, deleted or imported over while the apply was running.
+        return SAVE_PROFILE_GONE, None
+    return SAVE_OK, profile
+
+
+def deferred_save_refusal(status, captured_name, what, where="the hardware"):
+    """The sentence a page shows when the save above was refused.
+
+    One wording, in one place, because all three Apply buttons have to tell
+    the user the same true and slightly awkward thing: the settings are on
+    the machine, and they are not in the config."""
+    tail = f"the {what} were written to {where} but not saved"
+    if status == SAVE_PROFILE_CHANGED:
+        return f"Profile changed while applying; {tail} to {captured_name}."
+    if status == SAVE_PROFILE_GONE:
+        return f"{captured_name} no longer exists; {tail}."
+    return f"No profile was active; {tail}."
+
+
+def save_deferred(cfg, captured_name, section, values, what,
+                  where="the hardware", path=None):
+    """Merge a finished apply's ``values`` into one section of the profile it
+    was started from, and save. The whole write, so that the rule above
+    cannot be enforced in one page and forgotten in the next.
+
+    ``section`` is "fans", "cpu" or "gpu"; ``values`` is what actually
+    reached the hardware, so a setting the machine refused is never recorded
+    as fact. Returns None when the config was written, or the sentence for
+    the user when the write was refused -- refused meaning the profile moved
+    while the apply was running, in which case NOTHING is written: not the
+    profile the user was editing, which they may have left, and above all
+    not the one that is current now, which they never touched.
+
+    Empty ``values`` saves nothing and is not an error: every step can have
+    failed, or the only step that took (EPP) may keep nothing in the
+    config."""
+    status, profile = deferred_save_target(cfg, captured_name)
+    if status != SAVE_OK:
+        return deferred_save_refusal(status, captured_name, what, where)
+    if values:
+        profile.setdefault(section, {}).update(values)
+        save_config(cfg, path)
+    return None
+
+
 def migrate_config(cfg, gpu_min_w=1, gpu_max_w=140):
     """Bring a config from any older version up to date WITHOUT touching
     anything the user has set.

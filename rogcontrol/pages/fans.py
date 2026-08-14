@@ -393,11 +393,19 @@ class FansPage(Gtk.Box):
         channels = list(hardware.FAN_CHANNELS)
         total = CHANNEL_GAP_S * max(0, len(channels) - 1) + 2
 
+        # The profile these curves belong to, captured now. Sixteen seconds
+        # from now the answer may be a different profile -- the enforcer
+        # switches on AC/battery all by itself -- and the curves would be
+        # saved over a profile the user never opened. See
+        # config.deferred_save_target.
+        target = self.window.current_profile_name()
+
         self._set_busy(True)
         self._show_banner("Writing the curves to the fan controller…")
         self._start_progress(total, "Starting…")
-        self.window.apply_async(lambda: self._apply_worker(points, channels),
-                                self._on_applied)
+        self.window.apply_async(
+            lambda: self._apply_worker(points, channels),
+            lambda data, error: self._on_applied(target, data, error))
 
     def _apply_worker(self, points, channels):
         """Write every channel, waiting CHANNEL_GAP_S between them.
@@ -425,7 +433,7 @@ class FansPage(Gtk.Box):
                     f"curves written closer together than that…")
         return {"results": results, "points": points}
 
-    def _on_applied(self, data, error):
+    def _on_applied(self, target, data, error):
         self._stop_progress()
         self._set_busy(False)
         if error is not None:
@@ -442,34 +450,42 @@ class FansPage(Gtk.Box):
             else:
                 failures.append(f"{hardware.FAN_LABELS[channel]}: {message}")
 
-        if applied:
-            self._save(applied)
-        if failures:
+        refused = self._save(target, applied) if applied else None
+        if refused is not None:
+            # Said before the per-channel failures, and instead of the
+            # success line: which profile the curves did or did not land in
+            # is the more important of the two things that just happened.
+            self._show_banner(refused, button="Apply")
+            self.window.toast(refused)
+        elif failures:
             self._show_banner("Some fans were not set — " + "; ".join(failures),
                               button="Apply")
             self.window.toast("Fan curves: " + "; ".join(failures))
         else:
             self.banner.set_revealed(False)
-            self.window.toast("Fan curves applied and saved to "
-                              f"{self.window.current_profile_name()}.")
+            self.window.toast(f"Fan curves applied and saved to {target}.")
         # The driver's cached points have just changed underneath the last
         # sample, so re-read rather than leaving the banner deciding from
         # stale data.
         self._tick()
 
-    def _save(self, applied):
-        """Write the curves that reached the hardware into the profile.
+    def _save(self, target, applied):
+        """Write the curves that reached the hardware into profile ``target``.
 
-        Only the channels that actually took: a profile that stores a curve
-        the fan refused is a profile that silently disagrees with the
-        machine, and the next window to open would show it as fact."""
-        profile = self.window.current_profile()
-        if not profile:
-            return
-        fans = profile.setdefault("fans", {})
-        for channel, points in applied.items():
-            fans[channel] = [[int(t), int(p)] for t, p in points]
-        config_mod.save_config(self.window.config)
+        ``target`` is the profile that was active when Apply was pressed,
+        not whichever one is active now -- resolving it now is what wrote
+        one profile's curves into another. Returns None when the save
+        happened, or the sentence to show the user when it was refused.
+
+        Only the channels that actually took are written: a profile that
+        stores a curve the fan refused is a profile that silently disagrees
+        with the machine, and the next window to open would show it as
+        fact."""
+        curves = {channel: [[int(t), int(p)] for t, p in points]
+                  for channel, points in applied.items()}
+        return config_mod.save_deferred(
+            self.window.config, target, "fans", curves, "curves",
+            where="the fan controller")
 
     # -- calibration ---------------------------------------------------------
 

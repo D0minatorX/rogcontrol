@@ -456,10 +456,17 @@ class GpuPage(Gtk.Box):
             self.window.toast("Nothing on this page can be set on this "
                               "machine.")
             return
+        # Which profile these settings belong to, captured now: the write
+        # runs off the main loop, and the enforcer switches profile on
+        # AC/battery on its own. Resolving the profile when the write
+        # finishes would save them into whichever one is current by then.
+        # See config.deferred_save_target.
+        target = self.window.current_profile_name()
         self._set_busy(True)
         self._show_banner("Writing the GPU settings…")
-        self.window.apply_async(lambda: self._apply_worker(wanted),
-                                self._on_applied)
+        self.window.apply_async(
+            lambda: self._apply_worker(wanted),
+            lambda results, error: self._on_applied(target, results, error))
 
     def _apply_worker(self, wanted):
         """Write every setting in order. Worker thread.
@@ -489,7 +496,7 @@ class GpuPage(Gtk.Box):
             return hardware.set_nvidia_clock_offset("core", value)
         return hardware.set_nvidia_clock_offset("memory", value)
 
-    def _on_applied(self, results, error):
+    def _on_applied(self, target, results, error):
         self._set_busy(False)
         if error is not None:
             self._show_banner(f"Applying the GPU settings failed: {error}",
@@ -504,14 +511,16 @@ class GpuPage(Gtk.Box):
                 applied[key] = value
             else:
                 failures.append(f"{TITLES[key]}: {message}")
-        if applied:
-            self._save(applied)
+        refused = self._save(target, applied) if applied else None
         # Anything the card refused goes back to the value it accepted last.
         failed = [key for key, _value, ok, _message in results if not ok]
         if failed:
             self._restore(failed)
 
-        if failures:
+        if refused is not None:
+            self._show_banner(refused, button="Apply")
+            self.window.toast(refused)
+        elif failures:
             self._show_banner("Some GPU settings were not applied — "
                               + "; ".join(failures), button="Apply")
             self.window.toast("GPU: " + "; ".join(failures))
@@ -519,29 +528,36 @@ class GpuPage(Gtk.Box):
             # Not an unconditional hide: a slider moved while the write was
             # running is genuinely unapplied, and the banner has to say so.
             self._update_banner()
-            self.window.toast("GPU settings applied and saved to "
-                              f"{self.window.current_profile_name()}.")
+            self.window.toast(
+                f"GPU settings applied and saved to {target}.")
 
-    def _save(self, applied):
-        """Write what reached the card into the profile.
+    def _save(self, target, applied):
+        """Write what reached the card into profile ``target``.
 
-        Only what took: a profile holding a setting the card refused is a
-        profile that silently disagrees with the machine."""
-        profile = self.window.current_profile()
-        if not profile:
-            return
-        data = profile.setdefault("gpu", {})
+        ``target`` is the profile that was active when Apply was pressed,
+        not whichever one is active now. Returns None when the save
+        happened, or the sentence to show when it was refused.
+
+        Only what took is written: a profile holding a setting the card
+        refused is a profile that silently disagrees with the machine."""
+        # The ceiling is stored even at the top of the range, where it means
+        # "no limit": a profile that wants no ceiling still has to say so, or
+        # switching away from a limited profile would leave the old cap in
+        # place.
+        refused = config_mod.save_deferred(
+            self.window.config, target, "gpu", applied, "GPU settings")
+        if refused is not None:
+            # ``_applied`` is left alone as well: reload() has already reset
+            # it from the profile that is current now, and marking these
+            # values applied on top of that would have the banner claim the
+            # new profile is running the old one's settings.
+            return refused
         for key, value in applied.items():
-            # The ceiling is stored even at the top of the range, where it
-            # means "no limit": a profile that wants no ceiling still has to
-            # say so, or switching away from a limited profile would leave
-            # the old cap in place.
-            data[key] = value
             # The value that was written, not what the row holds now: the
             # sliders stay live during an apply, and recording the current
             # position would mark a change made mid-write as already applied.
             self._applied[key] = float(value)
-        config_mod.save_config(self.window.config)
+        return None
 
     def _restore(self, keys):
         """Put controls back to the last values the card accepted."""
