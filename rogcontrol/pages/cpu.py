@@ -20,7 +20,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, GLib  # noqa: E402
+from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
@@ -38,6 +38,16 @@ DEBOUNCE_MS = 400
 # within the same instant) into a single ryzenadj call. Waiting another full
 # DEBOUNCE_MS there would double the delay the user feels.
 COALESCE_MS = 20
+
+# How often the live fan reading is refreshed, matching the Overview and GPU
+# pages so a fan does not appear to be doing two different speeds depending
+# on which page you are looking at.
+REFRESH_SECONDS = 2
+DASH = "—"
+
+# The asus hwmon's fan1. Its label comes from hardware, so this page, the GPU
+# page and the Overview all name the same fan the same way.
+FAN_CHANNEL = "1"
 
 # (key, title, subtitle, min, max, unit). Watts and degrees as the user sees
 # them; the config and the helper both work in milliwatts for the first three.
@@ -88,15 +98,30 @@ class CpuPage(Adw.PreferencesPage):
         # Last values known to have reached the hardware, for putting a
         # control back after a rejected apply.
         self._applied = {}
+        self._sampling = False
+        self._timer_id = None
 
         self.rows = {}
         self._build()
         self.reload()
         self._loading = False
+        # One read straight away, so the fan is a number the moment the page
+        # is opened rather than a dash until the first interval elapses.
+        self._start_sample()
+        self._timer_id = GLib.timeout_add_seconds(REFRESH_SECONDS, self._tick)
+        self.connect("destroy", self._on_destroy)
 
     # -- construction --------------------------------------------------------
 
     def _build(self):
+        status = Adw.PreferencesGroup(title="Processor")
+        self.add(status)
+        self.fan_row, self.fan_value = self._live_row(
+            status, hardware.FAN_LABELS[FAN_CHANNEL])
+        if not self.caps.get("fan_rpm"):
+            self.fan_row.set_subtitle("No asus hwmon fan reading on this "
+                                      "machine")
+
         limits = Adw.PreferencesGroup(
             title="Power limits",
             description="Sent to ryzenadj as one set — moving any of them "
@@ -148,6 +173,18 @@ class CpuPage(Adw.PreferencesPage):
         self.rows["clock"] = clock
 
         self._apply_capability_gating(limits, tuning)
+
+    def _live_row(self, group, title):
+        """An ActionRow whose suffix label carries the live reading."""
+        row = Adw.ActionRow(title=title)
+        # "numeric" is tabular figures, so a value changing width does not
+        # shuffle the column sideways twice a second.
+        label = Gtk.Label(label=DASH)
+        label.add_css_class("numeric")
+        label.add_css_class("dim-label")
+        row.add_suffix(label)
+        group.add(row)
+        return row, label
 
     def _apply_capability_gating(self, limits_group, _tuning_group):
         """Grey out what this machine cannot do, and say why.
@@ -211,6 +248,45 @@ class CpuPage(Adw.PreferencesPage):
             self._applied["clock"] = row.get_value()
         finally:
             self._loading = was_loading
+
+    # -- live fan reading ----------------------------------------------------
+
+    def _on_destroy(self, _widget):
+        if self._timer_id is not None:
+            GLib.source_remove(self._timer_id)
+            self._timer_id = None
+
+    def _tick(self):
+        # The stack unmaps the pages nobody is looking at, and a window
+        # started with --minimized is unmapped entirely; neither needs a
+        # reading taken for it.
+        if self.get_mapped():
+            self._start_sample()
+        return GLib.SOURCE_CONTINUE
+
+    def _start_sample(self):
+        if self._sampling:
+            return
+        self._sampling = True
+        self.window.apply_async(self._sample, self._on_sample)
+
+    def _sample(self):
+        """Worker thread: one sysfs read, no widgets."""
+        return hardware.read_fan_rpms().get(FAN_CHANNEL)
+
+    def _on_sample(self, rpm, error):
+        self._sampling = False
+        if error is not None:
+            # One failed read is not worth a toast every two seconds; the
+            # traceback is already on stderr from apply_async.
+            return
+        self._render(rpm)
+
+    def _render(self, rpm):
+        # A dash, not a zero: a fan that cannot be read is not a fan that has
+        # stopped, and "0 rpm" is the reading that would send someone hunting
+        # a hardware fault that is not there.
+        self.fan_value.set_text(DASH if rpm is None else f"{rpm} rpm")
 
     # -- change handling -----------------------------------------------------
 
@@ -371,5 +447,7 @@ class CpuPage(Adw.PreferencesPage):
     # -- shell hooks ---------------------------------------------------------
 
     def self_test_tick(self):
-        """Load the active profile into every control, no hardware writes."""
+        """Load the active profile into every control and render one fan
+        read, no hardware writes."""
         self.reload()
+        self._render(self._sample())

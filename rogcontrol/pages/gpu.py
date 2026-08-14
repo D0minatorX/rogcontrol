@@ -39,6 +39,11 @@ COALESCE_MS = 20
 REFRESH_SECONDS = 2
 DASH = "—"
 
+# The asus hwmon's fan2, which is the one blowing over the card. The label
+# comes from hardware too, so this page, the CPU page and the Overview all
+# call the same fan the same thing.
+FAN_CHANNEL = "2"
+
 CLOCK_LIMIT_SUBTITLE = (
     "A ceiling, not a target — the GPU still idles and boosts freely below "
     "it, and this raises no power or thermal limit.\n"
@@ -114,6 +119,8 @@ class GpuPage(Adw.PreferencesPage):
             description=self.gpu_name or "No NVIDIA card detected")
         self.add(status)
         self.temp_row, self.temp_value = self._live_row(status, "Temperature")
+        self.fan_row, self.fan_value = self._live_row(
+            status, hardware.FAN_LABELS[FAN_CHANNEL])
 
         power = Adw.PreferencesGroup(title="Power")
         self.add(power)
@@ -201,6 +208,11 @@ class GpuPage(Adw.PreferencesPage):
             for key in ("watts", "clock_limit"):
                 self._disable(key, "nvidia-smi is not installed")
             self.temp_row.set_subtitle("nvidia-smi is not installed")
+        if not self.caps.get("fan_rpm"):
+            # The tachometer is on the asus hwmon, not the card, so it can be
+            # missing on a machine whose GPU controls all work.
+            self.fan_row.set_subtitle("No asus hwmon fan reading on this "
+                                      "machine")
         if not self.caps.get("nvidia_settings"):
             for key in ("clock_offset", "mem_clock_offset"):
                 self._disable(key, "nvidia-settings is not installed")
@@ -265,10 +277,22 @@ class GpuPage(Adw.PreferencesPage):
         return GLib.SOURCE_CONTINUE
 
     def _start_sample(self):
-        if self._sampling or not self.caps.get("nvidia"):
+        if self._sampling:
             return
         self._sampling = True
-        self.window.apply_async(hardware.read_nvidia_stats, self._on_sample)
+        self.window.apply_async(self._sample, self._on_sample)
+
+    def _sample(self):
+        """Worker thread: the card's own numbers and the fan cooling it.
+
+        Both, always, in one pass -- the fan is a sysfs read that costs
+        nothing next to the nvidia-smi call, and a machine with no NVIDIA
+        card still has a fan reading worth showing."""
+        return {
+            "nvidia": (hardware.read_nvidia_stats()
+                       if self.caps.get("nvidia") else (None, None)),
+            "fan_rpm": hardware.read_fan_rpms().get(FAN_CHANNEL),
+        }
 
     def _on_sample(self, result, error):
         self._sampling = False
@@ -276,9 +300,14 @@ class GpuPage(Adw.PreferencesPage):
             return
         self._render(result)
 
-    def _render(self, stats):
-        temp = (stats or (None, None))[0]
+    def _render(self, data):
+        temp = (data.get("nvidia") or (None, None))[0]
         self.temp_value.set_text(DASH if temp is None else f"{temp:.0f} °C")
+        rpm = data.get("fan_rpm")
+        # A dash, not a zero: a fan that cannot be read is not a fan that has
+        # stopped, and "0 rpm" is the reading that would send someone
+        # hunting a hardware fault that is not there.
+        self.fan_value.set_text(DASH if rpm is None else f"{rpm} rpm")
 
     # -- change handling -----------------------------------------------------
 
@@ -396,7 +425,6 @@ class GpuPage(Adw.PreferencesPage):
     # -- shell hooks ---------------------------------------------------------
 
     def self_test_tick(self):
-        """Load the profile and render one temperature read. No writes."""
+        """Load the profile and render one live read. No writes."""
         self.reload()
-        self._render(hardware.read_nvidia_stats()
-                     if self.caps.get("nvidia") else (None, None))
+        self._render(self._sample())

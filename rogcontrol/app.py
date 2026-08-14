@@ -232,6 +232,12 @@ class MainWindow(Adw.ApplicationWindow):
         # the window's minimum width from inside the header bar, where no
         # amount of reflowing below can help.
         self.profile_drop.set_factory(self._ellipsizing_factory())
+        # The popup is a separate factory, and it must not ellipsize: the
+        # button can afford to shorten a name because the tooltip and the
+        # popup both still name it in full, but a list where "Balanced Power"
+        # and "Balanced Performance" both read "Balanced P..." is a list you
+        # cannot choose from. This is the GTK3 app's oldest bug.
+        self.profile_drop.set_list_factory(self._full_name_factory())
         current = self.config.get("current_profile")
         if current in self.profile_names:
             self.profile_drop.set_selected(self.profile_names.index(current))
@@ -277,9 +283,12 @@ class MainWindow(Adw.ApplicationWindow):
 
     @staticmethod
     def _ellipsizing_factory():
-        """List factory whose labels shorten instead of pushing the header
-        wide. Used for the button face; the popup list inherits it, which is
-        fine -- the popover is free to be as wide as the window allows."""
+        """Factory for the button face, whose label shortens instead of
+        pushing the header wide.
+
+        Only the closed button uses this. The popup gets
+        ``_full_name_factory`` instead, because a shortened name is a hint
+        there and a dead end in the list."""
         factory = Gtk.SignalListItemFactory()
 
         def setup(_factory, item):
@@ -287,6 +296,25 @@ class MainWindow(Adw.ApplicationWindow):
             label.set_ellipsize(Pango.EllipsizeMode.END)
             label.set_max_width_chars(16)
             item.set_child(label)
+
+        def bind(_factory, item):
+            item.get_child().set_text(item.get_item().get_string())
+
+        factory.connect("setup", setup)
+        factory.connect("bind", bind)
+        return factory
+
+    @staticmethod
+    def _full_name_factory():
+        """Factory for the popup list: every name in full, however long.
+
+        No ellipsizing and no width cap, so the popover sizes to its longest
+        name. GtkDropDown gives the popover the button's width as a *minimum*
+        only, so widening past the header costs the closed button nothing."""
+        factory = Gtk.SignalListItemFactory()
+
+        def setup(_factory, item):
+            item.set_child(Gtk.Label(xalign=0))
 
         def bind(_factory, item):
             item.get_child().set_text(item.get_item().get_string())
