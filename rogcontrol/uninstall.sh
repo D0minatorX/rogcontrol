@@ -33,7 +33,10 @@ for arg in "$@"; do
 done
 
 step "What will be removed"
-echo "  ~/.local/bin/rogcontrol*.py             (app and shortcut scripts)"
+echo "  ~/.local/lib/rogcontrol/                (the application package)"
+echo "  ~/.local/bin/rogcontrol                 (launcher)"
+echo "  ~/.local/bin/rogcontrol-tray            (tray icon)"
+echo "  ~/.local/bin/rogcontrol*.py             (shortcut and service scripts)"
 echo "  ~/.config/systemd/user/rogcontrol-*     (background services)"
 echo "  ~/.local/share/applications/rogcontrol* (launchers)"
 echo "  ~/.config/autostart/rogcontrol-*        (autostart entry)"
@@ -64,11 +67,21 @@ fi
 step "Stopping services"
 systemctl --user disable --now rogcontrol-enforcer.service >/dev/null 2>&1 || true
 systemctl --user disable --now rogcontrol-apply.service    >/dev/null 2>&1 || true
-pkill -f "local/bin/rogcontrol.py" 2>/dev/null || true
-say "Services stopped and disabled, app closed"
+# The window, the tray sidecar, and the GTK3 app if a pre-GTK4 install is
+# what is being removed. "python3 -m rogcontrol" is how the window shows up
+# in a process list, since the launcher execs into it.
+pkill -f "local/bin/rogcontrol-tray" 2>/dev/null || true
+pkill -f "local/bin/rogcontrol.py"   2>/dev/null || true
+pkill -f "python3 -m rogcontrol"     2>/dev/null || true
+say "Services stopped and disabled, app and tray closed"
 
 step "Removing files"
-rm -f "$HOME"/.local/bin/rogcontrol.py \
+# The package directory holds nothing but installed code -- settings live in
+# ~/.config/rogcontrol.json, which this only touches under --purge.
+rm -rf "$HOME"/.local/lib/rogcontrol
+rm -f "$HOME"/.local/bin/rogcontrol \
+      "$HOME"/.local/bin/rogcontrol-tray \
+      "$HOME"/.local/bin/rogcontrol.py \
       "$HOME"/.local/bin/rogcontrol-enforcer.py \
       "$HOME"/.local/bin/rogcontrol-apply.py \
       "$HOME"/.local/bin/rogcontrol-cycle-profile.py \

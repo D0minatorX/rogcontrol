@@ -9,11 +9,15 @@ PART 1 - SYSTEM PACKAGES
 ===========================
 
 sudo pacman -Syu
-sudo pacman -S python-gobject gtk3 libnotify base-devel git cmake \
-               nvidia-utils supergfxctl
+sudo pacman -S python-gobject gtk4 libadwaita gtk3 libnotify base-devel \
+               git cmake nvidia-utils supergfxctl
 
 What each one is for:
-  python-gobject, gtk3   - the GUI toolkit the app is written in
+  python-gobject         - the python bindings for all of the below
+  gtk4, libadwaita       - the toolkit the window is written in. Required:
+                           the installer stops if either is missing
+  gtk3                   - only for the tray icon, which is a separate
+                           process (AppIndicator has no GTK4 binding)
   libnotify              - lets the app show a desktop notification
                            when it switches profiles automatically
   base-devel, git, cmake - needed to build ryzenadj from source
@@ -137,11 +141,13 @@ PART 7 - RUN THE INSTALLER
 
 This will:
   - check all the dependencies above and tell you if anything's missing
-  - install the app to ~/.local/bin/rogcontrol.py
+  - install the app package to ~/.local/lib/rogcontrol/, the launcher to
+    ~/.local/bin/rogcontrol, and the tray to ~/.local/bin/rogcontrol-tray
+  - remove ~/.local/bin/rogcontrol.py if an older version put it there
   - install the icon (and remove any stale old icon file)
   - install the app-grid launcher ("ROG Control")
-  - install the silent autostart entry (starts hidden in the tray at
-    login, no window pop-up)
+  - install the autostart entry (starts the tray at login, no window
+    pop-up)
   - install the cycle-profile shortcut script (bindable to a hotkey)
   - install and enable two systemd --user services:
       rogcontrol-apply.service    - reapplies your saved profile once,
@@ -155,7 +161,7 @@ PART 8 - FIRST LAUNCH / VERIFICATION
 =========================================
 Launch it from the app grid (search "ROG Control"), or manually:
 
-    python3 ~/.local/bin/rogcontrol.py
+    rogcontrol
 
 Check each tab:
   - CPU: adjust a slider, confirm no error appears
@@ -197,9 +203,9 @@ one does:
    resetting something (e.g. after sleep/wake or unplugging the charger)
    and puts it back without you having to notice or do anything.
 
-3. The GUI app itself (autostart entry)
-   Also launches at login, but with --minimized, so it starts hidden in
-   the tray -- no window pop-up. It doesn't do the actual hardware
+3. The tray icon (autostart entry)
+   Also launches at login. Only the tray, not the window -- no pop-up;
+   you open the window from the tray. It doesn't do the actual hardware
    force-apply itself; the two services above handle that. The tray
    icon is just there so you can open the window or cycle profiles
    without hunting for it in the app grid.
@@ -241,10 +247,13 @@ If you ever want to walk away from this cleanly:
     sudo rm -f /usr/local/bin/rogcontrol-shutdown-hook.py
 
     # Kill the running app/tray if open
-    pkill -f rogcontrol.py
+    pkill -f rogcontrol-tray
+    pkill -f "python3 -m rogcontrol"
 
     # Remove the app itself and its launchers/shortcut scripts
-    rm -f ~/.local/bin/rogcontrol.py
+    rm -rf ~/.local/lib/rogcontrol
+    rm -f ~/.local/bin/rogcontrol
+    rm -f ~/.local/bin/rogcontrol-tray
     rm -f ~/.local/bin/rogcontrol-apply.py
     rm -f ~/.local/bin/rogcontrol-enforcer.py
     rm -f ~/.local/bin/rogcontrol-cycle-profile.py

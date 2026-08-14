@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=ROG Control (autostart)
-Comment=Starts ROG Control minimized to the tray at login
-Exec=python3 %h/.local/bin/rogcontrol.py --minimized
+Name=ROG Control (tray)
+Comment=Starts the ROG Control tray icon at login
+Exec=%h/.local/bin/rogcontrol-tray
 Icon=%h/.local/share/icons/hicolor/256x256/apps/rogcontrol.png
 Terminal=false
 NoDisplay=true
