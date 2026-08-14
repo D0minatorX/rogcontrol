@@ -160,7 +160,18 @@ class Tray:
         current = self.config.get("current_profile")
 
         menu = Gtk.Menu()
+
+        # First, above everything. Opening the window is what the icon is
+        # clicked for most often, and it was under a list of four profiles
+        # where it had to be hunted for. Quit stays last, at the other end,
+        # where an accidental click cannot land on it.
+        show_item = Gtk.MenuItem(label="Show window")
+        show_item.connect("activate", self._on_show)
+        menu.append(show_item)
+
         group = None
+        if self._shown:
+            menu.append(Gtk.SeparatorMenuItem())
         for name in self._shown:
             item = Gtk.RadioMenuItem.new_with_label_from_widget(group, name)
             if group is None:
@@ -183,10 +194,6 @@ class Tray:
                 group, "")
             self._sync_menu(current)
             menu.append(Gtk.SeparatorMenuItem())
-
-        show_item = Gtk.MenuItem(label="Show window")
-        show_item.connect("activate", self._on_show)
-        menu.append(show_item)
 
         quit_item = Gtk.MenuItem(label="Quit")
         quit_item.connect("activate", self._on_quit)
