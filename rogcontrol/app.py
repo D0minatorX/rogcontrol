@@ -188,6 +188,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.content_title = Adw.WindowTitle(title="Overview", subtitle="")
         header = Adw.HeaderBar()
         header.set_title_widget(self.content_title)
+        # Packed menu-first, so the menu button sits at the very end and the
+        # profile drop-down to its left -- the order every GNOME app uses.
+        header.pack_end(self._build_profile_menu())
         header.pack_end(self._build_profile_switcher())
 
         self.stack = Gtk.Stack()
@@ -252,6 +255,40 @@ class MainWindow(Adw.ApplicationWindow):
         # every time the window opened.
         self.profile_drop.connect("notify::selected", self._on_profile_changed)
         return self.profile_drop
+
+    def _build_profile_menu(self):
+        """The menu next to the switcher: everything that changes *which*
+        profiles exist, as opposed to which one is active.
+
+        A menu rather than four buttons because the header has to survive a
+        360px window, and because these are rare, deliberate acts -- the
+        drop-down beside it is the control that gets used every day."""
+        for name, handler in (
+                ("new-profile", self._on_new_profile),
+                ("delete-profile", self._on_delete_profile),
+                ("import-profiles", self._on_import_profiles),
+                ("export-profile", self._on_export_profile)):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", handler)
+            self.add_action(action)
+
+        # Two sections: what this config holds, then moving profiles between
+        # machines. The separator between them is the point of the split.
+        edit = Gio.Menu()
+        edit.append("New Profile…", "win.new-profile")
+        edit.append("Delete Profile…", "win.delete-profile")
+        transfer = Gio.Menu()
+        transfer.append("Import Profiles…", "win.import-profiles")
+        transfer.append("Export Profile…", "win.export-profile")
+        menu = Gio.Menu()
+        menu.append_section(None, edit)
+        menu.append_section(None, transfer)
+
+        self.profile_menu = Gtk.MenuButton()
+        self.profile_menu.set_icon_name("open-menu-symbolic")
+        self.profile_menu.set_tooltip_text("Manage profiles")
+        self.profile_menu.set_menu_model(menu)
+        return self.profile_menu
 
     @staticmethod
     def _ellipsizing_factory():
@@ -330,6 +367,216 @@ class MainWindow(Adw.ApplicationWindow):
             if reload_fn is not None:
                 reload_fn()
 
+    # -- managing which profiles exist ---------------------------------------
+    #
+    # The rules all live in config.py, where they are pure and tested; what
+    # is left here is asking the question and reporting the answer. Every one
+    # of these ends in save_config + _refresh_profile_list, because the
+    # switcher's model is a snapshot of the config and a stale one offers a
+    # switch to a profile that is not there any more.
+
+    def _refresh_profile_list(self, select=None):
+        """Rebuild the switcher from the config, selecting ``select``.
+
+        Held under ``_loading`` so that pointing the drop-down at a different
+        profile does not read as the user choosing it -- which would fire a
+        second, ~20 second hardware apply on top of whatever the caller is
+        already doing."""
+        was_loading = self._loading
+        self._loading = True
+        try:
+            self._sync_profile_drop(select or self.config.get("current_profile"))
+        finally:
+            self._loading = was_loading
+
+    def _on_new_profile(self, _action, _param):
+        current = self.current_profile_name()
+        dialog = Adw.AlertDialog(
+            heading="New profile",
+            body=f"It starts as a copy of “{current}”, so the machine keeps "
+                 f"running exactly as it is now." if current else
+                 "The new profile starts from the stock settings.")
+        entry = Gtk.Entry(placeholder_text="Profile name")
+        # Enter creates, which is the whole interaction for a dialog that is
+        # one text field.
+        entry.set_activates_default(True)
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("create", "Create")
+        dialog.set_response_appearance("create",
+                                       Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("create")
+        dialog.set_close_response("cancel")
+        # Refused names are refused before the button is pressed rather than
+        # after: an empty or duplicate name is the only way this can fail, and
+        # a greyed-out Create says so without the user losing what they typed.
+        dialog.set_response_enabled("create", False)
+        entry.connect("changed", self._on_new_profile_typed, dialog)
+        dialog.connect("response", self._on_new_profile_response, entry)
+        dialog.present(self)
+
+    def _on_new_profile_typed(self, entry, dialog):
+        error = config_mod.profile_name_error(self.config, entry.get_text())
+        dialog.set_response_enabled("create", error is None)
+        # Red only once there is something to be wrong: an empty field is the
+        # starting state, not a mistake.
+        if error is not None and entry.get_text().strip():
+            entry.add_css_class("error")
+            entry.set_tooltip_text(error)
+        else:
+            entry.remove_css_class("error")
+            entry.set_tooltip_text(None)
+
+    def _on_new_profile_response(self, _dialog, response, entry):
+        if response != "create":
+            return
+        try:
+            name = config_mod.create_profile(self.config, entry.get_text())
+        except ValueError as e:
+            self.toast(str(e))
+            return
+        config_mod.save_config(self.config)
+        self._refresh_profile_list(select=name)
+        self.reload_pages()
+        # No hardware apply: the new profile is a copy of the one already
+        # running, so there is nothing to push, and pushing it would cost
+        # ~20 seconds of fan writes to arrive back where the machine already is.
+        self.toast(f"Profile “{name}” created — a copy of what is running.")
+
+    def _on_delete_profile(self, _action, _param):
+        name = self.current_profile_name()
+        if not name:
+            self.toast("There is no profile to delete.")
+            return
+        if len((self.config.get("profiles") or {})) <= 1:
+            self.toast("This is the only profile left — there has to be one.")
+            return
+        # Named here rather than discovered afterwards: losing an auto-switch
+        # target is a consequence the user should agree to, not find out about
+        # the next time they unplug.
+        also = [source for source, key in config_mod.AUTO_SWITCH_KEYS.items()
+                if self.config.get(key) == name]
+        body = "This cannot be undone."
+        if also:
+            body += (" It is also the profile used on "
+                     + " and ".join(also)
+                     + " power, so that auto-switch will be turned off.")
+        dialog = Adw.AlertDialog(heading=f"Delete “{name}”?", body=body)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete")
+        dialog.set_response_appearance("delete",
+                                       Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_delete_response, name)
+        dialog.present(self)
+
+    def _on_delete_response(self, _dialog, response, name):
+        if response != "delete":
+            return
+        was_current = name == self.config.get("current_profile")
+        try:
+            current = config_mod.delete_profile(self.config, name)
+        except ValueError as e:
+            self.toast(str(e))
+            return
+        config_mod.save_config(self.config)
+        self._refresh_profile_list(select=current)
+        self.reload_pages()
+        self.toast(f"Deleted “{name}”.")
+        if was_current:
+            # The machine is still running the settings of a profile that no
+            # longer exists, and current_profile now names a different one.
+            # Leaving those two disagreeing is what the enforcer would spend
+            # the next minute correcting anyway.
+            self.apply_profile_async(current)
+
+    def _on_export_profile(self, _action, _param):
+        name = self.current_profile_name()
+        if not name:
+            self.toast("There is no profile to export.")
+            return
+        dialog = Gtk.FileDialog()
+        dialog.set_title(f"Export “{name}”")
+        # A slash in a profile name is a path separator in a filename.
+        dialog.set_initial_name(f"{name.replace('/', '_')}.rogprofile.json")
+        dialog.set_filters(self._json_filters())
+        # Gtk.FileDialog, not Gtk.FileChooserDialog: the latter is deprecated
+        # in GTK 4.10 and its .run() needs a nested main loop, which is the
+        # thing this rewrite is built to avoid.
+        dialog.save(self, None, self._on_export_chosen, name)
+
+    def _on_export_chosen(self, dialog, result, name):
+        try:
+            file = dialog.save_finish(result)
+        except GLib.Error:
+            return  # dismissed
+        path = file.get_path() if file is not None else None
+        if not path:
+            return
+        payload = config_mod.export_payload(self.config, [name])
+        try:
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2)
+        except (OSError, TypeError, ValueError) as e:
+            self.toast(f"Export failed: {e}")
+            return
+        self.toast(f"Exported “{name}” to {os.path.basename(path)}.")
+
+    def _on_import_profiles(self, _action, _param):
+        dialog = Gtk.FileDialog()
+        dialog.set_title("Import profiles")
+        dialog.set_filters(self._json_filters())
+        dialog.open(self, None, self._on_import_chosen)
+
+    def _on_import_chosen(self, dialog, result):
+        try:
+            file = dialog.open_finish(result)
+        except GLib.Error:
+            return  # dismissed
+        path = file.get_path() if file is not None else None
+        if not path:
+            return
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError, ValueError) as e:
+            self.toast(f"Could not read that file: {e}")
+            return
+        try:
+            # Validates the whole file before it touches the config: a file
+            # that is half profiles and half junk must change nothing at all.
+            names = config_mod.import_profiles(self.config, data)
+        except ValueError as e:
+            self.toast(f"Could not import: {e}")
+            return
+        config_mod.save_config(self.config)
+        self._refresh_profile_list()
+        self.reload_pages()
+        # Imported, not applied: the file describes power limits and fan
+        # curves for a machine that may not be this one, so it arrives as
+        # something to look at and select, never as something now running.
+        if len(names) == 1:
+            self.toast(f"Imported “{names[0]}” — select it to apply.")
+        else:
+            self.toast(f"Imported {len(names)} profiles — "
+                       f"select one to apply.")
+
+    @staticmethod
+    def _json_filters():
+        """Profile files first, everything else still reachable -- an export
+        the user renamed is still a perfectly good import."""
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        profile_filter = Gtk.FileFilter()
+        profile_filter.set_name("Profile files")
+        profile_filter.add_pattern("*.json")
+        filters.append(profile_filter)
+        everything = Gtk.FileFilter()
+        everything.set_name("All files")
+        everything.add_pattern("*")
+        filters.append(everything)
+        return filters
+
     # -- applying a whole profile --------------------------------------------
 
     def apply_profile_async(self, name):
@@ -344,9 +591,11 @@ class MainWindow(Adw.ApplicationWindow):
             return
         profile = (self.config.get("profiles") or {}).get(name) or {}
         self._applying_profile = True
-        # Nothing else may start a second apply underneath this one, and the
-        # dropdown is the only way in.
+        # Nothing else may start a second apply underneath this one. The
+        # drop-down is one way in; deleting the active profile is the other,
+        # so the menu goes with it.
         self.profile_drop.set_sensitive(False)
+        self.profile_menu.set_sensitive(False)
         self._set_apply_banner(f"Applying {name}…")
         self.apply_async(
             lambda: self._apply_profile_worker(name, profile),
@@ -461,6 +710,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_profile_applied(self, name, failures, error):
         self._applying_profile = False
         self.profile_drop.set_sensitive(True)
+        self.profile_menu.set_sensitive(True)
         self.apply_banner.set_revealed(False)
         if error is not None:
             self.toast(f"Applying {name} failed: {error}")
@@ -615,6 +865,14 @@ class MainWindow(Adw.ApplicationWindow):
         for page_id, _label, _icon in PAGE_SPECS:
             self.select_page(page_id)
         self.select_page("overview")
+        # The header menu's items are strings pointing at actions by name, so
+        # a renamed handler shows up as a menu entry that is simply dead
+        # rather than as an error. Nothing else would catch it.
+        for name in ("new-profile", "delete-profile", "import-profiles",
+                     "export-profile"):
+            if self.lookup_action(name) is None:
+                raise RuntimeError(f"the profile menu's {name} action is "
+                                   f"missing")
 
 
 class RogControlApp(Adw.Application):

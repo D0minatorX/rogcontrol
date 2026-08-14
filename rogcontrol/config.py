@@ -72,6 +72,186 @@ def auto_switch_value(label):
     return None if label == NO_AUTO_SWITCH else label
 
 
+# --- creating, deleting and moving profiles between machines ----------------
+#
+# All pure: a config dict in, a config dict edited in place, no I/O and no
+# GTK. The window is a thin shell over these -- it asks for a name, shows a
+# confirmation and picks a file, and every rule about what is allowed lives
+# here where it can be tested.
+
+# Stamped into an exported file. The format is deliberately "a dict with a
+# profiles key", the same shape the config itself uses, so a whole config
+# file is also a valid import and a hand-edited export cannot end up in some
+# second, subtly different dialect.
+PROFILE_FILE_VERSION = 1
+
+# The sections a thing has to have at least one of before it is a profile
+# rather than an arbitrary JSON object that happens to be in the file.
+PROFILE_SECTIONS = ("cpu", "gpu", "fans")
+
+
+def profile_name_error(cfg, name):
+    """Why ``name`` cannot be a new profile, or None if it can.
+
+    Duplicates are refused rather than silently overwritten: the name is the
+    only handle the user has on a profile, and a "New" that quietly replaced
+    the curves behind an existing name would destroy tuning with no warning
+    and no undo."""
+    name = (name or "").strip()
+    if not name:
+        return "A profile needs a name."
+    profiles = cfg.get("profiles")
+    if isinstance(profiles, dict) and name in profiles:
+        return f"There is already a profile called “{name}”."
+    return None
+
+
+def free_profile_name(cfg, base):
+    """``base``, or the first "base (2)", "base (3)" … that is free."""
+    profiles = cfg.get("profiles")
+    if not isinstance(profiles, dict) or base not in profiles:
+        return base
+    n = 2
+    while f"{base} ({n})" in profiles:
+        n += 1
+    return f"{base} ({n})"
+
+
+def create_profile(cfg, name, template=None):
+    """Add ``name`` as a copy of ``template`` and make it current.
+
+    ``template`` defaults to the current profile, so a new profile starts as
+    the machine is running right now -- which is what makes "New" a way to
+    branch off a profile you have just tuned, rather than a way to get an
+    empty one you then have to fill in from nothing.
+
+    The copy is deep. Sharing the sub-dicts would make editing the new
+    profile's fan curve edit the one it was copied from.
+
+    Raises ValueError with a message meant for the user."""
+    error = profile_name_error(cfg, name)
+    if error:
+        raise ValueError(error)
+    name = name.strip()
+    profiles = cfg.setdefault("profiles", {})
+    if template is None:
+        template = profiles.get(cfg.get("current_profile")) or {}
+    profiles[name] = json.loads(json.dumps(template))
+    cfg["current_profile"] = name
+    return name
+
+
+def delete_profile(cfg, name):
+    """Remove ``name``, leaving the config consistent. Returns the profile
+    that is current afterwards.
+
+    Three rules, all of them things the GTK3 version got wrong or did not
+    consider:
+
+    * The last profile cannot be deleted. A config with no profiles has
+      nothing to apply and nothing to show, and the next migration would
+      quietly hand back the stock four as if the user's had never existed.
+    * ``current_profile`` must still name a profile that exists. Deleting a
+      profile that is not the current one therefore leaves the current one
+      alone -- the old version moved the user to the first profile in the
+      list whichever one they deleted, so tidying up an unused profile
+      silently switched the machine.
+    * ``ac_profile``/``battery_profile`` pointing at the deleted profile are
+      cleared. Left behind, they name something that no longer exists: the
+      picker on the Battery page falls back to "Don't auto-switch" while the
+      file still says otherwise, so the next person to read the file (or the
+      next export) sees a switch configured to a ghost.
+
+    Raises ValueError with a message meant for the user."""
+    profiles = cfg.get("profiles")
+    if not isinstance(profiles, dict) or name not in profiles:
+        raise ValueError(f"There is no profile called “{name}”.")
+    if len(profiles) <= 1:
+        raise ValueError("This is the only profile left — there has to be "
+                         "one. Create another first.")
+    del profiles[name]
+    if cfg.get("current_profile") not in profiles:
+        cfg["current_profile"] = next(iter(profiles))
+    for key in AUTO_SWITCH_KEYS.values():
+        if cfg.get(key) == name:
+            cfg[key] = None
+    return cfg["current_profile"]
+
+
+def export_payload(cfg, names):
+    """What Export writes: the named profiles, in a dict keyed ``profiles``.
+
+    Deep-copied, so the file being serialised cannot be changed under the
+    writer by a page editing the live config."""
+    profiles = cfg.get("profiles") or {}
+    picked = {name: profiles[name] for name in names if name in profiles}
+    return {
+        "rogcontrol_profile_version": PROFILE_FILE_VERSION,
+        "profiles": json.loads(json.dumps(picked)),
+    }
+
+
+def parse_import(data):
+    """Validate a loaded profile file and return ``{name: profile}``.
+
+    The file came from wherever the user pointed the file chooser, so it is
+    checked rather than trusted: this is the one path by which arbitrary
+    JSON can reach the config, and a config the app cannot read is the
+    user's profiles gone. Everything that is not obviously a profile set is
+    refused *before* anything is merged.
+
+    Sections the file omits are filled in from the stock Balanced
+    Performance profile, so a partial profile cannot produce an entry the
+    pages then have to guard every lookup against.
+
+    Raises ValueError with a message meant for the user."""
+    if not isinstance(data, dict):
+        raise ValueError("this is not a profile file (the top level is not "
+                         "a JSON object)")
+    profiles = data.get("profiles")
+    if not isinstance(profiles, dict):
+        raise ValueError("this file has no “profiles” section")
+    if not profiles:
+        raise ValueError("this file contains no profiles")
+    clean = {}
+    for name, profile in profiles.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("this file has a profile with no name")
+        if not isinstance(profile, dict):
+            raise ValueError(f"“{name}” is not a profile")
+        if not any(section in profile for section in PROFILE_SECTIONS):
+            raise ValueError(f"“{name}” has no cpu, gpu or fans section")
+        profile = json.loads(json.dumps(profile))
+        base = DEFAULT_PROFILES["Balanced Performance"]
+        for section in PROFILE_SECTIONS:
+            if not isinstance(profile.get(section), dict):
+                profile[section] = json.loads(json.dumps(base[section]))
+        clean[name.strip()] = profile
+    return clean
+
+
+def import_profiles(cfg, data):
+    """Merge a profile file into ``cfg``. Returns the names as imported.
+
+    Nothing in ``cfg`` is touched until the whole file has validated, so a
+    file that is half profiles and half junk changes nothing at all rather
+    than leaving the config partly merged.
+
+    An imported profile whose name is taken comes in as "Name (2)" instead
+    of replacing what is there. Import is reached from a file chooser, where
+    the file's contents are not on screen; silently overwriting a tuned
+    profile because a stranger's export happened to use the same name is not
+    something the user could have seen coming, and there is no undo."""
+    incoming = parse_import(data)          # raises before anything is touched
+    profiles = cfg.setdefault("profiles", {})
+    imported = []
+    for name, profile in incoming.items():
+        name = free_profile_name(cfg, name)
+        profiles[name] = profile
+        imported.append(name)
+    return imported
+
+
 # How often an open window re-checks the config file. The window is not the
 # only writer -- the enforcer's AC auto-switch and its power-mode adoption,
 # the tray and the hotkey cycler all write it -- and a window that loaded the

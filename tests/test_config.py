@@ -434,6 +434,232 @@ class AutoSwitchPickers(unittest.TestCase):
                          {"ac": "ac_profile", "battery": "battery_profile"})
 
 
+class NewProfiles(unittest.TestCase):
+    """Creating a profile. The name rules are the whole of it: a duplicate
+    name would overwrite tuning that has no other handle on it, and an empty
+    one produces a profile the picker cannot show."""
+
+    def setUp(self):
+        self.cfg = config.migrate_config({})
+        self.cfg["current_profile"] = "Quiet"
+
+    def test_a_duplicate_name_is_refused(self):
+        self.assertIsNotNone(config.profile_name_error(self.cfg, "Quiet"))
+        with self.assertRaises(ValueError):
+            config.create_profile(self.cfg, "Quiet")
+        # And the profile that was already there is untouched.
+        self.assertEqual(self.cfg["profiles"]["Quiet"]["cpu"]["stapm"],
+                         profiles.DEFAULT_PROFILES["Quiet"]["cpu"]["stapm"])
+
+    def test_a_duplicate_after_trimming_is_still_a_duplicate(self):
+        # "Quiet " and "Quiet" would be two rows showing the same text.
+        self.assertIsNotNone(config.profile_name_error(self.cfg, "  Quiet  "))
+
+    def test_an_empty_name_is_refused(self):
+        for junk in ("", "   ", None):
+            self.assertIsNotNone(config.profile_name_error(self.cfg, junk),
+                                 repr(junk))
+            with self.assertRaises(ValueError):
+                config.create_profile(self.cfg, junk)
+
+    def test_a_free_name_is_accepted(self):
+        self.assertIsNone(config.profile_name_error(self.cfg, "Mine"))
+
+    def test_the_new_profile_copies_the_current_one_and_becomes_current(self):
+        self.cfg["profiles"]["Quiet"]["cpu"]["stapm"] = 12345
+        config.create_profile(self.cfg, "Mine")
+        self.assertEqual(self.cfg["current_profile"], "Mine")
+        self.assertEqual(self.cfg["profiles"]["Mine"]["cpu"]["stapm"], 12345)
+
+    def test_the_copy_is_deep(self):
+        # Sharing the sub-dicts would make editing the new profile's curve
+        # edit the profile it was copied from.
+        config.create_profile(self.cfg, "Mine")
+        self.cfg["profiles"]["Mine"]["fans"]["1"][0][1] = 99
+        self.assertNotEqual(self.cfg["profiles"]["Quiet"]["fans"]["1"][0][1], 99)
+
+    def test_the_name_is_stored_trimmed(self):
+        config.create_profile(self.cfg, "  Mine  ")
+        self.assertIn("Mine", self.cfg["profiles"])
+        self.assertEqual(self.cfg["current_profile"], "Mine")
+
+    def test_an_explicit_template_wins_over_the_current_profile(self):
+        config.create_profile(self.cfg, "Mine",
+                              {"cpu": {"stapm": 999}, "gpu": {}, "fans": {}})
+        self.assertEqual(self.cfg["profiles"]["Mine"]["cpu"]["stapm"], 999)
+
+
+class DeletingProfiles(unittest.TestCase):
+    """Deleting a profile has to leave a config that still makes sense:
+    something current, and no dangling auto-switch targets."""
+
+    def setUp(self):
+        self.cfg = config.migrate_config({})
+        self.cfg["current_profile"] = "Quiet"
+        self.cfg["ac_profile"] = "Performance"
+        self.cfg["battery_profile"] = "Quiet"
+
+    def test_deleting_the_current_profile_moves_current_to_a_real_one(self):
+        current = config.delete_profile(self.cfg, "Quiet")
+        self.assertNotIn("Quiet", self.cfg["profiles"])
+        self.assertIn(self.cfg["current_profile"], self.cfg["profiles"])
+        self.assertEqual(current, self.cfg["current_profile"])
+
+    def test_deleting_another_profile_leaves_the_current_one_alone(self):
+        # The GTK3 version moved the user to the first profile in the list
+        # whichever one they deleted, so tidying up an unused profile
+        # silently switched the machine to something else.
+        config.delete_profile(self.cfg, "Performance")
+        self.assertEqual(self.cfg["current_profile"], "Quiet")
+
+    def test_an_ac_reference_to_the_deleted_profile_is_cleared(self):
+        config.delete_profile(self.cfg, "Performance")
+        self.assertIsNone(self.cfg["ac_profile"])
+        self.assertEqual(self.cfg["battery_profile"], "Quiet")
+
+    def test_a_battery_reference_to_the_deleted_profile_is_cleared(self):
+        config.delete_profile(self.cfg, "Quiet")
+        self.assertIsNone(self.cfg["battery_profile"])
+        self.assertEqual(self.cfg["ac_profile"], "Performance")
+
+    def test_references_to_other_profiles_survive(self):
+        config.delete_profile(self.cfg, "Balanced Power")
+        self.assertEqual(self.cfg["ac_profile"], "Performance")
+        self.assertEqual(self.cfg["battery_profile"], "Quiet")
+
+    def test_the_last_profile_cannot_be_deleted(self):
+        cfg = {"profiles": {"Only": {"cpu": {}}}, "current_profile": "Only"}
+        with self.assertRaises(ValueError):
+            config.delete_profile(cfg, "Only")
+        self.assertEqual(list(cfg["profiles"]), ["Only"])
+
+    def test_deleting_something_that_is_not_there_is_refused(self):
+        with self.assertRaises(ValueError):
+            config.delete_profile(self.cfg, "Gone")
+        with self.assertRaises(ValueError):
+            config.delete_profile({"profiles": None}, "Quiet")
+
+    def test_every_deletion_leaves_a_config_that_migrates_unchanged(self):
+        # The real invariant: whatever is left must be something load_config
+        # would not have to repair.
+        for name in list(self.cfg["profiles"])[:-1]:
+            config.delete_profile(self.cfg, name)
+            before = json.loads(json.dumps(self.cfg))
+            self.assertEqual(config.migrate_config(self.cfg), before)
+
+
+class ImportAndExport(unittest.TestCase):
+    """Import is the one path by which arbitrary JSON reaches the config, so
+    every test here is about a file that must NOT be merged."""
+
+    def setUp(self):
+        self.cfg = config.migrate_config({})
+
+    def _good_file(self):
+        return {"rogcontrol_profile_version": 1,
+                "profiles": {"Mine": {"cpu": {"stapm": 1}}}}
+
+    def test_a_good_file_imports(self):
+        names = config.import_profiles(self.cfg, self._good_file())
+        self.assertEqual(names, ["Mine"])
+        self.assertEqual(self.cfg["profiles"]["Mine"]["cpu"]["stapm"], 1)
+
+    def test_missing_sections_are_filled_in(self):
+        config.import_profiles(self.cfg, self._good_file())
+        base = profiles.DEFAULT_PROFILES["Balanced Performance"]
+        self.assertEqual(self.cfg["profiles"]["Mine"]["fans"], base["fans"])
+        self.assertEqual(self.cfg["profiles"]["Mine"]["gpu"], base["gpu"])
+
+    def test_malformed_files_are_rejected(self):
+        for junk in (
+                None, [], "profiles", 7,                 # not a dict at all
+                {},                                      # no profiles key
+                {"profiles": None}, {"profiles": []},    # profiles not a dict
+                {"profiles": {}},                        # nothing in it
+                {"profiles": {"A": "not a profile"}},
+                {"profiles": {"A": None}},
+                {"profiles": {"A": {"something": 1}}},   # no cpu/gpu/fans
+                {"profiles": {"": {"cpu": {}}}},         # nameless
+                {"profiles": {"  ": {"cpu": {}}}},
+        ):
+            with self.assertRaises(ValueError, msg=repr(junk)):
+                config.parse_import(junk)
+
+    def test_the_v1_single_profile_format_is_rejected(self):
+        # The GTK3 app wrote {"name": ..., "profile": {...}}. It has no
+        # profiles key, so it is refused rather than half-understood.
+        with self.assertRaises(ValueError):
+            config.parse_import({"name": "Mine", "profile": {"cpu": {}}})
+
+    def test_a_rejected_file_changes_nothing(self):
+        before = json.loads(json.dumps(self.cfg))
+        for junk in ([], {"profiles": {"A": "not a profile"}},
+                     {"profiles": {"Good": {"cpu": {}}, "Bad": 7}}):
+            with self.assertRaises(ValueError):
+                config.import_profiles(self.cfg, junk)
+            self.assertEqual(self.cfg, before, repr(junk))
+
+    def test_one_bad_profile_stops_the_whole_file(self):
+        # Partly merging a file would leave the user with half an import and
+        # no way to tell which half.
+        with self.assertRaises(ValueError):
+            config.import_profiles(
+                self.cfg, {"profiles": {"Good": {"cpu": {}}, "Bad": 7}})
+        self.assertNotIn("Good", self.cfg["profiles"])
+
+    def test_an_existing_name_is_imported_as_a_copy(self):
+        self.cfg["profiles"]["Quiet"]["cpu"]["stapm"] = 12345
+        names = config.import_profiles(
+            self.cfg, {"profiles": {"Quiet": {"cpu": {"stapm": 7}}}})
+        self.assertEqual(names, ["Quiet (2)"])
+        self.assertEqual(self.cfg["profiles"]["Quiet"]["cpu"]["stapm"], 12345)
+        self.assertEqual(self.cfg["profiles"]["Quiet (2)"]["cpu"]["stapm"], 7)
+
+    def test_repeated_imports_keep_finding_a_free_name(self):
+        for expected in ("Quiet (2)", "Quiet (3)"):
+            names = config.import_profiles(
+                self.cfg, {"profiles": {"Quiet": {"cpu": {}}}})
+            self.assertEqual(names, [expected])
+
+    def test_an_import_does_not_alias_the_file_it_came_from(self):
+        data = {"profiles": {"Mine": {"cpu": {"stapm": 1}, "gpu": {},
+                                      "fans": {"1": [[40, 25]]}}}}
+        config.import_profiles(self.cfg, data)
+        self.cfg["profiles"]["Mine"]["fans"]["1"][0][1] = 99
+        self.assertEqual(data["profiles"]["Mine"]["fans"]["1"][0][1], 25)
+
+    def test_export_writes_a_dict_with_a_profiles_key(self):
+        payload = config.export_payload(self.cfg, ["Quiet"])
+        self.assertEqual(list(payload["profiles"]), ["Quiet"])
+        self.assertEqual(payload["rogcontrol_profile_version"],
+                         config.PROFILE_FILE_VERSION)
+
+    def test_export_skips_names_that_do_not_exist(self):
+        payload = config.export_payload(self.cfg, ["Quiet", "Gone"])
+        self.assertEqual(list(payload["profiles"]), ["Quiet"])
+
+    def test_an_export_is_a_copy_of_the_config_not_a_view_of_it(self):
+        payload = config.export_payload(self.cfg, ["Quiet"])
+        self.cfg["profiles"]["Quiet"]["cpu"]["stapm"] = 999
+        self.assertNotEqual(payload["profiles"]["Quiet"]["cpu"]["stapm"], 999)
+
+    def test_export_then_import_round_trips_through_json(self):
+        payload = config.export_payload(self.cfg, ["Performance"])
+        other = config.migrate_config({})
+        del other["profiles"]["Performance"]
+        names = config.import_profiles(other, json.loads(json.dumps(payload)))
+        self.assertEqual(names, ["Performance"])
+        self.assertEqual(other["profiles"]["Performance"],
+                         self.cfg["profiles"]["Performance"])
+
+    def test_a_whole_config_file_is_a_valid_import(self):
+        # The export format is the config's own shape on purpose, so the
+        # user's config.json can be handed straight to Import.
+        names = config.import_profiles(config.migrate_config({}),
+                                       json.loads(json.dumps(self.cfg)))
+        self.assertEqual(len(names), len(self.cfg["profiles"]))
+
+
 class FollowingTheFile(unittest.TestCase):
     """The decision an open window makes when the config file moves.
 
