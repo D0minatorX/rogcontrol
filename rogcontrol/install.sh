@@ -507,7 +507,7 @@ fi
 # load_config() writes the defaults out when the file is absent, and leaves an
 # existing file untouched, so this is safe to run unconditionally.
 if [ ! -f "$APP_CONFIG" ]; then
-    if PYTHONPATH="$HOME/.local/lib" python3 -c "from rogcontrol import config; config.load_config()" 2>/dev/null
+    if PYTHONPATH="$HOME/.local/lib" python3 -c "from rogcontrol import config; config.save_config(config.load_config())" 2>/dev/null
     then
         say "Default settings written to $(basename "$APP_CONFIG")"
         # Applying takes about 20 seconds, most of it the mandatory 8-second
