@@ -76,15 +76,41 @@ def ppd_modes_agree(profile_name, actual_mode):
 # fan curve, differing only in how hard the CPU chases clocks. Both map to
 # the OS "balanced" power mode, and the reverse mapping above resolves that
 # mode to "Balanced Performance".
+#
+# THE SHAPE OF THE FAN CURVES IS THE MEASURED RESULT, NOT A TASTE.
+#
+# Every one of them is flat from 50 C to 86 C and only ramps above 90 C, and
+# that looks wrong until you know what the embedded controller is reading.
+# On this chip Tctl bursts from ~57 C to 77-88 C in well under a second while
+# the machine is idle: sampling k10temp twice a second misses it entirely,
+# 50 Hz sampling shows it, and the EC reacts to it in about one second. So a
+# curve with a steep 55-80 C section -- which is what the old rising curves
+# here had -- makes the fans surge at random while the visible temperature
+# sits at 57-59 C. Measured 2026-08-11: 2100-5400 rpm swings at idle with the
+# rising shape, 400-600 rpm with this one.
+#
+# The flat section costs nothing under load, because it is not where load
+# lives: an all-core load on Balanced only reaches 64-67 C. The 80 C+ numbers
+# the EC sees are single-core boost spikes, not sustained heat, and the real
+# ramp above 90 C is still there for when the chip genuinely is hot.
+#
+# Scaled per tier rather than shared: Quiet holds 8% (6% on the mid fan),
+# Balanced 10/8, Performance 16/14, and above 90 C Performance is the most
+# aggressive of the three (75% at 93 C against Quiet's 50%). Retuning one of
+# these is a hardware retune -- test it at idle for several minutes, not for
+# ten seconds.
 DEFAULT_PROFILES = {
     "Quiet": {
         "cpu": {"stapm": 25000, "fast": 35000, "slow": 25000, "temp": 85, "coall": 0,
                 "epp": "power"},
         "gpu": {"watts": 65, "clock_offset": 0, "mem_clock_offset": 0},
         "fans": {
-            "1": [[40, 25], [60, 40], [75, 60], [90, 80]],
-            "2": [[40, 25], [60, 40], [75, 60], [90, 80]],
-            "3": [[40, 25], [60, 40], [75, 60], [90, 80]],
+            "1": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8], [90, 10],
+                  [93, 50], [96, 90]],
+            "2": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8], [90, 10],
+                  [93, 50], [96, 90]],
+            "3": [[50, 6], [60, 6], [70, 6], [80, 6], [86, 6], [90, 8],
+                  [93, 50], [96, 90]],
         },
     },
     "Balanced Power": {
@@ -92,9 +118,12 @@ DEFAULT_PROFILES = {
                 "epp": "balance_power"},
         "gpu": {"watts": 100, "clock_offset": 0, "mem_clock_offset": 0},
         "fans": {
-            "1": [[40, 30], [60, 55], [75, 75], [90, 90]],
-            "2": [[40, 30], [60, 55], [75, 75], [90, 90]],
-            "3": [[40, 30], [60, 55], [75, 75], [90, 90]],
+            "1": [[50, 10], [60, 10], [70, 10], [80, 10], [86, 10], [90, 12],
+                  [93, 60], [96, 100]],
+            "2": [[50, 10], [60, 10], [70, 10], [80, 10], [86, 10], [90, 12],
+                  [93, 60], [96, 100]],
+            "3": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8], [90, 10],
+                  [93, 60], [96, 100]],
         },
     },
     "Balanced Performance": {
@@ -102,9 +131,12 @@ DEFAULT_PROFILES = {
                 "epp": "balance_performance"},
         "gpu": {"watts": 100, "clock_offset": 0, "mem_clock_offset": 0},
         "fans": {
-            "1": [[40, 30], [60, 55], [75, 75], [90, 90]],
-            "2": [[40, 30], [60, 55], [75, 75], [90, 90]],
-            "3": [[40, 30], [60, 55], [75, 75], [90, 90]],
+            "1": [[50, 10], [60, 10], [70, 10], [80, 10], [86, 10], [90, 12],
+                  [93, 60], [96, 100]],
+            "2": [[50, 10], [60, 10], [70, 10], [80, 10], [86, 10], [90, 12],
+                  [93, 60], [96, 100]],
+            "3": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8], [90, 10],
+                  [93, 60], [96, 100]],
         },
     },
     "Performance": {
@@ -112,9 +144,12 @@ DEFAULT_PROFILES = {
                 "epp": "performance"},
         "gpu": {"watts": 140, "clock_offset": 0, "mem_clock_offset": 0},
         "fans": {
-            "1": [[40, 45], [55, 70], [70, 85], [85, 100]],
-            "2": [[40, 45], [55, 70], [70, 85], [85, 100]],
-            "3": [[40, 45], [55, 70], [70, 85], [85, 100]],
+            "1": [[50, 16], [60, 16], [70, 16], [80, 16], [86, 16], [90, 18],
+                  [93, 75], [96, 100]],
+            "2": [[50, 16], [60, 16], [70, 16], [80, 16], [86, 16], [90, 18],
+                  [93, 75], [96, 100]],
+            "3": [[50, 14], [60, 14], [70, 14], [80, 14], [86, 14], [90, 16],
+                  [93, 75], [96, 100]],
         },
     },
 }

@@ -160,7 +160,7 @@ class Migration(unittest.TestCase):
         out = config.migrate_config({"profiles": {"Quiet": {"cpu": {}}}})
         out["profiles"]["Quiet"]["fans"]["1"][0][1] = 99
         self.assertEqual(profiles.DEFAULT_PROFILES["Quiet"]["fans"]["1"][0],
-                         [40, 25])
+                         [50, 8])
 
     def test_a_profile_that_is_not_a_dict_is_left_alone(self):
         out = config.migrate_config({"profiles": {"Quiet": {"cpu": {}, "gpu": {},

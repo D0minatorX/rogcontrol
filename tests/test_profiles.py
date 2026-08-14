@@ -64,38 +64,113 @@ class FieldTunedValues(unittest.TestCase):
             self.assertEqual(gpu["clock_offset"], 0)
             self.assertEqual(gpu["mem_clock_offset"], 0)
 
-    def test_every_fan_curve_has_four_points_on_all_three_channels(self):
+    def test_every_fan_curve_has_eight_points_on_all_three_channels(self):
+        """Eight, because eight is what the embedded controller stores: a
+        stock profile with fewer would be padded by editor_points, and the
+        curve being tuned would not be the curve being run."""
         for name, prof in profiles.DEFAULT_PROFILES.items():
             for channel, points in prof["fans"].items():
-                self.assertEqual(len(points), 4,
+                self.assertEqual(len(points), 8,
                                  f"{name} channel {channel} point count")
                 for point in points:
                     self.assertEqual(len(point), 2,
                                      f"{name} channel {channel} point shape")
 
     def test_fan_curves_are_the_measured_ones(self):
+        """The shape that stopped the fans surging at idle: flat right
+        across the band the EC's hidden Tctl spikes reach (50-86 C), with the
+        real ramp above 90 C. See the comment above DEFAULT_PROFILES."""
         want = {
-            "Quiet": [[40, 25], [60, 40], [75, 60], [90, 80]],
-            "Balanced Power": [[40, 30], [60, 55], [75, 75], [90, 90]],
-            "Balanced Performance": [[40, 30], [60, 55], [75, 75], [90, 90]],
-            "Performance": [[40, 45], [55, 70], [70, 85], [85, 100]],
+            "Quiet": {
+                "main": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8],
+                         [90, 10], [93, 50], [96, 90]],
+                "mid": [[50, 6], [60, 6], [70, 6], [80, 6], [86, 6],
+                        [90, 8], [93, 50], [96, 90]]},
+            "Balanced Power": {
+                "main": [[50, 10], [60, 10], [70, 10], [80, 10], [86, 10],
+                         [90, 12], [93, 60], [96, 100]],
+                "mid": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8],
+                        [90, 10], [93, 60], [96, 100]]},
+            "Balanced Performance": {
+                "main": [[50, 10], [60, 10], [70, 10], [80, 10], [86, 10],
+                         [90, 12], [93, 60], [96, 100]],
+                "mid": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8],
+                        [90, 10], [93, 60], [96, 100]]},
+            "Performance": {
+                "main": [[50, 16], [60, 16], [70, 16], [80, 16], [86, 16],
+                         [90, 18], [93, 75], [96, 100]],
+                "mid": [[50, 14], [60, 14], [70, 14], [80, 14], [86, 14],
+                        [90, 16], [93, 75], [96, 100]]},
         }
-        for name, curve in want.items():
-            for channel in ("1", "2", "3"):
-                self.assertEqual(profiles.DEFAULT_PROFILES[name]["fans"][channel],
-                                 curve, f"{name} channel {channel}")
+        for name, curves in want.items():
+            fans = profiles.DEFAULT_PROFILES[name]["fans"]
+            # The CPU and GPU fans share a curve; the mid fan runs two points
+            # cooler, which is how it was measured.
+            for channel in ("1", "2"):
+                self.assertEqual(fans[channel], curves["main"],
+                                 f"{name} channel {channel}")
+            self.assertEqual(fans["3"], curves["mid"], f"{name} mid fan")
 
-    def test_curves_rise_with_temperature(self):
+    def test_the_flat_band_covers_the_hidden_spikes(self):
+        """One speed from 50 C to 86 C, on every profile and every fan.
+
+        This is the whole fix: Tctl bursts to 77-88 C in under a second at
+        idle, the EC follows it within about a second, and any slope in that
+        band turns those bursts into audible fan surges."""
+        for name, prof in profiles.DEFAULT_PROFILES.items():
+            for channel, points in prof["fans"].items():
+                band = [pct for temp, pct in points if 50 <= temp <= 86]
+                self.assertGreaterEqual(len(band), 5,
+                                        f"{name} channel {channel} band")
+                self.assertEqual(len(set(band)), 1,
+                                 f"{name} channel {channel} is not flat "
+                                 f"across 50-86 C: {band}")
+
+    def test_the_real_ramp_is_above_ninety(self):
+        for name, prof in profiles.DEFAULT_PROFILES.items():
+            for channel, points in prof["fans"].items():
+                flat = next(pct for temp, pct in points if temp == 50)
+                top = points[-1]
+                self.assertGreaterEqual(top[0], 93,
+                                        f"{name} channel {channel} top point")
+                self.assertGreaterEqual(top[1], flat + 40,
+                                        f"{name} channel {channel} ramp")
+
+    def test_curves_never_fall_with_temperature(self):
+        """Non-decreasing, not strictly increasing: the flat band repeats one
+        speed on purpose."""
         for name, prof in profiles.DEFAULT_PROFILES.items():
             for channel, points in prof["fans"].items():
                 temps = [t for t, _ in points]
                 speeds = [s for _, s in points]
                 self.assertEqual(temps, sorted(set(temps)),
                                  f"{name} channel {channel} temps")
-                self.assertEqual(speeds, sorted(set(speeds)),
+                self.assertEqual(speeds, sorted(speeds),
                                  f"{name} channel {channel} speeds")
                 self.assertLessEqual(max(speeds), 100)
                 self.assertGreaterEqual(min(speeds), 0)
+
+    def test_the_tiers_are_quietest_first_in_the_flat_band(self):
+        """Quiet quietest, Performance loudest, at the speed that is held
+        almost all of the time."""
+        order = list(profiles.DEFAULT_PROFILES)
+        for quieter, louder in zip(order, order[1:]):
+            for channel in ("1", "2", "3"):
+                a = profiles.DEFAULT_PROFILES[quieter]["fans"][channel][0][1]
+                b = profiles.DEFAULT_PROFILES[louder]["fans"][channel][0][1]
+                self.assertLessEqual(a, b, f"{quieter} vs {louder} ch{channel}")
+
+    def test_performance_is_the_most_aggressive_above_ninety(self):
+        hot = {name: prof["fans"]["1"][-2][1]
+               for name, prof in profiles.DEFAULT_PROFILES.items()}
+        self.assertEqual(max(hot, key=hot.get), "Performance", hot)
+        self.assertEqual(min(hot, key=hot.get), "Quiet", hot)
+
+    def test_the_mid_fan_runs_below_the_other_two_in_the_flat_band(self):
+        for name, prof in profiles.DEFAULT_PROFILES.items():
+            fans = prof["fans"]
+            self.assertLess(fans["3"][0][1], fans["1"][0][1], name)
+            self.assertEqual(fans["1"], fans["2"], f"{name} cpu/gpu fans")
 
     def test_tiers_get_hotter_and_hungrier_in_menu_order(self):
         order = list(profiles.DEFAULT_PROFILES)
@@ -160,7 +235,7 @@ class TailoredDefaults(unittest.TestCase):
         out = profiles.tailored_default_profiles(gpu_min_w=5, gpu_max_w=140)
         out["Performance"]["fans"]["1"][0][1] = 99
         self.assertEqual(profiles.DEFAULT_PROFILES["Performance"]["fans"]["1"][0],
-                         [40, 45])
+                         [50, 16])
 
     def test_tiers_keep_their_documented_shape(self):
         # The docstring promises Quiet ~46%, Balanced ~71%, Performance 100%
