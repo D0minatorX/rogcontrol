@@ -39,6 +39,7 @@ from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
 from .. import kbdcolor  # noqa: E402
 from ..widgets.ambient import AmbientSampler  # noqa: E402
+from ..widgets.color_picker import ColorButton  # noqa: E402
 from ..widgets.slider_row import SliderRow  # noqa: E402
 
 # Long enough to swallow a drag across a colour wheel, short enough that the
@@ -222,13 +223,12 @@ class KeyboardPage(Adw.PreferencesPage):
         above the picker that decides whether either is used at all."""
         row = Adw.ActionRow(title=title)
         row.set_tooltip_text(tooltip)
-        dialog = Gtk.ColorDialog()
-        # The keyboard has no alpha channel, so offering one would let the
-        # user set a transparency that is silently discarded on the way out.
-        dialog.set_with_alpha(False)
-        button = Gtk.ColorDialogButton(dialog=dialog)
+        # Not Gtk.ColorDialogButton: the dialog it opens is sized for its
+        # palette view and clips the saturation/value plane behind a
+        # scrollbar when you choose Custom. See widgets/color_picker.py.
+        button = ColorButton(title=title)
         button.set_valign(Gtk.Align.CENTER)
-        button.connect("notify::rgba", self._on_color_changed)
+        button.connect("color-set", self._on_color_changed)
         row.add_suffix(button)
         row.set_activatable_widget(button)
         group.add(row)
@@ -363,7 +363,7 @@ class KeyboardPage(Adw.PreferencesPage):
             self._color_timer = None
         self._apply()
 
-    def _on_color_changed(self, _button, _param):
+    def _on_color_changed(self, _button):
         self._on_edited()
 
     def _on_edited(self):
