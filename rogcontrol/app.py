@@ -14,9 +14,11 @@ nothing else:
   freezes the window, and a frozen window during a fan-curve apply is what
   made the old version feel broken.
 
-The application id is deliberately ``com.fadi.rogcontrol.dev``: the GTK3 app
-still ships as ``com.fadi.rogcontrol``, and sharing an id means the running
-old app claims the launch and silently gets presented instead of this one.
+The application id must match the desktop entry's filename
+(``org.rogcontrol.RogControl.desktop``). GNOME matches a window to its
+launcher by application id, and when the two disagree the icon in the
+applications grid starts the app but never attaches to the window it
+opened -- which looks exactly like clicking the icon doing nothing at all.
 """
 
 import json
