@@ -36,8 +36,10 @@ from .pages.battery import BatteryPage  # noqa: E402
 from .pages.cpu import CpuPage  # noqa: E402
 from .pages.fans import FansPage  # noqa: E402
 from .pages.gpu import GpuPage  # noqa: E402
+from .pages.keyboard import KeyboardPage  # noqa: E402
 from .pages.overview import OverviewPage  # noqa: E402
 from .pages.system import SystemPage  # noqa: E402
+from .widgets.ambient import ambient_available  # noqa: E402
 
 APP_ID = "com.fadi.rogcontrol.dev"
 
@@ -61,10 +63,9 @@ PAGE_SPECS = (
 # Pages not built yet get a placeholder rather than being left out of the
 # sidebar: the shape of the finished app should be visible from the first
 # run, and a missing entry reads as a bug where "Coming next" reads as a plan.
-PLACEHOLDERS = {
-    "keyboard": ("Keyboard", "Brightness, effect, colours and speed move "
-                             "here."),
-}
+# Empty now that every page in PAGE_SPECS is real; kept because the next page
+# added to the sidebar should appear before it works, not after.
+PLACEHOLDERS = {}
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -182,7 +183,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _build_page(self, page_id, label):
         builders = {"overview": OverviewPage, "cpu": CpuPage, "gpu": GpuPage,
                     "fans": FansPage, "battery": BatteryPage,
-                    "system": SystemPage}
+                    "keyboard": KeyboardPage, "system": SystemPage}
         builder = builders.get(page_id)
         if builder is not None:
             return builder(self)
@@ -293,6 +294,19 @@ class MainWindow(Adw.ApplicationWindow):
             if reload_fn is not None:
                 reload_fn()
 
+    # -- Ambient -----------------------------------------------------------
+
+    def start_saved_ambient(self):
+        """Bring the Ambient sampler back up if that is the saved mode."""
+        page = self.pages.get("keyboard")
+        if page is not None:
+            page.start_saved_ambient()
+
+    def stop_ambient(self):
+        page = self.pages.get("keyboard")
+        if page is not None:
+            page.stop_ambient()
+
     # -- services offered to pages -------------------------------------------
 
     def toast(self, text):
@@ -371,9 +385,28 @@ class RogControlApp(Adw.Application):
             # fact. On a machine with no NVIDIA card the exec fails
             # immediately and the fallback ranges come back.
             caps["gpu_limits"] = hardware.detect_gpu_limits()
+            # Asked here rather than inside detect_capabilities, which is
+            # standard library only so the helper scripts and the tests can
+            # import it: answering this needs GStreamer and a session bus.
+            caps["kbd_ambient"] = ambient_available()
             self.win = MainWindow(self, config, caps)
             self.win.select_page("overview")
+            if not self.self_test:
+                # Ambient is the only mode that needs a process behind it, so
+                # a saved Ambient mode has to be restarted here; every other
+                # mode is already live in the firmware from when it was
+                # applied. Skipped under --self-test, which must not start a
+                # screen capture or change what the keyboard is doing.
+                self.win.start_saved_ambient()
         return self.win
+
+    def do_shutdown(self):
+        # Ambient holds a screen-capture session and a sampling thread open,
+        # so it has to be closed deliberately -- nothing else here outlives
+        # the process.
+        if self.win is not None:
+            self.win.stop_ambient()
+        Adw.Application.do_shutdown(self)
 
     def do_activate(self):
         self._ensure_window().present()

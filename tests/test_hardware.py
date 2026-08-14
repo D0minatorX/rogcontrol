@@ -49,6 +49,16 @@ class FakeSysfs(unittest.TestCase):
             write(os.path.join(path, key), f"{value}\n")
         return path
 
+    def usb_device(self, name, vendor, product):
+        path = os.path.join(self.root, "sys/bus/usb/devices", name)
+        write(os.path.join(path, "idVendor"), f"{vendor}\n")
+        write(os.path.join(path, "idProduct"), f"{product}\n")
+        return path
+
+    def kbd_backlight(self, level):
+        write(os.path.join(self.root, hardware.KBD_BACKLIGHT_PATH.lstrip("/")),
+              f"{level}\n")
+
 
 class TestReadFile(unittest.TestCase):
     def test_missing_file_is_none_not_an_exception(self):
@@ -487,6 +497,65 @@ class TestFirmwareGpuDefaults(FakeSysfs):
     def test_absent_nodes_read_as_none(self):
         self.assertIsNone(hardware.read_nv_dynamic_boost(root=self.root))
         self.assertIsNone(hardware.read_nv_temp_target(root=self.root))
+
+
+class TestKeyboard(FakeSysfs):
+    def test_reads_the_backlight_level_back_from_the_led_class(self):
+        # Read back rather than trusted from the config: the level moves
+        # under this app's feet via the keyboard's own Fn keys.
+        self.kbd_backlight(2)
+        self.assertEqual(hardware.read_kbd_brightness(root=self.root), 2)
+
+    def test_no_led_class_is_none_rather_than_a_guess(self):
+        self.assertIsNone(hardware.read_kbd_brightness(root=self.root))
+
+    def test_finds_the_aura_controller_by_vendor(self):
+        self.usb_device("1-1", "1d6b", "0002")     # a root hub
+        self.usb_device("3-3", "0b05", "19b6")     # the N-KEY controller
+        self.assertEqual(hardware.find_aura_keyboard(root=self.root), "19b6")
+
+    def test_a_machine_with_no_asus_controller_is_none(self):
+        self.usb_device("1-1", "1d6b", "0002")
+        self.assertIsNone(hardware.find_aura_keyboard(root=self.root))
+
+    def test_a_missing_usb_tree_is_none_rather_than_an_error(self):
+        self.assertIsNone(hardware.find_aura_keyboard(root=self.root))
+
+    def test_a_product_id_is_lowercased(self):
+        # Some kernels print these uppercase, and the id sets are lower.
+        self.usb_device("3-3", "0b05", "19B6")
+        self.assertEqual(hardware.find_aura_keyboard(root=self.root), "19b6")
+
+    def test_every_multi_zone_id_is_also_a_known_controller(self):
+        self.assertTrue(hardware.AURA_MULTI_ZONE_IDS
+                        <= hardware.AURA_SINGLE_ZONE_IDS)
+
+    def test_zones_are_only_claimed_for_a_controller_known_to_have_them(self):
+        # Sending multi_static to a single-zone keyboard lights zone 1 and
+        # silently drops the rest, which reads as a broken app rather than an
+        # unsupported feature.
+        self.usb_device("3-3", "0b05", "1822")     # single zone only
+        caps = hardware.detect_capabilities(root=self.root)
+        self.assertEqual(caps["aura_id"], "1822")
+        self.assertFalse(caps["kbd_rgb_zones"])
+
+    def test_a_four_zone_controller_gets_the_zone_modes(self):
+        self.usb_device("3-3", "0b05", "19b6")
+        caps = hardware.detect_capabilities(root=self.root)
+        self.assertTrue(caps["kbd_rgb_zones"])
+
+    def test_battery_colour_needs_a_battery(self):
+        self.assertFalse(
+            hardware.detect_capabilities(root=self.root)["kbd_battery"])
+        self.battery(capacity=55, status="Discharging")
+        self.assertTrue(
+            hardware.detect_capabilities(root=self.root)["kbd_battery"])
+
+    def test_ambient_is_left_for_the_app_to_answer(self):
+        # Answering it needs GStreamer and a session bus, which this module
+        # is deliberately free of -- the app fills it in.
+        self.assertNotIn("kbd_ambient",
+                         hardware.detect_capabilities(root=self.root))
 
 
 class TestCapabilities(FakeSysfs):

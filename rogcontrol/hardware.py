@@ -722,6 +722,65 @@ def is_ac_connected(root=None):
     return None
 
 
+# -- Keyboard ----------------------------------------------------------------
+
+KBD_BACKLIGHT_PATH = "/sys/class/leds/asus::kbd_backlight/brightness"
+USB_DEVICES_DIR = "/sys/bus/usb/devices"
+
+# ASUS Aura keyboard controllers, by USB product ID under vendor 0x0b05.
+#
+# Every one of these takes the single-colour effects. The multi-zone ones
+# (multi_static / multi_breathing) need a controller with four addressable
+# zones, which is a smaller set -- sending them to a single-zone keyboard
+# lights zone 1 and silently drops the rest, which looks like a broken app
+# rather than an unsupported feature.
+#
+# An ASUS keyboard that isn't listed here still gets the single-colour modes,
+# because those are safe everywhere. Only the multi-zone ones are withheld
+# until a device is known to handle them. Send the output of `lsusb | grep
+# 0b05` if your model does support zones and isn't listed.
+AURA_SINGLE_ZONE_IDS = {
+    "1854",  # GL553 / GL753
+    "1866",  # GL503 / GL703 / GX501 Zephyrus
+    "1869",  # GL551 / GL771
+    "1822",  # GL502
+    "1837",  # GL702
+    "19b6",  # N-KEY (current Strix / Scar generation)
+    "1a30",  # newer N-KEY revision
+}
+AURA_MULTI_ZONE_IDS = {"1854", "1866", "1869", "19b6", "1a30"}
+
+
+def read_kbd_brightness(root=None):
+    """Backlight level 0-3 the LED class is actually holding, or None.
+
+    Read back rather than trusted from the config: the level can be changed
+    from outside this app -- the keyboard's own Fn keys, GNOME's quick
+    settings, this project's own shortcut script -- and a slider that was set
+    once at startup and never looked again shows a stale value all session."""
+    return read_int(_under(root, KBD_BACKLIGHT_PATH))
+
+
+def find_aura_keyboard(root=None):
+    """USB product ID of the ASUS Aura keyboard controller, or None.
+
+    Reads /sys directly rather than shelling out to lsusb, which is not
+    installed everywhere and would be a new dependency for a detection that
+    is three file reads."""
+    base = _under(root, USB_DEVICES_DIR)
+    try:
+        for entry in sorted(os.listdir(base)):
+            path = os.path.join(base, entry)
+            if read_file(os.path.join(path, "idVendor")) != "0b05":
+                continue
+            product_id = read_file(os.path.join(path, "idProduct"))
+            if product_id:
+                return product_id.lower()
+    except OSError:
+        pass
+    return None
+
+
 # -- Capabilities ------------------------------------------------------------
 
 def have_cmd(name):
@@ -766,5 +825,18 @@ def detect_capabilities(root=None):
     caps["cpu_clock"] = read_cpu_clock_range(root=root)
     caps["kbd_backlight"] = os.path.exists(
         _under(root, "/sys/class/leds/asus::kbd_backlight/brightness"))
+    # RGB support is two separate questions: is there an Aura controller at
+    # all, and does it have addressable zones. A mode that cannot work on this
+    # machine is dropped from the picker rather than left there to be chosen
+    # and silently do nothing.
+    aura_id = find_aura_keyboard(root=root)
+    caps["aura_id"] = aura_id
+    caps["kbd_rgb"] = bool(aura_id) and caps["rogauracore"]
+    caps["kbd_rgb_zones"] = bool(aura_id) and aura_id in AURA_MULTI_ZONE_IDS
+    caps["kbd_battery"] = read_battery(root=root)[0] is not None
+    # kbd_ambient is deliberately absent: answering it needs GStreamer and a
+    # session bus, and this module stays importable by the helper scripts and
+    # the tests, which have neither. The app fills it in from
+    # widgets.ambient.ambient_available() the same way it fills in gpu_limits.
     caps["charge_limit"] = read_charge_limit(root=root) is not None
     return caps
