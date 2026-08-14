@@ -94,7 +94,8 @@ rm -f "$HOME"/.config/systemd/user/rogcontrol-apply.service \
 systemctl --user daemon-reload
 say "Service units removed"
 
-rm -f "$HOME"/.local/share/applications/rogcontrol.desktop \
+rm -f "$HOME"/.local/share/applications/org.rogcontrol.RogControl.desktop \
+       "$HOME"/.local/share/applications/rogcontrol.desktop \
       "$HOME"/.local/share/applications/rogcontrol-cycle-profile.desktop \
       "$HOME"/.config/autostart/rogcontrol-autostart.desktop
 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true

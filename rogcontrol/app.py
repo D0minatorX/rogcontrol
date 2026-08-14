@@ -45,7 +45,7 @@ from .pages.overview import OverviewPage  # noqa: E402
 from .pages.system import SystemPage  # noqa: E402
 from .widgets.ambient import ambient_available  # noqa: E402
 
-APP_ID = "com.fadi.rogcontrol.dev"
+APP_ID = "org.rogcontrol.RogControl"
 
 # The smallest window this layout is meant to be usable at -- roughly a phone
 # in portrait. Nothing here is allowed to demand more than this: a page that

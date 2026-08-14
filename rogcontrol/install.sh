@@ -358,8 +358,8 @@ gtk-update-icon-cache -f "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 say "Icon installed (stale sizes removed, cache refreshed)"
 
 mkdir -p "$HOME/.local/share/applications" "$HOME/.config/autostart"
-sed "s|/home/YOUR_USERNAME|$HOME|g" "$SCRIPT_DIR/rogcontrol.desktop" \
-    > "$HOME/.local/share/applications/rogcontrol.desktop"
+sed "s|/home/YOUR_USERNAME|$HOME|g" "$SCRIPT_DIR/org.rogcontrol.RogControl.desktop" \
+    > "$HOME/.local/share/applications/org.rogcontrol.RogControl.desktop"
 sed "s|/home/YOUR_USERNAME|$HOME|g" "$SCRIPT_DIR/rogcontrol-cycle-profile.desktop" \
     > "$HOME/.local/share/applications/rogcontrol-cycle-profile.desktop"
 sed "s|%h|$HOME|g" "$SCRIPT_DIR/rogcontrol-autostart.desktop" \
