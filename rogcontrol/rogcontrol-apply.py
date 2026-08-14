@@ -92,8 +92,12 @@ def apply_gpu_clock_offsets(gpu):
              f"[gpu:0]/GPUGraphicsClockOffsetAllPerformanceLevels={gpu['clock_offset']}"],
             capture_output=True, text=True)
     if "clock_limit" in gpu:
+        # Against the card's own maximum, not a hardcoded 3090: the top of
+        # the slider means "no ceiling", and comparing against another
+        # card's number turns that into a lock (or refuses a real cap).
         run_helper("gpuclocklimit",
-                   "reset" if gpu["clock_limit"] >= 3090 else gpu["clock_limit"])
+                   hardware.gpu_clock_limit_arg(
+                       gpu["clock_limit"], hardware.gpu_clock_limit_max()))
     if "dyn_boost" in gpu:
         run_helper("nvboost", gpu["dyn_boost"])
     if "temp_target" in gpu:

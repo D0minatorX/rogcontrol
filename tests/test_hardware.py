@@ -11,6 +11,7 @@ and wrong paths, not wrong parsing, are what actually broke in this codebase
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from rogcontrol import hardware
 
@@ -381,6 +382,56 @@ class TestGpuClockLimitArg(unittest.TestCase):
         # The slider hands over a float; the helper validates with a shell
         # integer test and would reject "1500.0".
         self.assertEqual(hardware.gpu_clock_limit_arg(1500.0, 3090), 1500)
+
+
+class TestGpuClockLimitMax(unittest.TestCase):
+    """The detected ceiling the headless scripts compare against.
+
+    They used to compare a stored clock_limit against a hardcoded 3090 --
+    this laptop's card. On any other card that is either a lock just below
+    maximum where the user asked for no ceiling at all, or a ceiling that
+    can never be reached."""
+
+    def setUp(self):
+        # Module-level cache: leave it as it was found, in either direction.
+        self.saved = hardware._gpu_clock_limit_max
+        hardware._gpu_clock_limit_max = None
+        self.addCleanup(setattr, hardware, "_gpu_clock_limit_max", self.saved)
+
+    def test_it_reports_what_the_card_says(self):
+        with mock.patch.object(hardware, "detect_gpu_limits",
+                               return_value={"clock_limit_max": 2100}) as det:
+            self.assertEqual(hardware.gpu_clock_limit_max(), 2100)
+            self.assertEqual(det.call_count, 1)
+
+    def test_it_is_detected_once_per_process(self):
+        # The enforcer applies profiles for the life of the session; two
+        # nvidia-smi calls per apply would be paid forever.
+        with mock.patch.object(hardware, "detect_gpu_limits",
+                               return_value={"clock_limit_max": 2100}) as det:
+            for _ in range(5):
+                hardware.gpu_clock_limit_max()
+            self.assertEqual(det.call_count, 1)
+
+    def test_a_machine_with_no_card_caches_the_fallback_too(self):
+        # Otherwise every apply pays for two failed execs.
+        with mock.patch.object(
+                hardware, "detect_gpu_limits",
+                side_effect=lambda *a, **k: hardware.default_gpu_limits()) as det:
+            self.assertEqual(hardware.gpu_clock_limit_max(),
+                             hardware.CLOCK_LIMIT_FALLBACK_MAX)
+            hardware.gpu_clock_limit_max()
+            self.assertEqual(det.call_count, 1)
+
+    def test_it_feeds_gpu_clock_limit_arg(self):
+        # The pair is the point: a ceiling at or above the card's own
+        # maximum unlocks, anything below is a real cap.
+        with mock.patch.object(hardware, "detect_gpu_limits",
+                               return_value={"clock_limit_max": 2100}):
+            top = hardware.gpu_clock_limit_max()
+            self.assertEqual(hardware.gpu_clock_limit_arg(2100, top), "reset")
+            self.assertEqual(hardware.gpu_clock_limit_arg(3090, top), "reset")
+            self.assertEqual(hardware.gpu_clock_limit_arg(1800, top), 1800)
 
 
 class TestNvidiaSettingsArgs(unittest.TestCase):

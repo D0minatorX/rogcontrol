@@ -394,6 +394,33 @@ def detect_gpu_limits(timeout=5):
     return limits
 
 
+# Filled in by gpu_clock_limit_max on first use.
+_gpu_clock_limit_max = None
+
+
+def gpu_clock_limit_max(timeout=5):
+    """The card's own top lockable clock, detected once per process.
+
+    For the three scripts that apply a profile with no window open -- the
+    boot apply, the hotkey cycler and the enforcer. The window already has
+    this in ``caps["gpu_limits"]``; they have nowhere to keep it, and each
+    used to compare a stored ceiling against a hardcoded 3090 instead. That
+    is this laptop's card and nothing else's: on a card that boosts higher,
+    a profile saved at the top of the slider would come back as a real lock
+    a little below maximum -- pinning the clock, which is the exact opposite
+    of the "no ceiling" the top of the slider means.
+
+    Cached because the enforcer applies profiles for the life of the
+    session, and two nvidia-smi calls per apply is real cost for an answer
+    that cannot change while the machine is running. Cached even when
+    detection failed and the fallback came back: a machine with no NVIDIA
+    card would otherwise pay for two failed execs on every single apply."""
+    global _gpu_clock_limit_max
+    if _gpu_clock_limit_max is None:
+        _gpu_clock_limit_max = detect_gpu_limits(timeout)["clock_limit_max"]
+    return _gpu_clock_limit_max
+
+
 def gpu_clock_limit_arg(mhz, max_mhz):
     """What to hand ``run_helper("gpuclocklimit", ...)``.
 
