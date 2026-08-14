@@ -21,10 +21,23 @@ Two halves, tested separately because they live on opposite sides of sudo:
   result, so it is called directly with stand-ins for the results that
   matter, including the exact streams a real failing ryzenadj produces on
   this machine.
+
+The retry was not the whole story. Two ryzenadj runs at the same instant
+collide in the /dev/mem SMU mailbox and BOTH fail -- measured, with the real
+helper: ten concurrent pairs produced three failures, another eight produced
+seven, and the failing runs left the machine half-configured (power limits
+set, tctl-temp and coall "rejected by SMU"). The enforcer re-applies every 60
+seconds while the window applies on demand, so the two overlap sooner or
+later. The cpu action therefore takes an exclusive lock, tested below with a
+fake ryzenadj that reports on any second copy of itself running at the same
+time.
 """
 
+import fcntl
 import importlib.util
 import os
+import re
+import signal
 import stat
 import subprocess
 import tempfile
@@ -200,6 +213,276 @@ class HelperRetry(unittest.TestCase):
                 self.assertNotEqual(completed.returncode, 0)
                 self.assertIn(expected, completed.stderr)
                 self.assertEqual(self.call_count(), 0)
+
+
+class SmuLock(unittest.TestCase):
+    """The cpu action is exclusive: concurrent callers queue, never collide.
+
+    Same approach as HelperRetry above -- the shipped script with only the
+    ryzenadj path swapped -- but the stub here is a fake ryzenadj that
+    notices a second copy of itself running at the same time and fails the
+    way the real one does when that happens. That makes the collision the
+    tests are about observable without root and without an SMU.
+
+    The lock file goes wherever ROGCONTROL_HELPER_LOCK_DIR says, which the
+    helper honours only for a non-root caller: under sudo the path is fixed,
+    so no environment can aim a root-owned write. That is also why this
+    whole class is skipped when the suite is run as root.
+    """
+
+    # How long the fake ryzenadj stays "inside" the SMU. Long enough that two
+    # processes started microseconds apart are certain to overlap if nothing
+    # stops them, short enough not to slow the suite down.
+    HOLD = "0.15"
+
+    def setUp(self):
+        if os.geteuid() == 0:
+            self.skipTest("the lock directory override is ignored for root, "
+                          "by design")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = self._tmp.name
+        self.lockdir = os.path.join(self.tmp, "lock")
+        os.mkdir(self.lockdir)
+        self.lockfile = os.path.join(self.lockdir, "rogcontrol-helper.lock")
+        self.inflight = os.path.join(self.tmp, "inflight")
+        self.overlaps = os.path.join(self.tmp, "overlaps")
+        self.calls = os.path.join(self.tmp, "calls")
+        self.stub = os.path.join(self.tmp, "ryzenadj")
+        self.text = HELPER.read_text(encoding="utf-8")
+        self.assertIn("/usr/local/bin/ryzenadj", self.text)
+        self.write_stub()
+
+    # -- the fake ryzenadj -------------------------------------------------
+
+    def write_stub(self, body=None):
+        """A ryzenadj that records overlapping runs, then runs ``body``.
+
+        Each run drops a file named after its pid while it is "inside" and
+        removes it on the way out, so a second run that starts before the
+        first has finished sees two and says so -- in the overlaps file, and
+        by failing with the output a really-collided ryzenadj produces."""
+        script = f"""#!/bin/bash
+mkdir -p "{self.inflight}"
+ME="{self.inflight}/$$"
+: > "$ME"
+BEFORE=$(ls "{self.inflight}" | wc -l)
+sleep {self.HOLD}
+AFTER=$(ls "{self.inflight}" | wc -l)
+rm -f "$ME"
+echo "$@" >> "{self.calls}"
+if [ "$BEFORE" -gt 1 ] || [ "$AFTER" -gt 1 ]; then
+    echo overlap >> "{self.overlaps}"
+    echo "PCI Bus is not writeable, check secure boot"
+    echo "{WARNING}" >&2
+    exit 1
+fi
+{body or "exit 0"}
+"""
+        with open(self.stub, "w") as f:
+            f.write(script)
+        os.chmod(self.stub, 0o755)
+
+    # -- the script under test ---------------------------------------------
+
+    def build(self, locked=True, wait=None, name=None):
+        """A copy of the shipped helper, calling the stub.
+
+        ``locked=False`` removes the one line that takes the lock and
+        changes nothing else: that is the helper as it was before the fix,
+        and it is what the control test needs to show the fake ryzenadj can
+        see a collision at all."""
+        text = self.text.replace("/usr/local/bin/ryzenadj", self.stub)
+        if not locked:
+            marker = "\n        take_smu_lock\n"
+            self.assertIn(marker, text)
+            text = text.replace(marker, "\n")
+        if wait is not None:
+            text, n = re.subn(r"(?m)^SMU_LOCK_WAIT=\d+$",
+                              f"SMU_LOCK_WAIT={wait}", text)
+            self.assertEqual(n, 1)
+        path = os.path.join(self.tmp, name or f"helper-{locked}-{wait}")
+        with open(path, "w") as f:
+            f.write(text)
+        os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+        return path
+
+    def env(self):
+        return dict(os.environ, ROGCONTROL_HELPER_LOCK_DIR=self.lockdir)
+
+    def run_cpu(self, helper, *args, **kw):
+        return subprocess.run(
+            ["bash", helper, "cpu", *(args or GOOD_ARGS)],
+            capture_output=True, text=True, env=self.env(), timeout=60, **kw)
+
+    def start_cpu(self, helper, *args, **kw):
+        return subprocess.Popen(
+            ["bash", helper, "cpu", *(args or GOOD_ARGS)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=self.env(), **kw)
+
+    def run_pairs(self, helper, pairs=4):
+        """Two applies started at the same instant, ``pairs`` times over.
+
+        Pairs rather than one big burst because that is the shape of the
+        real thing: the enforcer's 60-second re-apply landing on top of an
+        apply from the window. The failure is intermittent, so one pair
+        would prove nothing either way."""
+        codes = []
+        for _ in range(pairs):
+            a = self.start_cpu(helper)
+            b = self.start_cpu(helper)
+            a.communicate()
+            b.communicate()
+            codes.extend([a.returncode, b.returncode])
+        return codes
+
+    def overlap_count(self):
+        if not os.path.exists(self.overlaps):
+            return 0
+        with open(self.overlaps) as f:
+            return len([line for line in f if line.strip()])
+
+    # -- the fix ------------------------------------------------------------
+
+    def test_concurrent_applies_never_overlap(self):
+        """The point of the lock: whatever the callers do, only one process
+        is inside ryzenadj at a time, so none of them collides."""
+        helper = self.build(locked=True)
+        codes = self.run_pairs(helper)
+        self.assertEqual(self.overlap_count(), 0)
+        self.assertEqual(codes, [0] * len(codes))
+
+    def test_without_the_lock_the_same_applies_do_collide(self):
+        """The control. Without that one line the pairs overlap and fail --
+        which is both the bug and the proof that the test above is testing
+        something."""
+        helper = self.build(locked=False)
+        codes = self.run_pairs(helper, pairs=3)
+        self.assertGreater(self.overlap_count(), 0)
+        self.assertTrue(any(c != 0 for c in codes), codes)
+
+    def test_a_successful_apply_exits_zero(self):
+        """The helper runs under ``set -e``. Taking a lock must not leave a
+        successful apply reporting failure -- every apply takes this path."""
+        helper = self.build(locked=True)
+        completed = self.run_cpu(helper)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stderr, "")
+
+    def test_the_lock_is_taken_in_the_lock_directory(self):
+        helper = self.build(locked=True)
+        self.assertEqual(self.run_cpu(helper).returncode, 0)
+        self.assertTrue(os.path.exists(self.lockfile))
+
+    # -- the bounded wait ---------------------------------------------------
+
+    def hold_the_lock(self):
+        """Hold the helper's lock from this process, as a stuck apply would."""
+        fd = os.open(self.lockfile, os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                     0o644)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
+
+    def test_the_shipped_wait_is_a_few_seconds(self):
+        """The timing tests below run with the wait shortened, so that the
+        suite does not spend the real one waiting. This is what keeps the
+        shipped value honest -- it has to stay inside the caller timeouts
+        (the window allows 10 seconds per helper call)."""
+        wait = int(re.search(r"(?m)^SMU_LOCK_WAIT=(\d+)$", self.text).group(1))
+        self.assertGreaterEqual(wait, 1)
+        self.assertLessEqual(wait, 8)
+        self.assertIn('flock -w "$SMU_LOCK_WAIT" 9', self.text)
+
+    def test_a_caller_that_cannot_get_in_gives_up_and_says_why(self):
+        """Nobody waits forever: the apply is refused, with a message that
+        names the reason, rather than the caller's own timeout killing it
+        with nothing to report."""
+        self.hold_the_lock()
+        helper = self.build(locked=True, wait=1)
+        started = time.monotonic()
+        completed = self.run_cpu(helper)
+        elapsed = time.monotonic() - started
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("another rogcontrol CPU apply is in progress",
+                      completed.stderr)
+        self.assertGreaterEqual(elapsed, 0.9)
+        self.assertLess(elapsed, 20)
+        # Refused means refused: nothing was written on the way out.
+        self.assertFalse(os.path.exists(self.calls))
+
+    def test_an_invalid_value_is_refused_without_waiting_for_the_lock(self):
+        """The lock sits below the safety checks. A value out of range is
+        still rejected immediately -- it must not queue behind somebody
+        else's apply only to be rejected afterwards."""
+        self.hold_the_lock()
+        helper = self.build(locked=True, wait=5)
+        started = time.monotonic()
+        completed = self.run_cpu(helper, "9000", "50000", "35000", "80", "-5")
+        elapsed = time.monotonic() - started
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("stapm-limit out of safe range", completed.stderr)
+        self.assertNotIn("in progress", completed.stderr)
+        self.assertLess(elapsed, 4)
+
+    # -- the lock always comes back ----------------------------------------
+
+    def test_a_crashing_ryzenadj_leaves_no_stale_lock(self):
+        """flock on a file descriptor, so the kernel drops it when the
+        process dies. A ryzenadj killed mid-apply must not lock the machine
+        out of every later apply."""
+        self.write_stub("kill -9 $$")
+        helper = self.build(locked=True, wait=1)
+        self.assertNotEqual(self.run_cpu(helper).returncode, 0)
+        self.write_stub()
+        self.assertEqual(self.run_cpu(helper).returncode, 0)
+
+    def test_a_killed_helper_leaves_no_stale_lock(self):
+        """Same for the helper itself being killed while it holds the lock,
+        which is what a caller's subprocess timeout does."""
+        self.write_stub("sleep 30")
+        helper = self.build(locked=True, wait=1)
+        running = self.start_cpu(helper, start_new_session=True)
+        # Wait until it really holds the lock, so this is a kill mid-apply.
+        probe = os.open(self.lockfile, os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                        0o644)
+        self.addCleanup(os.close, probe)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                break
+            fcntl.flock(probe, fcntl.LOCK_UN)
+            time.sleep(0.05)
+        else:
+            self.fail("the helper never took the lock")
+        os.killpg(os.getpgid(running.pid), signal.SIGKILL)
+        running.communicate()
+        # The killed stub never got to remove its own "I am inside" marker.
+        # That is this fake's bookkeeping, not the helper's, so clear it --
+        # what is under test is whether the lock came back.
+        for stale in os.listdir(self.inflight):
+            os.remove(os.path.join(self.inflight, stale))
+        self.write_stub()
+        completed = self.run_cpu(helper)
+        self.assertNotIn("in progress", completed.stderr)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    # -- degrading rather than refusing ------------------------------------
+
+    def test_an_apply_still_runs_when_there_is_nowhere_to_put_a_lock(self):
+        """A machine with no writable lock directory is not a machine that
+        should stop applying CPU limits: it gets today's behaviour, not a
+        refusal."""
+        helper = self.build(locked=True)
+        completed = subprocess.run(
+            ["bash", helper, "cpu", *GOOD_ARGS],
+            capture_output=True, text=True, timeout=60,
+            env=dict(os.environ,
+                     ROGCONTROL_HELPER_LOCK_DIR=os.path.join(self.tmp, "gone")))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
 
 class ErrorMessage(unittest.TestCase):
