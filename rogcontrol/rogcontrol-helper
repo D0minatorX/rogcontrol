@@ -46,7 +46,29 @@ case "$1" in
         [ "$SLOW" -ge 15000 ] && [ "$SLOW" -le 150000 ] || { echo "slow-limit out of safe range (15000-150000)" >&2; exit 1; }
         [ "$TEMP" -ge 60 ] && [ "$TEMP" -le 100 ] || { echo "tctl-temp out of safe range (60-100)" >&2; exit 1; }
         [ "$COALL" -ge -30 ] && [ "$COALL" -le 0 ] || { echo "coall out of safe range (-30 to 0)" >&2; exit 1; }
-        exec "$RYZENADJ" --stapm-limit="$STAPM" --fast-limit="$FAST" --slow-limit="$SLOW" --tctl-temp="$TEMP" --set-coall="$COALL"
+        # One retry, then give up. On a machine with no ryzen_smu module --
+        # this one -- ryzenadj reaches the SMU mailbox through /dev/mem, and
+        # that path occasionally loses a race with whatever else is touching
+        # the mailbox: the identical call succeeds a moment later. Nine such
+        # failures were logged over three days while ten consecutive manual
+        # runs all passed.
+        #
+        # Exactly one retry. A real failure (secure boot, an unsupported
+        # model, no /dev/mem) fails the same way twice, so a loop would only
+        # postpone the report and hold the caller open while it did. The
+        # first attempt's output is dropped because a first attempt that is
+        # about to be retried has nothing to say; the second attempt runs
+        # with its streams untouched, so what it prints is what the caller
+        # reports. Nothing above this line changes -- every value has already
+        # been range-checked, and the retry re-runs the same checked values.
+        RYZENADJ_ARGS=(--stapm-limit="$STAPM" --fast-limit="$FAST"
+                       --slow-limit="$SLOW" --tctl-temp="$TEMP"
+                       --set-coall="$COALL")
+        if "$RYZENADJ" "${RYZENADJ_ARGS[@]}" >/dev/null 2>&1; then
+            exit 0
+        fi
+        sleep 0.3
+        exec "$RYZENADJ" "${RYZENADJ_ARGS[@]}"
         ;;
 
     cpuboost)

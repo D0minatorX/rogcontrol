@@ -83,6 +83,63 @@ def find_hwmon_by_name(name, root=None):
     return None
 
 
+# ryzenadj prints this to stderr on EVERY run on a machine with no ryzen_smu
+# module -- including every run that works. This machine has no such module,
+# so the line is always there, it is always the first line of stderr, and
+# reporting "the first thing on stderr" therefore reported this instead of
+# whatever actually went wrong. It is a statement about which path ryzenadj
+# took, not a failure.
+HELPER_NOISE_MARKERS = (
+    "no compatible ryzen_smu kernel module found",
+)
+
+NO_ERROR_TEXT = (
+    "failed with no message beyond ryzenadj's usual ryzen_smu/dev-mem warning")
+
+
+def _is_helper_noise(line):
+    lowered = line.lower()
+    return any(marker in lowered for marker in HELPER_NOISE_MARKERS)
+
+
+def helper_error_message(result):
+    """Why a failed helper call failed, with the known noise removed.
+
+    Takes anything with ``stdout``/``stderr``/``returncode`` -- a
+    CompletedProcess in production, a stand-in in the tests.
+
+    Both streams are read, and stdout comes first, because ryzenadj puts the
+    human-readable reason on *stdout* ("PCI Bus is not writeable, check
+    secure boot") and keeps stderr for library chatter. Reading stderr alone,
+    which is what this used to do, could not have shown the real reason even
+    with the warning filtered out. Identical lines collapse: a failing
+    ryzenadj repeats the same pcilib line five times, and five copies of it
+    tell you nothing four of them did not.
+
+    Only ever called on a non-zero exit -- a successful call is not an error
+    however much it writes to stderr."""
+    lines, seen, had_noise = [], set(), False
+    for stream in (getattr(result, "stdout", ""),
+                   getattr(result, "stderr", "")):
+        for raw in (stream or "").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if _is_helper_noise(line):
+                had_noise = True
+                continue
+            if line not in seen:
+                seen.add(line)
+                lines.append(line)
+    if lines:
+        return "; ".join(lines)
+    # Nothing but the warning, or nothing at all. Say which, and carry the
+    # exit code, because that is then the only fact left about the failure.
+    code = getattr(result, "returncode", None)
+    suffix = "" if code is None else f" (exit {code})"
+    return (NO_ERROR_TEXT if had_noise else "unknown error") + suffix
+
+
 def run_helper(*args, timeout=10):
     """Run one privileged action, returning ``(ok, message)``.
 
@@ -90,7 +147,11 @@ def run_helper(*args, timeout=10):
     this fails immediately with a message rather than hanging a worker thread
     on a password prompt nobody can see. The helper validates every argument
     itself -- these calls drive real hardware, so the range checks live on the
-    privileged side where they cannot be bypassed by a caller."""
+    privileged side where they cannot be bypassed by a caller.
+
+    Failure is a non-zero exit code and nothing else. Output on stderr is not
+    failure: the one call that matters here, ``cpu``, writes to stderr on
+    every single run."""
     cmd = " ".join(str(a) for a in args)
     try:
         result = subprocess.run(
@@ -101,7 +162,7 @@ def run_helper(*args, timeout=10):
         print(f"rogcontrol: helper could not run: {cmd} -> {e}", file=sys.stderr)
         return False, str(e)
     if result.returncode != 0:
-        msg = (result.stderr or result.stdout or "unknown error").strip()
+        msg = helper_error_message(result)
         print(f"rogcontrol: helper failed: {cmd} -> {msg}", file=sys.stderr)
         return False, msg
     return True, result.stdout.strip()

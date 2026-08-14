@@ -180,7 +180,12 @@ def run_helper(*args):
     This used to discard the exit code and both output streams, so the
     enforcer could not tell anyone that anything had gone wrong. A broken
     sudoers rule, a missing helper or a failing ryzenadj all looked exactly
-    like normal operation while nothing was actually being applied."""
+    like normal operation while nothing was actually being applied.
+
+    A non-zero exit code is the only thing counted as failure. ``cpu`` writes
+    to stderr on every run on this hardware, successful runs included, so
+    anything that treated output as failure would log nine successes an hour
+    as errors."""
     cmd = " ".join(str(a) for a in args)
     try:
         result = subprocess.run(
@@ -191,7 +196,7 @@ def run_helper(*args):
         log(f"could not run helper: {cmd} -> {e}", "ERROR", dedupe_key=f"run:{args[0]}")
         return False
     if result.returncode != 0:
-        msg = (result.stderr or result.stdout or "unknown error").strip()
+        msg = hardware.helper_error_message(result)
         log(f"{cmd} failed: {msg}", "ERROR", dedupe_key=f"fail:{args[0]}")
         return False
     return True
