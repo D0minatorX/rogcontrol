@@ -192,6 +192,136 @@ def set_enforcer_running(running, timeout=10):
     return result.returncode == 0
 
 
+# -- asusd (asusctl's daemon) -------------------------------------------------
+#
+# asusd is the other program that drives this hardware: the same asus-wmi
+# platform knobs, the same custom fan curves, the same keyboard lighting. Two
+# daemons re-asserting different fan curves on the same three channels is not
+# a configuration, it is a fight, and the fans are where it is audible. So the
+# System page has to be able to say whether it is there, and to stop it.
+#
+# Reading its state needs no privilege at all -- systemctl answers is-active
+# and is-enabled to any user -- so only the two changes go through the helper.
+
+ASUSD_SERVICE = "asusd.service"
+ASUSD_PACKAGE = "asusctl"
+
+# The four states worth telling the user apart.
+ASUSD_ABSENT = "absent"
+ASUSD_RUNNING = "running"
+ASUSD_STOPPED_ENABLED = "stopped-enabled"
+ASUSD_STOPPED_DISABLED = "stopped-disabled"
+
+# systemd's "enabled" has more than one spelling, and only these two mean
+# "this will come back on its own at the next boot". "static" and "indirect"
+# units are not started by systemd on their own.
+ENABLED_WORDS = ("enabled", "enabled-runtime")
+
+# How to remove asusctl, per package manager. The app never runs any of
+# these: removing packages is a transaction the user should see, in their own
+# terminal, with its own confirmation. This is text to show, not a command to
+# execute -- which is also why the sudo is written into it.
+UNINSTALL_COMMANDS = (
+    ("pacman", "sudo pacman -Rs asusctl"),
+    ("dnf", "sudo dnf remove asusctl"),
+    ("zypper", "sudo zypper remove asusctl"),
+    ("apt-get", "sudo apt remove asusctl"),
+    ("emerge", "sudo emerge --deselect asusctl"),
+    ("xbps-remove", "sudo xbps-remove -R asusctl"),
+)
+
+
+def parse_asusd_state(unit_files="", is_active="", is_enabled="",
+                      binary_found=False):
+    """What asusd is doing, from three systemctl answers plus PATH.
+
+    Pure, so the states can be tested without a machine that has asusctl on
+    it -- which this one does not.
+
+    ``unit_files`` is the output of ``systemctl list-unit-files
+    asusd.service``, ``is_active`` and ``is_enabled`` the one-word answers
+    from the matching subcommands, and ``binary_found`` whether asusd or
+    asusctl is on PATH.
+
+    Installed is decided from the unit file *or* the binary, because the two
+    can disagree in both directions: a package installed but never enabled
+    still ships the unit, and a build installed by hand may put the binary in
+    /usr/local/bin with no unit at all. Either one means asusctl is on this
+    machine and can take the hardware.
+    """
+    active = (is_active or "").strip()
+    enabled = (is_enabled or "").strip()
+    has_unit = ASUSD_SERVICE in (unit_files or "")
+    installed = bool(has_unit or binary_found)
+    state = {
+        "installed": installed,
+        "active": active == "active",
+        # None rather than False when there is no unit to enable: "will not
+        # start at boot" and "cannot be asked" are different answers.
+        "enabled": (enabled in ENABLED_WORDS) if has_unit else None,
+        "has_unit": has_unit,
+        "raw_active": active,
+        "raw_enabled": enabled,
+    }
+    if not installed:
+        state["state"] = ASUSD_ABSENT
+    elif state["active"]:
+        state["state"] = ASUSD_RUNNING
+    elif state["enabled"]:
+        state["state"] = ASUSD_STOPPED_ENABLED
+    else:
+        state["state"] = ASUSD_STOPPED_DISABLED
+    return state
+
+
+def read_asusd_state(timeout=5):
+    """:func:`parse_asusd_state` against the real systemctl.
+
+    Nothing here needs root, and nothing here writes: it is three read-only
+    queries plus two PATH lookups.
+    """
+    def ask(*args):
+        try:
+            result = subprocess.run(["systemctl", *args], capture_output=True,
+                                    text=True, timeout=timeout)
+        except Exception:
+            return ""
+        # The return code is deliberately ignored: is-active exits non-zero
+        # for a stopped unit and is-enabled for a disabled one, and in both
+        # cases the word on stdout is exactly the answer being asked for.
+        return result.stdout or ""
+
+    return parse_asusd_state(
+        unit_files=ask("list-unit-files", ASUSD_SERVICE),
+        is_active=ask("is-active", ASUSD_SERVICE),
+        is_enabled=ask("is-enabled", ASUSD_SERVICE),
+        binary_found=have_cmd("asusd") or have_cmd("asusctl"))
+
+
+def set_asusd_running(running, timeout=20):
+    """Enable+start or disable+stop asusd, returning ``(ok, message)``.
+
+    Through the privileged helper, which takes no argument for either action
+    and names the unit itself -- there is no route from here to systemctl
+    with a unit name of anyone's choosing.
+    """
+    return run_helper("asusd_enable" if running else "asusd_disable",
+                      timeout=timeout)
+
+
+def asusd_uninstall_command(have=None):
+    """The exact removal command for this distro, or None if unrecognised.
+
+    Text for the user to read and run themselves. This app does not remove
+    packages: a package manager run from a GUI is a transaction nobody sees,
+    and asusctl is not always the only thing that would go with it."""
+    have = have or have_cmd
+    for tool, command in UNINSTALL_COMMANDS:
+        if have(tool):
+            return command
+    return None
+
+
 # -- CPU ---------------------------------------------------------------------
 
 def read_cpu_temp(root=None):

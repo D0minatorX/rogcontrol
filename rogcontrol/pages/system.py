@@ -1,6 +1,7 @@
-"""System: graphics mode, power-mode sync, the log, and what was detected.
+"""System: graphics mode, asusd, power-mode sync, the log, and detection.
 
-Three read-mostly things and one genuinely dangerous control.
+Read-mostly things, one genuinely dangerous control, and one conflict worth
+naming.
 
 The dangerous one is the graphics mode. Switching it tears down and rebuilds
 the display stack, which on this machine means the session goes away and
@@ -10,6 +11,22 @@ warning. Here it asks first, and it only ever offers the modes supergfxctl
 says this machine supports -- on the laptop this was written on that is a
 list of one, and a picker offering the other two would be offering two ways
 to fail.
+
+That list of one is also why the mode section is three rows rather than one.
+A greyed-out picker with the reason hidden in a tooltip reads as a missing
+feature -- "where is the switch for the gpu mode" -- so the mode the machine
+is actually running is stated in full, the modes supergfxd will accept are
+listed beside it, and when there is nothing to switch to the picker says so
+in visible text and explains where the switch does live.
+
+The conflict is asusd. It is asusctl's daemon and it drives exactly the same
+hardware as this app: the same asus-wmi platform knobs, the same three custom
+fan curves, the same keyboard lighting. Two programs re-asserting different
+fan curves at the same embedded controller is not a configuration, and the
+fans are where it is audible. So the page says whether asusd is installed and
+what it is doing, and can stop and disable it -- or put it back. What it does
+not do is remove the package: that is a transaction the user should see, so
+the exact command for the detected distro is shown instead.
 
 The sync row exists because this app and the OS both think they own the
 power mode. Selecting a profile sets power-profiles-daemon to match (the
@@ -32,7 +49,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from .. import APP_VERSION  # noqa: E402
 from .. import hardware  # noqa: E402
@@ -52,6 +69,92 @@ GPU_MODE_SUBTITLE = (
     "stack — you will be logged out."
 )
 
+# What each of supergfxctl's mode names means, in one line. The names are the
+# daemon's own spelling and several of them say nothing to anyone who has not
+# read its source, which is not a good state for the row that describes what
+# your display is plugged into.
+GPU_MODE_DESCRIPTIONS = {
+    "Integrated": "The integrated GPU drives everything and the NVIDIA card "
+                  "is powered down. Longest battery life, no dGPU for games.",
+    "Hybrid": "The integrated GPU drives the screen; the NVIDIA card wakes "
+              "for the applications that ask for it.",
+    "NvidiaNoModeset": "The NVIDIA card is loaded without kernel modesetting.",
+    "Vfio": "The NVIDIA card is bound to vfio, for passing through to a "
+            "virtual machine.",
+    "AsusEgpu": "An external GPU is driving the display.",
+    "AsusMuxDgpu": "The display is wired straight to the NVIDIA card by the "
+                   "hardware MUX. Fastest, and the integrated GPU's power "
+                   "saving is bypassed.",
+}
+
+# Shown in place of the picker's usual subtitle when supergfxd offers nothing
+# to switch to. Visible text, not a tooltip: a greyed-out row whose reason is
+# only on hover is indistinguishable from a broken one, and on a touchpad
+# there is no hover at all.
+SINGLE_MODE_SUBTITLE = (
+    "Switching is unavailable on this machine: supergfxd reports {mode} as "
+    "the only mode it supports, so there is no other mode to switch to.\n"
+    "That is what it reports when the laptop's hardware MUX has the display "
+    "wired to one GPU. Which GPU that is gets chosen in the firmware setup "
+    "screen (or in Armoury Crate under Windows), not from the OS — change it "
+    "there and this list will offer the others."
+)
+
+NO_DAEMON_SUBTITLE = (
+    "supergfxctl is installed but supergfxd is not answering, so the current "
+    "mode cannot be read and nothing can be switched. Check the service with "
+    "systemctl status supergfxd."
+)
+
+ASUSD_DESCRIPTION = (
+    "asusd is asusctl's background daemon, and it drives the same hardware "
+    "as this app: the same asus-wmi platform knobs, the same three custom "
+    "fan curves, the same keyboard lighting. With both running they "
+    "re-assert different settings at each other — the fans surge and the "
+    "lighting changes on its own. Run one of them, not both."
+)
+
+ASUSD_DISABLE_SUBTITLE = (
+    "systemctl disable --now asusd — stops it and keeps it stopped across "
+    "reboots. Needs root, so it goes through this app's privileged helper. "
+    "Nothing is removed and it is reversible with the row below."
+)
+
+ASUSD_ENABLE_SUBTITLE = (
+    "Puts asusd back exactly as it was, running and starting at boot. Expect "
+    "the fans and the keyboard lighting to start disagreeing with this app "
+    "again while both are running."
+)
+
+ASUSD_REMOVE_SUBTITLE = (
+    "This app does not run your package manager. Removing a package is a "
+    "transaction you should see, with its own confirmation and its own list "
+    "of what else goes with it — so here is the command, to run in a "
+    "terminal yourself:"
+)
+
+ASUSD_STATE_TEXT = {
+    hardware.ASUSD_ABSENT: "not installed",
+    hardware.ASUSD_RUNNING: "running",
+    hardware.ASUSD_STOPPED_ENABLED: "stopped, but starts at boot",
+    hardware.ASUSD_STOPPED_DISABLED: "stopped and disabled",
+}
+
+ASUSD_STATE_SUBTITLE = {
+    hardware.ASUSD_ABSENT:
+        "Nothing else is driving this hardware. This is the state this app "
+        "wants to be in.",
+    hardware.ASUSD_RUNNING:
+        "asusd is running right now and is competing with this app for the "
+        "fans, the power profile and the keyboard lighting.",
+    hardware.ASUSD_STOPPED_ENABLED:
+        "Not running now, but it is still enabled — it comes back at the "
+        "next boot and starts competing again.",
+    hardware.ASUSD_STOPPED_DISABLED:
+        "Installed but stopped and disabled, so it will not come back on its "
+        "own. Nothing is competing for the hardware.",
+}
+
 SYNC_DESCRIPTION = (
     "This app and the OS both hold an opinion about the power mode. "
     "Selecting a profile here sets the OS mode to match. Changing it the "
@@ -70,6 +173,11 @@ class SystemPage(Adw.PreferencesPage):
         self._sampling = False
         self._timer_id = None
         self._switching = False
+        # True from the moment an asusd enable/disable is asked for until
+        # systemd has been asked what actually happened, so the two buttons
+        # cannot be pressed again mid-flight.
+        self._asusd_busy = False
+        self.asusd_state = {}
         self.modes = []
 
         self._build()
@@ -84,6 +192,7 @@ class SystemPage(Adw.PreferencesPage):
 
     def _build(self):
         self._build_gpu_mode()
+        self._build_asusd()
         self._build_sync()
         self._build_log()
         self._build_about()
@@ -92,23 +201,96 @@ class SystemPage(Adw.PreferencesPage):
         group = Adw.PreferencesGroup(title="Graphics mode")
         self.add(group)
 
-        self.mode_row = Adw.ComboRow(title="GPU mode",
+        # What the machine is running, first and in full. This is the answer
+        # to "which GPU is my screen on", and it is worth having whether or
+        # not anything can be switched.
+        self.mode_now_row, self.mode_now_value = self._value_row(
+            group, "Current mode", strong=True)
+        self.modes_row, self.modes_value = self._value_row(
+            group, "Modes supergfxd supports",
+            "What the daemon will accept on this machine — nothing else can "
+            "be selected.")
+
+        self.mode_row = Adw.ComboRow(title="Switch mode",
                                      subtitle=GPU_MODE_SUBTITLE)
         # Populated from the daemon in _refresh_now: what this machine
         # supports is a question only supergfxctl can answer, and asking it
         # costs a subprocess, so the row starts empty rather than showing a
         # guess that is then corrected.
         self.mode_row.set_model(Gtk.StringList.new([]))
+        # The reason a switch is unavailable is several lines long and has to
+        # be readable, not clipped to one.
+        self.mode_row.set_subtitle_lines(0)
         self.mode_row.connect("notify::selected", self._on_mode_changed)
         group.add(self.mode_row)
 
         if not self.caps.get("supergfxctl"):
             self.mode_row.set_sensitive(False)
-            self.mode_row.set_tooltip_text(
-                "Not available on this machine: supergfxctl is not installed")
             self.mode_row.set_subtitle(
-                "supergfxctl is not installed — GPU mode switching is "
-                "unavailable.")
+                "supergfxctl is not installed, so the graphics mode cannot "
+                "be read or changed from here. Install supergfxctl and its "
+                "supergfxd service to switch between integrated and hybrid "
+                "graphics.")
+            self.mode_now_row.set_subtitle(
+                "supergfxctl is not installed — the mode cannot be read.")
+
+    def _build_asusd(self):
+        """Whether the other daemon for this hardware is on the machine."""
+        group = Adw.PreferencesGroup(title="asusctl / asusd",
+                                     description=ASUSD_DESCRIPTION)
+        self.add(group)
+
+        check = Gtk.Button(label="Check")
+        check.set_valign(Gtk.Align.CENTER)
+        check.set_tooltip_text("Ask systemd again, right now")
+        check.connect("clicked", self._on_check_asusd)
+        group.set_header_suffix(check)
+
+        self.asusd_row, self.asusd_value = self._value_row(
+            group, "asusd service", strong=True)
+
+        self.asusd_disable_row = Adw.ActionRow(
+            title="Stop and disable asusd", subtitle=ASUSD_DISABLE_SUBTITLE)
+        self.asusd_disable_row.set_subtitle_lines(0)
+        self.asusd_disable_button = Gtk.Button(label="Stop and disable")
+        self.asusd_disable_button.set_valign(Gtk.Align.CENTER)
+        self.asusd_disable_button.add_css_class("destructive-action")
+        self.asusd_disable_button.connect("clicked", self._on_asusd_disable)
+        self.asusd_disable_row.add_suffix(self.asusd_disable_button)
+        self.asusd_disable_row.set_activatable_widget(
+            self.asusd_disable_button)
+        group.add(self.asusd_disable_row)
+
+        self.asusd_enable_row = Adw.ActionRow(
+            title="Enable and start asusd", subtitle=ASUSD_ENABLE_SUBTITLE)
+        self.asusd_enable_row.set_subtitle_lines(0)
+        self.asusd_enable_button = Gtk.Button(label="Enable")
+        self.asusd_enable_button.set_valign(Gtk.Align.CENTER)
+        self.asusd_enable_button.connect("clicked", self._on_asusd_enable)
+        self.asusd_enable_row.add_suffix(self.asusd_enable_button)
+        self.asusd_enable_row.set_activatable_widget(self.asusd_enable_button)
+        group.add(self.asusd_enable_row)
+
+        # The command is worked out once: which package manager is on this
+        # machine does not change while the window is open.
+        self.uninstall_command = hardware.asusd_uninstall_command()
+        self.asusd_remove_row = Adw.ActionRow(title="Uninstall asusctl")
+        self.asusd_remove_row.set_subtitle_lines(0)
+        self.asusd_remove_row.set_subtitle(
+            f"{ASUSD_REMOVE_SUBTITLE}\n\n{self.uninstall_command}"
+            if self.uninstall_command else
+            f"{ASUSD_REMOVE_SUBTITLE}\n\nNo package manager this app "
+            f"recognises was found — remove the asusctl package the way you "
+            f"installed it.")
+        if self.uninstall_command:
+            self.copy_button = Gtk.Button(label="Copy")
+            self.copy_button.set_valign(Gtk.Align.CENTER)
+            self.copy_button.set_tooltip_text("Copy the command to the "
+                                              "clipboard")
+            self.copy_button.connect("clicked", self._on_copy_command)
+            self.asusd_remove_row.add_suffix(self.copy_button)
+            self.asusd_remove_row.set_activatable_widget(self.copy_button)
+        group.add(self.asusd_remove_row)
 
     def _build_sync(self):
         group = Adw.PreferencesGroup(title="Power mode",
@@ -185,10 +367,18 @@ class SystemPage(Adw.PreferencesPage):
         hardware_row.set_subtitle_lines(0)
         group.add(hardware_row)
 
-    def _value_row(self, group, title, subtitle=""):
+    def _value_row(self, group, title, subtitle="", strong=False):
+        """A titled row whose suffix label carries the value.
+
+        ``strong`` is for the one or two facts on this page that are the
+        answer rather than a detail -- the graphics mode in force, what asusd
+        is doing. They get the heading style instead of the dimmed one, so
+        they are legible at a glance from across the page."""
         row = Adw.ActionRow(title=title, subtitle=subtitle)
+        # Several of these subtitles are a sentence or two of explanation.
+        row.set_subtitle_lines(0)
         label = Gtk.Label(label=DASH)
-        label.add_css_class("dim-label")
+        label.add_css_class("heading" if strong else "dim-label")
         label.set_wrap(True)
         label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         label.set_xalign(1.0)
@@ -251,13 +441,18 @@ class SystemPage(Adw.PreferencesPage):
         self.window.apply_async(self._sample, self._on_sample)
 
     def _sample(self):
-        """Worker thread: three subprocesses, no widgets."""
+        """Worker thread: a handful of subprocesses, no widgets."""
         return {
             "mode": (hardware.read_gpu_mode()
                      if self.caps.get("supergfxctl") else None),
             "modes": (hardware.read_supported_gpu_modes()
                       if self.caps.get("supergfxctl") else []),
             "power_mode": hardware.read_power_mode(),
+            # Read every cycle rather than once at startup: asusd can be
+            # installed, started or stopped while this window is open, and a
+            # page claiming it is absent while it is fighting over the fans
+            # is the worst version of this row.
+            "asusd": hardware.read_asusd_state(),
         }
 
     def _on_sample(self, data, error):
@@ -267,6 +462,7 @@ class SystemPage(Adw.PreferencesPage):
 
     def _render(self, data):
         self._render_modes(data.get("modes") or [], data.get("mode"))
+        self._render_asusd(data.get("asusd") or {})
         self._render_sync(data.get("power_mode"))
 
     def _render_modes(self, modes, active):
@@ -293,16 +489,114 @@ class SystemPage(Adw.PreferencesPage):
                     self.mode_row.set_selected(index)
         finally:
             self._loading = was_loading
+        # The two facts, stated whether or not anything can be switched.
+        self.mode_now_value.set_text(active or DASH)
+        if active:
+            self.mode_now_row.set_subtitle(GPU_MODE_DESCRIPTIONS.get(
+                active, "supergfxd's own name for the mode this machine is "
+                        "running."))
+        self.modes_value.set_text(", ".join(modes) if modes else DASH)
+
         if not self.caps.get("supergfxctl"):
             return
         # Set both ways round, not just off: supergfxd can be restarted or
         # its mode list can change under a running window, and a row latched
         # insensitive on one sample would never come back.
+        if active is None:
+            self.mode_row.set_sensitive(False)
+            self.mode_row.set_subtitle(NO_DAEMON_SUBTITLE)
+            self.mode_now_row.set_subtitle(
+                "supergfxd is not answering, so the mode cannot be read.")
+            return
         only_one = len(modes) <= 1
         self.mode_row.set_sensitive(not only_one)
-        self.mode_row.set_tooltip_text(
-            f"supergfxctl reports {modes[0]} as the only mode this machine "
-            f"supports" if only_one else None)
+        # The reason goes in the subtitle, where it is visible, rather than
+        # in a tooltip nobody hovers over and a touchpad cannot produce at
+        # all. This is the row the user could not find.
+        self.mode_row.set_subtitle(
+            SINGLE_MODE_SUBTITLE.format(mode=modes[0]) if only_one
+            else GPU_MODE_SUBTITLE)
+
+    def _render_asusd(self, state):
+        """Say what asusd is doing, and offer only what makes sense."""
+        self.asusd_state = state
+        name = state.get("state", hardware.ASUSD_ABSENT)
+        self.asusd_value.set_text(ASUSD_STATE_TEXT.get(name, DASH))
+        subtitle = ASUSD_STATE_SUBTITLE.get(name, "")
+        if state.get("raw_active") == "failed":
+            # Not running, but it tried and something went wrong -- worth
+            # saying, because "stopped" alone reads as deliberate.
+            subtitle += (" systemd reports the unit as failed rather than "
+                         "cleanly stopped.")
+        self.asusd_row.set_subtitle(subtitle)
+        for css in ("success", "warning", "error"):
+            self.asusd_value.remove_css_class(css)
+        # Running is the state that costs the user something, so it is the
+        # one that gets a colour. Absent and disabled are both fine.
+        self.asusd_value.add_css_class(
+            "warning" if name == hardware.ASUSD_RUNNING else "success")
+
+        installed = bool(state.get("installed"))
+        # Disable is worth offering while anything would bring it back:
+        # running now, or stopped but still enabled.
+        self.asusd_disable_button.set_sensitive(
+            not self._asusd_busy
+            and name in (hardware.ASUSD_RUNNING,
+                         hardware.ASUSD_STOPPED_ENABLED))
+        self.asusd_enable_button.set_sensitive(
+            not self._asusd_busy and installed
+            and name != hardware.ASUSD_RUNNING)
+        # Rows for a package that is not here would be three controls that
+        # cannot do anything; the state row above already says so.
+        self.asusd_disable_row.set_visible(installed)
+        self.asusd_enable_row.set_visible(installed)
+        self.asusd_remove_row.set_visible(installed)
+
+    def _on_check_asusd(self, _button):
+        self._refresh_now()
+        self.window.toast("Checked asusd.")
+
+    def _on_asusd_disable(self, _button):
+        self._set_asusd_running(False)
+
+    def _on_asusd_enable(self, _button):
+        self._set_asusd_running(True)
+
+    def _set_asusd_running(self, running):
+        """Stop+disable or enable+start asusd, through the helper."""
+        if self._asusd_busy:
+            return
+        self._asusd_busy = True
+        self.asusd_disable_button.set_sensitive(False)
+        self.asusd_enable_button.set_sensitive(False)
+        self.window.toast("Enabling asusd…" if running
+                          else "Stopping and disabling asusd…")
+        self.window.apply_async(
+            lambda: hardware.set_asusd_running(running),
+            lambda result, error: self._on_asusd_set(running, result, error))
+
+    def _on_asusd_set(self, running, result, error):
+        self._asusd_busy = False
+        ok, message = (False, str(error)) if error is not None else result
+        if ok:
+            self.window.toast("asusd enabled and started." if running else
+                              "asusd stopped and disabled — ROG Control now "
+                              "has the hardware to itself.")
+        else:
+            self.window.toast(f"asusd change failed: {message}")
+        # Ask systemd rather than assuming the button worked.
+        self._refresh_now()
+
+    def _on_copy_command(self, _button):
+        command = self.uninstall_command
+        if not command:
+            return
+        display = Gdk.Display.get_default()
+        if display is None:
+            self.window.toast("No display to copy through.")
+            return
+        display.get_clipboard().set(command)
+        self.window.toast(f"Copied: {command}")
 
     def _render_sync(self, power_mode):
         name = self.window.current_profile_name() or DASH

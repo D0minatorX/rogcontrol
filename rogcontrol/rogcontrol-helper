@@ -29,8 +29,16 @@ find_hwmon_by_name() {
 }
 
 usage() {
-    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge> ..." >&2
+    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|asusd_status|asusd_disable|asusd_enable> ..." >&2
     exit 1
+}
+
+# The asusd actions take no arguments at all: the unit name is written into
+# this script and never comes from the caller. Anything extra is a caller
+# that thinks it is passing a unit name, and is refused rather than ignored.
+no_args() {
+    NAME="$1"; shift
+    [ "$#" -eq 0 ] || { echo "$NAME takes no arguments" >&2; exit 1; }
 }
 
 case "$1" in
@@ -490,6 +498,13 @@ case "$1" in
         # inactive-disabled -- deliberately narrow (only ever targets the
         # literal unit name "asusd", never a caller-supplied name) so this
         # can't be turned into a generic systemctl-as-root passthrough.
+        #
+        # The window does not use this: reading a unit's state needs no
+        # privilege, so it asks systemctl directly (hardware.read_asusd_state)
+        # rather than spending a sudo on a question any user may ask. It stays
+        # because install.sh calls it to prove the sudoers rule works.
+        shift
+        no_args asusd_status "$@"
         if ! systemctl list-unit-files asusd.service >/dev/null 2>&1 \
            || ! systemctl list-unit-files asusd.service 2>/dev/null | grep -q asusd.service; then
             echo "not-installed"
@@ -505,36 +520,31 @@ case "$1" in
         ;;
 
     asusd_disable)
+        # Stop asusd and keep it stopped. It drives the same asus-wmi knobs,
+        # fan curves and keyboard lighting as this app, so the two re-assert
+        # different settings at each other for as long as both are running.
+        #
+        # Reversible by design: asusd_enable below is the way back, and
+        # neither action removes anything.
+        shift
+        no_args asusd_disable "$@"
         systemctl disable --now asusd.service
         ;;
 
-    asusd_remove)
-        # Uninstalls asusctl (which ships asusd). The package name is
-        # HARDCODED and never taken from the caller, so this cannot be
-        # turned into a general "remove any package as root" primitive --
-        # the same reasoning as the asusd_status/enable/disable commands.
-        systemctl disable --now asusd.service >/dev/null 2>&1 || true
-        if command -v pacman >/dev/null 2>&1; then
-            pacman -Qq asusctl >/dev/null 2>&1 || { echo "asusctl is not installed"; exit 0; }
-            # -Rs removes unneeded dependencies too but refuses if another
-            # installed package still requires asusctl, which is the safe
-            # behaviour here.
-            exec pacman -Rs --noconfirm asusctl
-        elif command -v dnf >/dev/null 2>&1; then
-            rpm -q asusctl >/dev/null 2>&1 || { echo "asusctl is not installed"; exit 0; }
-            exec dnf remove -y asusctl
-        elif command -v apt-get >/dev/null 2>&1; then
-            dpkg -s asusctl >/dev/null 2>&1 || { echo "asusctl is not installed"; exit 0; }
-            exec apt-get remove -y asusctl
-        else
-            echo "No supported package manager found; remove asusctl manually" >&2
-            exit 1
-        fi
-        ;;
-
     asusd_enable)
+        # The way back. --now so the service is running again when this
+        # returns, rather than only after the next boot.
+        shift
+        no_args asusd_enable "$@"
         systemctl enable --now asusd.service
         ;;
+
+    # There is deliberately no action that removes the asusctl package.
+    # Removing packages is a transaction the user should see, in their own
+    # terminal, with its own confirmation and its own dependency list -- the
+    # window shows the exact command for the detected distro instead. A root
+    # "remove this package" primitive sitting in a passwordless helper is
+    # also exactly the kind of thing this helper exists not to have.
 
     *)
         usage
