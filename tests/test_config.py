@@ -399,6 +399,74 @@ class AutoSwitchPickers(unittest.TestCase):
                          {"ac": "ac_profile", "battery": "battery_profile"})
 
 
+class FollowingTheFile(unittest.TestCase):
+    """The decision an open window makes when the config file moves.
+
+    Five processes write this file. The window used to load it once and then
+    write its whole in-memory copy back on every page save, so anything the
+    enforcer, the tray or the hotkey cycler did was silently reverted by the
+    next slider nudge."""
+
+    def test_the_first_sample_is_not_a_change(self):
+        # The window has just loaded that exact file. Calling it a change
+        # would reload every page on startup for nothing.
+        self.assertFalse(config.config_file_moved_on(None, 1000.0))
+
+    def test_a_missing_file_is_not_a_change(self):
+        # Nothing to re-read, and the copy in memory is the better of the two.
+        self.assertFalse(config.config_file_moved_on(1000.0, None))
+
+    def test_an_unchanged_mtime_is_not_a_change(self):
+        self.assertFalse(config.config_file_moved_on(1000.0, 1000.0))
+
+    def test_a_written_file_is_a_change(self):
+        self.assertTrue(config.config_file_moved_on(1000.0, 1000.5))
+
+    def test_a_file_restored_to_an_older_mtime_is_still_a_change(self):
+        # A restored backup goes backwards in time; "different" is the
+        # question, not "newer".
+        self.assertTrue(config.config_file_moved_on(1000.0, 900.0))
+
+    def test_the_enforcer_switching_profile_is_seen_as_a_profile_change(self):
+        current = {"current_profile": "Performance", "profiles": {
+            "Performance": {"cpu": {}}, "Quiet": {"cpu": {}}}}
+        fresh = json.loads(json.dumps(current))
+        fresh["current_profile"] = "Quiet"
+        self.assertEqual(config.reload_decision(current, fresh), (True, False))
+
+    def test_the_windows_own_save_is_no_change_at_all(self):
+        # The window's saves move the mtime too, so this is the common case
+        # and it must not reload the pages under the user's hands.
+        current = {"current_profile": "Quiet", "profiles": {"Quiet": {"cpu": {}}}}
+        self.assertEqual(
+            config.reload_decision(current, json.loads(json.dumps(current))),
+            (False, False))
+
+    def test_the_same_profile_rewritten_elsewhere_is_a_contents_change(self):
+        # The name staying put says nothing about the curves inside it.
+        current = {"current_profile": "Quiet",
+                   "profiles": {"Quiet": {"fans": {"1": [[40, 25]]}}}}
+        fresh = {"current_profile": "Quiet",
+                 "profiles": {"Quiet": {"fans": {"1": [[40, 60]]}}}}
+        self.assertEqual(config.reload_decision(current, fresh), (False, True))
+
+    def test_a_change_to_another_profile_leaves_the_open_one_alone(self):
+        current = {"current_profile": "Quiet",
+                   "profiles": {"Quiet": {"cpu": {"stapm": 25000}},
+                                "Performance": {"cpu": {"stapm": 75000}}}}
+        fresh = json.loads(json.dumps(current))
+        fresh["profiles"]["Performance"]["cpu"]["stapm"] = 80000
+        self.assertEqual(config.reload_decision(current, fresh), (False, False))
+
+    def test_a_config_with_no_profiles_at_all_decides_without_raising(self):
+        self.assertEqual(config.reload_decision({}, {}), (False, False))
+        self.assertEqual(
+            config.reload_decision({"profiles": None},
+                                   {"current_profile": "Quiet",
+                                    "profiles": None}),
+            (True, False))
+
+
 class WhereTheRealConfigLives(unittest.TestCase):
     def test_config_path_points_at_the_users_config(self):
         self.assertEqual(config.CONFIG_PATH,

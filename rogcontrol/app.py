@@ -19,6 +19,8 @@ still ships as ``com.fadi.rogcontrol``, and sharing an id means the running
 old app claims the launch and silently gets presented instead of this one.
 """
 
+import json
+import os
 import sys
 import threading
 import time
@@ -70,6 +72,14 @@ PAGE_SPECS = (
 PLACEHOLDERS = {}
 
 
+def _config_mtime():
+    """When the config was last written, or None if it cannot be asked."""
+    try:
+        return os.path.getmtime(config_mod.CONFIG_PATH)
+    except OSError:
+        return None
+
+
 class MainWindow(Adw.ApplicationWindow):
     """Split-view window: sidebar of pages, content pane per page.
 
@@ -117,6 +127,13 @@ class MainWindow(Adw.ApplicationWindow):
         self.pages = {}
         self._build_ui()
         self._loading = False
+
+        # The config file has five writers; this window is one of them. See
+        # check_external_config_change.
+        self._last_config_mtime = _config_mtime()
+        self._config_watch = GLib.timeout_add_seconds(
+            config_mod.CONFIG_POLL_SECONDS, self.check_external_config_change)
+        self.connect("destroy", self._on_destroy)
 
     # -- construction --------------------------------------------------------
 
@@ -455,6 +472,81 @@ class MainWindow(Adw.ApplicationWindow):
         # The fan page's banner decides from the driver's cached points, and
         # those have just moved.
         self.reload_pages()
+
+    # -- following the config file -------------------------------------------
+
+    def check_external_config_change(self):
+        """Re-read the config when something else has written it.
+
+        This window is one of five writers -- the enforcer switches profile
+        on AC/battery and when the OS power mode changes, the tray and the
+        hotkey cycler switch it too -- and every page save writes this
+        window's whole in-memory copy back. Loading the file once at startup
+        therefore meant that nudging any slider silently reverted whatever
+        those had done in the meantime: unplug the laptop, watch it switch
+        to Quiet, touch one control and it was back on Performance.
+
+        The re-read is deliberately not treated as a user edit. ``_loading``
+        is set around the profile switcher so that following the file does
+        not fire an apply, which would turn every external switch into a
+        second ~16 second fan write from this side."""
+        mtime = _config_mtime()
+        if not config_mod.config_file_moved_on(self._last_config_mtime, mtime):
+            # First sample, or the file is gone: record and read nothing.
+            if self._last_config_mtime is None:
+                self._last_config_mtime = mtime
+            return GLib.SOURCE_CONTINUE
+        self._last_config_mtime = mtime
+        try:
+            with open(config_mod.CONFIG_PATH) as f:
+                fresh = json.load(f)
+        except (OSError, json.JSONDecodeError, ValueError):
+            # Half-written is impossible (every writer renames a temp file
+            # over it), so this is a file we should not act on at all.
+            return GLib.SOURCE_CONTINUE
+        if not isinstance(fresh, dict):
+            return GLib.SOURCE_CONTINUE
+
+        profile_changed, contents_changed = config_mod.reload_decision(
+            self.config, fresh)
+        # Replaced in place rather than rebound: every page reaches this dict
+        # through ``window.config``, and some hold the current profile's own
+        # sub-dict, so swapping the object would leave them writing into a
+        # copy nothing saves.
+        self.config.clear()
+        self.config.update(fresh)
+        if not (profile_changed or contents_changed):
+            # The common case, and it includes this window's own saves.
+            return GLib.SOURCE_CONTINUE
+
+        was_loading = self._loading
+        self._loading = True
+        try:
+            self._sync_profile_drop(fresh.get("current_profile"))
+        finally:
+            self._loading = was_loading
+        self.reload_pages()
+        return GLib.SOURCE_CONTINUE
+
+    def _sync_profile_drop(self, name):
+        """Point the switcher at ``name`` without that looking like a user
+        selection. Caller holds ``_loading``."""
+        names = list((self.config.get("profiles") or {}).keys())
+        if names != self.profile_names:
+            # A profile was added, renamed or removed elsewhere; a stale list
+            # offers a switch to something that no longer exists.
+            self.profile_names = names
+            self.profile_drop.set_model(
+                Gtk.StringList.new(names or ["(no profiles)"]))
+        if name in self.profile_names:
+            index = self.profile_names.index(name)
+            if self.profile_drop.get_selected() != index:
+                self.profile_drop.set_selected(index)
+
+    def _on_destroy(self, _widget):
+        if self._config_watch is not None:
+            GLib.source_remove(self._config_watch)
+            self._config_watch = None
 
     # -- Ambient -----------------------------------------------------------
 

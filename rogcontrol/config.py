@@ -70,6 +70,51 @@ def auto_switch_value(label):
     return None if label == NO_AUTO_SWITCH else label
 
 
+# How often an open window re-checks the config file. The window is not the
+# only writer -- the enforcer's AC auto-switch and its power-mode adoption,
+# the tray and the hotkey cycler all write it -- and a window that loaded the
+# file once at startup and then wrote its whole in-memory copy back on every
+# slider would silently revert every one of them.
+CONFIG_POLL_SECONDS = 5
+
+
+def config_file_moved_on(last_mtime, mtime):
+    """True when the config has been written since we last looked at it.
+
+    ``last_mtime`` None is the first sample: record it and read nothing. The
+    window has just loaded that exact file, so treating it as a change would
+    make every startup reload the pages for no reason.
+
+    ``mtime`` None means the file is not there (or unreadable) right now.
+    That is not a change either -- there is nothing to re-read, and the copy
+    in memory is the better of the two."""
+    if last_mtime is None or mtime is None:
+        return False
+    return mtime != last_mtime
+
+
+def reload_decision(current, fresh):
+    """What a config written by something else means for an open window.
+
+    Returns ``(profile_changed, contents_changed)``; both False means the
+    file moved but says nothing new to us -- which is the common case,
+    because the window's own saves change the mtime too.
+
+    The profile NAME staying the same does not mean its contents did: the
+    enforcer, the hotkey cycler and an import can all rewrite curves and
+    limits under the same name. A window that only watched the name kept
+    showing what it loaded at startup, so the graphs said one thing while
+    the hardware did another -- and the next Apply pushed the stale picture
+    back over the newer values."""
+    name = fresh.get("current_profile")
+    profile_changed = name != current.get("current_profile")
+    contents_changed = (
+        not profile_changed
+        and (fresh.get("profiles") or {}).get(name)
+        != (current.get("profiles") or {}).get(name))
+    return profile_changed, contents_changed
+
+
 def migrate_config(cfg, gpu_min_w=1, gpu_max_w=140):
     """Bring a config from any older version up to date WITHOUT touching
     anything the user has set.
