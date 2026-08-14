@@ -5,6 +5,28 @@ Reapplies your last-saved ROG Control profile plus independent settings
 (keyboard brightness, charge limit, GPU clock offsets)
 at login. Retries several times with delays, since some services
 (nvidia, asus-wmi) may not be fully ready right at login.
+
+--profile-only applies the profile and leaves the keyboard alone.
+
+That flag exists because this script has two callers with two different
+jobs. At login it is the whole of "put the machine back the way it was",
+keyboard included. But the tray also runs it to make a profile switch real,
+and a profile switch has no business touching the keyboard: keyboard
+brightness is a GLOBAL setting -- there is one kbd_brightness in the config
+and no profile has its own -- so re-applying it on every switch does not
+express the new profile, it just overwrites whatever the keyboard is
+currently doing with the last value written to the config. With
+kbd_brightness at 0 that means the backlight goes out every time the user
+picks a different profile, which is what they reported.
+
+The charge limit is global in exactly the same way and IS still applied
+here. The difference is who else writes it: the keyboard backlight is also
+changed by the Fn keys, the kbdlight cycler and the ambient sampler, so a
+stale config value fights the user. Nothing but this app ever writes the
+charge threshold, so re-asserting it costs one helper call, changes nothing
+the user can see, and covers the case where the EC has forgotten it -- and
+a charge limit that has silently lapsed is invisible until the battery is
+already damaged.
 """
 
 import json
@@ -109,7 +131,7 @@ def apply_gpu_clock_offsets(gpu):
             capture_output=True, text=True)
 
 
-def apply_once(config):
+def apply_once(config, profile_only=False):
     profile_name = config.get("current_profile")
     profile = config.get("profiles", {}).get(profile_name)
 
@@ -160,20 +182,25 @@ def apply_once(config):
                 flat += [t, pct_to_pwm255(pct)]
             run_helper("fan", channel, *flat)
 
-    if "kbd_brightness" in config:
+    # Global settings, below the profile because neither belongs to one.
+    # See the module docstring for why only one of them is skipped on a
+    # profile switch.
+    if "kbd_brightness" in config and not profile_only:
         run_helper("kbd", config["kbd_brightness"])
     if "charge_limit" in config:
         run_helper("charge", config["charge_limit"])
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    profile_only = "--profile-only" in argv
     if not os.path.exists(CONFIG_PATH):
         return
     for attempt in range(RETRIES):
         try:
             with open(CONFIG_PATH) as f:
                 config = json.load(f)
-            apply_once(config)
+            apply_once(config, profile_only=profile_only)
         except Exception:
             pass
         if attempt < RETRIES - 1:

@@ -72,15 +72,21 @@ ICON_PATH = os.path.expanduser(
 
 
 def apply_command():
-    """How to re-apply the config to the hardware.
+    """How to re-apply the config to the hardware after a profile switch.
 
     rogcontrol-apply.py sits beside this script in both layouts -- next to
     it in the repo, next to it in ~/.local/bin once installed -- so a
-    sibling lookup covers both without a special case."""
+    sibling lookup covers both without a special case.
+
+    --profile-only, because this is a profile switch and nothing else. That
+    script is also the boot service, where re-applying the saved keyboard
+    brightness is the point; here it would take the backlight to whatever
+    the config last recorded every time the user picked a profile, which is
+    not something a profile switch should do."""
     sibling = os.path.join(_HERE, "rogcontrol-apply.py")
     installed = os.path.expanduser("~/.local/bin/rogcontrol-apply.py")
     script = sibling if os.path.exists(sibling) else installed
-    return [sys.executable, script]
+    return [sys.executable, script, "--profile-only"]
 
 
 def app_command(flag):

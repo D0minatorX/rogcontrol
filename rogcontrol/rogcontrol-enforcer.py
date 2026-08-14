@@ -2,9 +2,14 @@
 """
 rogcontrol-enforcer.py
 Continuously re-pushes the active profile (CPU limits, GPU power/clock
-offsets, charge limit, keyboard brightness) - to fight the BIOS/firmware
-periodically resetting things back to its own defaults. Runs as a
-long-lived systemd --user service (Restart=always).
+offsets) - to fight the BIOS/firmware periodically resetting things back to
+its own defaults. Runs as a long-lived systemd --user service
+(Restart=always).
+
+It has not written the charge limit or the keyboard brightness for some
+time -- see the note beside the upkeep pass -- and this line said it did,
+which is exactly the wrong thing for the file to claim while someone is
+hunting for what keeps changing the keyboard.
 
 FAN CURVES ARE THE EXCEPTION: they are only re-pushed when the curve data
 actually changes, or when an external power-mode change is detected. Each
@@ -791,9 +796,15 @@ def main():
                 # enforcer stopped, so re-writing them every cycle only
                 # produced noise -- and for the keyboard it actively fought
                 # the user, reverting an Fn-key change within one cycle
-                # whenever the app was not running to sync it back. They are
-                # still applied on profile switch and at boot, which is when
-                # they are meant to change.
+                # whenever the app was not running to sync it back.
+                #
+                # Nor does this enforcer's own AC/battery auto-switch touch
+                # them: it goes through apply_full_profile, which writes the
+                # profile and only the profile. The charge limit is applied
+                # at boot and on a profile switch; the keyboard is applied at
+                # boot and when the user changes it, and nowhere else -- a
+                # profile switch that reset the backlight to the config's
+                # last value was the same fight in a different place.
 
                 # Fallback for when the signal watcher misses something (the
                 # busctl monitor restarting, a dropped signal, or the monitor
