@@ -42,9 +42,10 @@ def interpolate_curve(points, n=8):
     """Expand a user curve to exactly n points for the firmware.
 
     The user's own points are preserved verbatim whenever they fit (the
-    hardware takes 8, the editor allows at most 6). Extra slots are filled
-    by bisecting the widest temperature gap, so the added points sit on the
-    straight line the user already drew between their own points.
+    hardware takes 8, and so does the editor -- older profiles carry six).
+    Extra slots are filled by bisecting the widest temperature gap, so the
+    added points sit on the straight line the user already drew between
+    their own points.
 
     The previous version resampled by *index*, which silently moved every
     interior point: a 6-point curve came back as 8 points at completely

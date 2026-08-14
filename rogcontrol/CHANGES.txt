@@ -14,7 +14,7 @@ switch, a maximum clock, an energy preference, GPU limits, and a fan curve
 per fan. Switching profile applies all of it. The two Balanced profiles are
 identical apart from how hard the CPU chases clocks.
 
-Fans. A six-point curve per fan, edited on a graph in real RPM rather than
+Fans. An eight-point curve per fan, edited on a graph in real RPM rather than
 percent, calibrated to your machine. Curves are re-asserted in the
 background, because the embedded controller drops them whenever the power
 mode changes.
