@@ -21,6 +21,7 @@ old app claims the launch and silently gets presented instead of this one.
 
 import sys
 import threading
+import time
 import traceback
 
 import gi
@@ -31,10 +32,11 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import config as config_mod  # noqa: E402
+from . import fancurve  # noqa: E402
 from . import hardware  # noqa: E402
 from .pages.battery import BatteryPage  # noqa: E402
 from .pages.cpu import CpuPage  # noqa: E402
-from .pages.fans import FansPage  # noqa: E402
+from .pages.fans import CHANNEL_GAP_S, FansPage  # noqa: E402
 from .pages.gpu import GpuPage  # noqa: E402
 from .pages.keyboard import KeyboardPage  # noqa: E402
 from .pages.overview import OverviewPage  # noqa: E402
@@ -106,6 +108,12 @@ class MainWindow(Adw.ApplicationWindow):
         # so it is a floor and not a promise; see MIN_WIDTH below.
         self.set_size_request(MIN_WIDTH, MIN_HEIGHT)
 
+        # True while a whole profile is being pushed at the hardware. The
+        # fan portion alone takes ~16 seconds (see CHANNEL_GAP_S), so the
+        # window has to be able to say "still working" rather than start a
+        # second, overlapping apply.
+        self._applying_profile = False
+
         self.pages = {}
         self._build_ui()
         self._loading = False
@@ -175,8 +183,17 @@ class MainWindow(Adw.ApplicationWindow):
         self.toast_overlay = Adw.ToastOverlay()
         self.toast_overlay.set_child(self.stack)
 
+        # Applying a profile takes about twenty seconds, most of it spent
+        # waiting between fan channels, and it happens on whichever page the
+        # user is looking at. A toast would be gone long before the work is,
+        # so the progress lives in a banner under the header where it stays
+        # put until the apply really ends.
+        self.apply_banner = Adw.Banner()
+        self.apply_banner.set_revealed(False)
+
         toolbar = Adw.ToolbarView()
         toolbar.add_top_bar(header)
+        toolbar.add_top_bar(self.apply_banner)
         toolbar.set_content(self.toast_overlay)
         return Adw.NavigationPage(title="ROG Control", child=toolbar)
 
@@ -280,19 +297,164 @@ class MainWindow(Adw.ApplicationWindow):
             return
         self.config["current_profile"] = name
         config_mod.save_config(self.config)
-        # Only the on-screen values follow the profile for now. Pushing the
-        # whole profile at the hardware means a ~16 second fan curve write
-        # (the EC drops curve writes fired less than 8 seconds apart), so
-        # that belongs with the Fans page and its progress indicator rather
-        # than hidden behind a dropdown.
         self.reload_pages()
-        self.toast(f"Profile: {name}")
+        # And then actually put it on the machine. Saving the name alone --
+        # which is all this used to do -- left the CPU, GPU and fans running
+        # the previous profile, and left power-profiles-daemon on the
+        # previous mode, which the enforcer reads as the OS asking for the
+        # old profile back. It duly switched back and re-pushed all three
+        # fan curves to do it, so a profile switch cost two full curve
+        # writes and ended where it started.
+        self.apply_profile_async(name)
 
     def reload_pages(self):
         for page in self.pages.values():
             reload_fn = getattr(page, "reload", None)
             if reload_fn is not None:
                 reload_fn()
+
+    # -- applying a whole profile --------------------------------------------
+
+    def apply_profile_async(self, name):
+        """Push everything in profile ``name`` at the hardware, off the main
+        loop, reporting progress in the banner.
+
+        Off the main loop is not optional: the fan channels need 8 seconds
+        between them, so this takes about twenty seconds start to finish and
+        doing it inline would freeze the window for all of it."""
+        if self._applying_profile:
+            self.toast("Still applying the last profile…")
+            return
+        profile = (self.config.get("profiles") or {}).get(name) or {}
+        self._applying_profile = True
+        # Nothing else may start a second apply underneath this one, and the
+        # dropdown is the only way in.
+        self.profile_drop.set_sensitive(False)
+        self._set_apply_banner(f"Applying {name}…")
+        self.apply_async(
+            lambda: self._apply_profile_worker(name, profile),
+            lambda result, error: self._on_profile_applied(name, result, error))
+
+    def _set_apply_banner(self, text):
+        """Show progress text. Safe to call from a worker via idle_add."""
+        self.apply_banner.set_title(text)
+        self.apply_banner.set_revealed(True)
+        return GLib.SOURCE_REMOVE
+
+    def _apply_profile_worker(self, name, profile):
+        """Worker thread. Returns the list of things that failed.
+
+        The order here is load-bearing twice over:
+
+        * the OS power mode goes first, because changing it is what wipes the
+          EC's custom fan curve on this hardware -- pushing the curves before
+          the mode would hand them straight to a controller about to throw
+          them away;
+        * within the CPU section it is boost, then EPP, then the clock cap,
+          because writing cpufreq's ``boost`` refreshes every policy and
+          takes ``scaling_max_freq`` back to hardware maximum with it. A cap
+          written first is silently undone."""
+        failures = []
+
+        def step(text):
+            GLib.idle_add(self._set_apply_banner, text)
+
+        def do(label, fn):
+            ok, message = fn()
+            if not ok:
+                failures.append(f"{label}: {message}")
+
+        step(f"Setting the OS power mode for {name}…")
+        result = hardware.set_power_mode_for_profile(name)
+        # None means this profile maps to no OS mode, which is not a failure
+        # -- see hardware.set_power_mode_for_profile.
+        if result is not None and not result[0]:
+            failures.append(f"OS power mode: {result[1]}")
+
+        cpu = profile.get("cpu") or {}
+        if cpu:
+            step("Applying the CPU power limits…")
+            if all(k in cpu for k in ("stapm", "fast", "slow", "temp")):
+                do("CPU limits", lambda: hardware.run_helper(
+                    "cpu", cpu["stapm"], cpu["fast"], cpu["slow"], cpu["temp"],
+                    cpu.get("coall", 0)))
+            # A missing key means the profile has no preference, so the
+            # setting is left wherever it is rather than forced to a default
+            # every profile would then start carrying.
+            if "boost" in cpu and self.caps.get("cpu_boost"):
+                do("CPU boost", lambda: hardware.run_helper(
+                    "cpuboost", 1 if cpu["boost"] else 0))
+            if "epp" in cpu and self.caps.get("cpu_epp"):
+                do("CPU energy preference", lambda: hardware.run_helper(
+                    "cpuepp", cpu["epp"]))
+            # Last, after boost. 0 means "no ceiling" and still has to be
+            # written, or a cap from the previous profile survives the switch.
+            if "max_freq" in cpu and self.caps.get("cpu_clock"):
+                do("CPU clock cap", lambda: hardware.run_helper(
+                    "cpuclock", cpu["max_freq"] or "max"))
+
+        gpu = profile.get("gpu") or {}
+        if gpu:
+            step("Applying the GPU settings…")
+            if "watts" in gpu and self.caps.get("nvidia"):
+                do("GPU power limit",
+                   lambda: hardware.run_helper("gpu", gpu["watts"]))
+            if "clock_limit" in gpu and self.caps.get("nvidia"):
+                arg = hardware.gpu_clock_limit_arg(
+                    gpu["clock_limit"],
+                    (self.caps.get("gpu_limits")
+                     or hardware.default_gpu_limits())["clock_limit_max"])
+                do("GPU clock ceiling",
+                   lambda: hardware.run_helper("gpuclocklimit", arg))
+            if "dyn_boost" in gpu and self.caps.get("nv_dynamic_boost"):
+                do("Dynamic Boost",
+                   lambda: hardware.run_helper("nvboost", gpu["dyn_boost"]))
+            if "temp_target" in gpu and self.caps.get("nv_temp_target"):
+                do("GPU temperature target",
+                   lambda: hardware.run_helper("nvtemp", gpu["temp_target"]))
+            if self.caps.get("nvidia_settings"):
+                if "clock_offset" in gpu:
+                    do("GPU core clock offset",
+                       lambda: hardware.set_nvidia_clock_offset(
+                           "core", gpu["clock_offset"]))
+                if "mem_clock_offset" in gpu:
+                    do("GPU memory clock offset",
+                       lambda: hardware.set_nvidia_clock_offset(
+                           "memory", gpu["mem_clock_offset"]))
+
+        fans = profile.get("fans") or {}
+        if fans and self.caps.get("fan_curve"):
+            channels = [ch for ch in hardware.FAN_CHANNELS if ch in fans]
+            for i, channel in enumerate(channels):
+                if i > 0:
+                    # Mandatory, and measured on this machine: the asus-wmi
+                    # EC silently drops curve writes fired closer together
+                    # than this. 0.5s left two channels of three stuck on
+                    # their old curve; 8s converged every time.
+                    step(f"Waiting {CHANNEL_GAP_S}s — the fan controller "
+                         f"ignores curves written closer together…")
+                    time.sleep(CHANNEL_GAP_S)
+                label = hardware.FAN_LABELS[channel]
+                step(f"Writing the {label} curve ({i + 1} of "
+                     f"{len(channels)})…")
+                flat = fancurve.curve_to_flat(fans[channel], 8)
+                do(label, lambda: hardware.run_helper("fan", channel, *flat))
+        return failures
+
+    def _on_profile_applied(self, name, failures, error):
+        self._applying_profile = False
+        self.profile_drop.set_sensitive(True)
+        self.apply_banner.set_revealed(False)
+        if error is not None:
+            self.toast(f"Applying {name} failed: {error}")
+            return
+        if failures:
+            self.toast(f"{name} applied, except — " + "; ".join(failures))
+        else:
+            self.toast(f"Profile: {name} — applied.")
+        # The fan page's banner decides from the driver's cached points, and
+        # those have just moved.
+        self.reload_pages()
 
     # -- Ambient -----------------------------------------------------------
 
