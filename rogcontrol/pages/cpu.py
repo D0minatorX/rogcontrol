@@ -163,8 +163,18 @@ class CpuPage(Gtk.Box):
 
         status = Adw.PreferencesGroup(title="Processor")
         page.add(status)
+        # Temperature first, then the fan answering it: this is the pair the
+        # fan curve is tuned against, and the GPU page shows the same two in
+        # the same order.
+        self.temp_row, self.temp_value = self._live_row(status, "Temperature")
+        self.temp_row.set_subtitle(
+            "k10temp Tctl — the reading the embedded controller drives the "
+            "fans from.")
         self.fan_row, self.fan_value = self._live_row(
             status, hardware.FAN_LABELS[FAN_CHANNEL])
+        if not self.caps.get("cpu_temp"):
+            self.temp_row.set_subtitle("No CPU temperature sensor found on "
+                                       "this machine")
         if not self.caps.get("fan_rpm"):
             self.fan_row.set_subtitle("No asus hwmon fan reading on this "
                                       "machine")
@@ -357,18 +367,31 @@ class CpuPage(Gtk.Box):
         self.window.apply_async(self._sample, self._on_sample)
 
     def _sample(self):
-        """Worker thread: one sysfs read, no widgets."""
-        return hardware.read_fan_rpms().get(FAN_CHANNEL)
+        """Worker thread: two sysfs reads, no widgets.
 
-    def _on_sample(self, rpm, error):
+        Both in one pass, on the same two second tick, because they are read
+        together: a fan speed without the temperature that asked for it says
+        nothing about whether the curve is doing the right thing."""
+        return {
+            "temp_c": hardware.read_cpu_temp(),
+            "fan_rpm": hardware.read_fan_rpms().get(FAN_CHANNEL),
+        }
+
+    def _on_sample(self, data, error):
         self._sampling = False
         if error is not None:
             # One failed read is not worth a toast every two seconds; the
             # traceback is already on stderr from apply_async.
             return
-        self._render(rpm)
+        self._render(data)
 
-    def _render(self, rpm):
+    def _render(self, data):
+        temp = data.get("temp_c")
+        # Whole degrees, like the GPU page: k10temp reports in millidegrees,
+        # and the third decimal of a number that moves 30 C in a second is
+        # noise on screen.
+        self.temp_value.set_text(DASH if temp is None else f"{temp:.0f} °C")
+        rpm = data.get("fan_rpm")
         # A dash, not a zero: a fan that cannot be read is not a fan that has
         # stopped, and "0 rpm" is the reading that would send someone hunting
         # a hardware fault that is not there.
