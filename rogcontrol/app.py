@@ -64,13 +64,6 @@ PAGE_SPECS = (
     ("system", "System", "emblem-system-symbolic"),
 )
 
-# Pages not built yet get a placeholder rather than being left out of the
-# sidebar: the shape of the finished app should be visible from the first
-# run, and a missing entry reads as a bug where "Coming next" reads as a plan.
-# Empty now that every page in PAGE_SPECS is real; kept because the next page
-# added to the sidebar should appear before it works, not after.
-PLACEHOLDERS = {}
-
 
 def _config_mtime():
     """When the config was last written, or None if it cannot be asked."""
@@ -217,24 +210,16 @@ class MainWindow(Adw.ApplicationWindow):
         toolbar.set_content(self.toast_overlay)
         return Adw.NavigationPage(title="ROG Control", child=toolbar)
 
-    def _build_page(self, page_id, label):
+    def _build_page(self, page_id, _label):
+        """Every id in PAGE_SPECS has a page; there is no placeholder tier.
+
+        A KeyError here is the right failure: a sidebar entry with nothing
+        behind it is a bug, and one that shows an apologetic empty page
+        instead of raising is a bug that ships."""
         builders = {"overview": OverviewPage, "cpu": CpuPage, "gpu": GpuPage,
                     "fans": FansPage, "battery": BatteryPage,
                     "keyboard": KeyboardPage, "system": SystemPage}
-        builder = builders.get(page_id)
-        if builder is not None:
-            return builder(self)
-        title, description = PLACEHOLDERS[page_id]
-        status = Adw.StatusPage(title=title, description=description)
-        status.set_icon_name(dict(
-            (pid, icon) for pid, _l, icon in PAGE_SPECS)[page_id])
-        # Named so the placeholder is obviously a stage rather than a failure.
-        button = Gtk.Button(label="Coming next")
-        button.set_sensitive(False)
-        button.set_halign(Gtk.Align.CENTER)
-        button.add_css_class("pill")
-        status.set_child(button)
-        return status
+        return builders[page_id](self)
 
     def _build_profile_switcher(self):
         """The profile list, in the header where it applies to every page."""
