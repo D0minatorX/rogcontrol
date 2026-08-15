@@ -471,6 +471,58 @@ class TestSupergfxParsing(unittest.TestCase):
             self.assertEqual(hardware.parse_supergfx_modes(text), [], text)
 
 
+class TestGpuModeChoices(unittest.TestCase):
+    """What the picker offers, which is deliberately not what -s reports.
+
+    The regression these guard: the picker was once built from
+    ``supergfxctl -s``, and on a laptop whose hardware MUX is wired to the
+    discrete GPU that command reports the one mode already in force. The
+    picker held a single entry and could switch nothing."""
+
+    def test_all_three_are_offered_by_default(self):
+        self.assertEqual(hardware.gpu_mode_choices(),
+                         ["Integrated", "Hybrid", "AsusMuxDgpu"])
+
+    def test_the_offered_list_is_not_filtered_by_what_s_reports(self):
+        # The exact state of the machine this was written on: -s says one
+        # mode, and all three must still be on offer.
+        self.assertEqual(
+            hardware.gpu_mode_choices("AsusMuxDgpu", ["AsusMuxDgpu"]),
+            ["Integrated", "Hybrid", "AsusMuxDgpu"])
+
+    def test_a_short_supported_list_never_shrinks_the_offer(self):
+        for supported in ([], ["Integrated"], ["Integrated", "Hybrid"],
+                          ["AsusMuxDgpu"], None):
+            offered = hardware.gpu_mode_choices(supported=supported)
+            for mode in hardware.GPU_MODES:
+                self.assertIn(mode, offered, supported)
+
+    def test_supported_modes_outside_the_three_are_added_not_dropped(self):
+        self.assertEqual(
+            hardware.gpu_mode_choices(supported=["Integrated", "Vfio"]),
+            ["Integrated", "Hybrid", "AsusMuxDgpu", "Vfio"])
+
+    def test_the_active_mode_is_always_selectable(self):
+        # Otherwise the picker would show some other mode as current, which
+        # reads as a mode change that never happened.
+        self.assertIn("AsusEgpu", hardware.gpu_mode_choices("AsusEgpu"))
+
+    def test_no_mode_is_listed_twice(self):
+        offered = hardware.gpu_mode_choices(
+            "Vfio", ["Hybrid", "Vfio", "Integrated", "Vfio"])
+        self.assertEqual(len(offered), len(set(offered)))
+        self.assertEqual(offered,
+                         ["Integrated", "Hybrid", "AsusMuxDgpu", "Vfio"])
+
+    def test_the_three_keep_their_order_ahead_of_any_extras(self):
+        offered = hardware.gpu_mode_choices("Vfio", ["Vfio", "AsusEgpu"])
+        self.assertEqual(offered[:3], list(hardware.GPU_MODES))
+
+    def test_nothing_known_at_all(self):
+        self.assertEqual(hardware.gpu_mode_choices(None, ()),
+                         list(hardware.GPU_MODES))
+
+
 class TestBusctlParsing(unittest.TestCase):
     def test_the_power_mode_out_of_a_property_reply(self):
         self.assertEqual(hardware.parse_busctl_string('s "balanced"\n'),

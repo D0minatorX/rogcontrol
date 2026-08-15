@@ -7,17 +7,25 @@ The dangerous one is the graphics mode. Switching it tears down and rebuilds
 the display stack, which on this machine means the session goes away and
 anything unsaved goes with it. The GTK3 app fired the switch straight off a
 radio button, so a stray click on the wrong row could end the session with no
-warning. Here it asks first, and it only ever offers the modes supergfxctl
-says this machine supports -- on the laptop this was written on that is a
-list of one, and a picker offering the other two would be offering two ways
-to fail.
+warning. Here it asks first -- but it offers all three modes, exactly as the
+GTK3 app did.
 
-That list of one is also why the mode section is three rows rather than one.
-A greyed-out picker with the reason hidden in a tooltip reads as a missing
-feature -- "where is the switch for the gpu mode" -- so the mode the machine
-is actually running is stated in full, the modes supergfxd will accept are
-listed beside it, and when there is nothing to switch to the picker says so
-in visible text and explains where the switch does live.
+It did briefly build the picker out of ``supergfxctl -s``, which sounds
+right and is not. That command answers "what will the daemon accept in the
+state it is in right now", and on a laptop whose hardware MUX has the
+display wired to the discrete GPU the answer is the single mode it is
+already in. A picker built from that holds one entry and switches nothing,
+which is how the feature went missing. So -s is reported as information on
+its own row, the mode actually in force is stated in full above it, and a
+mode the daemon will not take comes back refused in supergfxd's own words
+on a row below -- a refusal being a far better answer than an empty list.
+
+That is also why the mode section is four rows rather than one. Those three
+facts are status, so they stay in visible text: a greyed-out picker whose
+reason is hidden in a tooltip reads as a missing feature -- "where is the
+switch for the gpu mode" -- and on a touchpad there is no hover to find the
+reason with. The picker itself is a control, so it is the one row here that
+follows the rest of the app and keeps its explanation on hover.
 
 The conflict is asusd. It is asusctl's daemon and it drives exactly the same
 hardware as this app: the same asus-wmi platform knobs, the same three custom
@@ -63,10 +71,19 @@ DASH = "—"
 # render than the page is worth.
 LOG_LINES = 300
 
-GPU_MODE_SUBTITLE = (
+# The picker is a control, so it follows the tuning pages: the consequence
+# stays on the row, the paragraph goes on hover. The reasoning the user asked
+# to have visible is status -- what is running, what supergfxd will accept,
+# what it answered -- and that stays on the rows around this one.
+GPU_MODE_SUBTITLE = "Restarts the display stack — you will be logged out"
+
+GPU_MODE_TOOLTIP = (
     "Integrated turns the NVIDIA card off entirely for battery life; hybrid "
-    "leaves it available for games. Changing this restarts the display "
-    "stack — you will be logged out."
+    "leaves it available for the applications that ask for it; AsusMuxDgpu "
+    "wires the display straight to it. All three are offered whatever "
+    "supergfxd lists as supported — it is asked, and its answer is shown "
+    "below. Switching restarts the display stack, which ends the session, so "
+    "it asks for confirmation first."
 )
 
 # What each of supergfxctl's mode names means, in one line. The names are the
@@ -87,18 +104,36 @@ GPU_MODE_DESCRIPTIONS = {
                    "saving is bypassed.",
 }
 
-# Shown in place of the picker's usual subtitle when supergfxd offers nothing
-# to switch to. Visible text, not a tooltip: a greyed-out row whose reason is
-# only on hover is indistinguishable from a broken one, and on a touchpad
-# there is no hover at all.
-SINGLE_MODE_SUBTITLE = (
-    "Switching is unavailable on this machine: supergfxd reports {mode} as "
-    "the only mode it supports, so there is no other mode to switch to.\n"
-    "That is what it reports when the laptop's hardware MUX has the display "
-    "wired to one GPU. Which GPU that is gets chosen in the firmware setup "
-    "screen (or in Armoury Crate under Windows), not from the OS — change it "
-    "there and this list will offer the others."
+# The subtitle on the row that reports supergfxctl -s. Information, not a
+# gate: every mode is offered whatever this row says. See
+# hardware.gpu_mode_choices.
+MODES_SUPPORTED_SUBTITLE = (
+    "What supergfxd says it will accept in the state it is in right now. "
+    "All the modes below are offered whatever this says."
 )
+
+# Added to it when the daemon is listing fewer modes than are on offer,
+# which on this hardware is the normal state rather than a fault. Visible
+# text, not a tooltip: on a touchpad there is no hover at all.
+MODES_PARTIAL_SUBTITLE = (
+    "It is listing fewer than are offered below, which is what it reports "
+    "when the laptop's hardware MUX has the display wired to one GPU. "
+    "Switching to a mode it has not listed may well be refused — try it and "
+    "supergfxd's own answer appears below. Which GPU the MUX uses is chosen "
+    "in the firmware setup screen (or in Armoury Crate under Windows), not "
+    "from the OS."
+)
+
+# The row that repeats supergfxd's reply to a switch, word for word. A toast
+# is gone in five seconds and a refusal is the thing you most want to still
+# be able to read.
+MODE_ANSWER_TITLE = "supergfxd's answer"
+
+# When it said yes, or no, and said nothing else. Rare, but a blank row under
+# a heading that promises an answer is worse than a sentence saying there
+# wasn't one.
+MODE_ANSWER_SILENT_OK = "It accepted the change without printing anything."
+MODE_ANSWER_SILENT_FAIL = "It refused the change without saying why."
 
 NO_DAEMON_SUBTITLE = (
     "supergfxctl is installed but supergfxd is not answering, so the current "
@@ -157,8 +192,9 @@ ASUSD_STATE_TEXT = {
 
 ASUSD_STATE_SUBTITLE = {
     hardware.ASUSD_ABSENT:
-        "Nothing else is driving this hardware. This is the state this app "
-        "wants to be in.",
+        "Nothing else is driving this hardware — this is the state this app "
+        "wants to be in. There is nothing here to stop, disable or "
+        "uninstall; those buttons appear only when asusd is installed.",
     hardware.ASUSD_RUNNING:
         "asusd is running right now and is competing with this app for the "
         "fans, the power profile and the keyboard lighting.",
@@ -193,7 +229,10 @@ class SystemPage(Adw.PreferencesPage):
         # cannot be pressed again mid-flight.
         self._asusd_busy = False
         self.asusd_state = {}
+        # What is in the picker, and separately the last non-empty answer
+        # supergfxctl -s gave. The two are deliberately not the same list.
         self.modes = []
+        self.supported_modes = []
 
         self._build()
         self._reload_log()
@@ -222,9 +261,7 @@ class SystemPage(Adw.PreferencesPage):
         self.mode_now_row, self.mode_now_value = self._value_row(
             group, "Current mode", strong=True)
         self.modes_row, self.modes_value = self._value_row(
-            group, "Modes supergfxd supports",
-            "What the daemon will accept on this machine — nothing else can "
-            "be selected.")
+            group, "Modes supergfxd supports", MODES_SUPPORTED_SUBTITLE)
 
         # Why there is no picker, when there is no picker. A separate row and
         # not the ComboRow's own subtitle, because an insensitive row draws
@@ -236,16 +273,23 @@ class SystemPage(Adw.PreferencesPage):
 
         self.mode_row = Adw.ComboRow(title="Switch mode",
                                      subtitle=GPU_MODE_SUBTITLE)
-        # Populated from the daemon in _refresh_now: what this machine
-        # supports is a question only supergfxctl can answer, and asking it
-        # costs a subprocess, so the row starts empty rather than showing a
-        # guess that is then corrected.
-        self.mode_row.set_model(Gtk.StringList.new([]))
-        # The reason a switch is unavailable is several lines long and has to
-        # be readable, not clipped to one.
+        self.mode_row.set_tooltip_text(GPU_MODE_TOOLTIP)
+        # All three from the start, not a list built from supergfxctl -s.
+        # The daemon's list says what it will take in the state it is in, not
+        # what the machine can do, and filtering by it is what left this
+        # picker with a single entry and no way to switch anything.
+        self.modes = hardware.gpu_mode_choices()
+        self.mode_row.set_model(Gtk.StringList.new(self.modes))
+        # Unclipped, so the warning still reads in full at a narrow window.
         self.mode_row.set_subtitle_lines(0)
         self.mode_row.connect("notify::selected", self._on_mode_changed)
         group.add(self.mode_row)
+
+        # Empty until something has actually been switched, then supergfxd's
+        # reply verbatim -- an acceptance or, more usefully, its refusal.
+        self.mode_answer_row, self.mode_answer_value = self._value_row(
+            group, MODE_ANSWER_TITLE)
+        self.mode_answer_row.set_visible(False)
 
         if not self.caps.get("supergfxctl"):
             self._block_switching(
@@ -507,18 +551,17 @@ class SystemPage(Adw.PreferencesPage):
         self._render_asusd(data.get("asusd") or {})
         self._render_sync(data.get("power_mode"))
 
-    def _render_modes(self, modes, active):
-        # supergfxctl answering with nothing at all leaves the last known
-        # list up rather than emptying the picker under the user's cursor.
-        if not modes:
-            modes = list(self.modes) or (
-                list(hardware.GPU_MODES_FALLBACK)
-                if self.caps.get("supergfxctl") else [])
-        # The active mode always appears, even if -s did not list it: it is
-        # what the machine is running, and a picker that cannot show it would
-        # show something else as selected, which reads as a mode change.
-        if active and active not in modes:
-            modes = modes + [active]
+    def _render_modes(self, supported, active):
+        """Fill the picker, and report -s beside it without obeying it.
+
+        ``supported`` is whatever ``supergfxctl -s`` just said. It goes on
+        its own row as information; it does not decide what the picker
+        holds. See hardware.gpu_mode_choices for why."""
+        # Keep the last non-empty answer: supergfxd going quiet for one
+        # sample should not blank the row that says what it supports.
+        if supported:
+            self.supported_modes = list(supported)
+        modes = hardware.gpu_mode_choices(active, self.supported_modes)
         was_loading = self._loading
         self._loading = True
         try:
@@ -537,25 +580,28 @@ class SystemPage(Adw.PreferencesPage):
             self.mode_now_row.set_subtitle(GPU_MODE_DESCRIPTIONS.get(
                 active, "supergfxd's own name for the mode this machine is "
                         "running."))
-        self.modes_value.set_text(", ".join(modes) if modes else DASH)
+        # What -s reported, not what the picker holds -- those are different
+        # lists on this machine, and conflating them is the bug this row now
+        # exists to make visible.
+        self.modes_value.set_text(", ".join(self.supported_modes)
+                                  if self.supported_modes else DASH)
+        subtitle = MODES_SUPPORTED_SUBTITLE
+        if self.supported_modes and len(self.supported_modes) < len(modes):
+            subtitle += " " + MODES_PARTIAL_SUBTITLE
+        self.modes_row.set_subtitle(subtitle)
 
         if not self.caps.get("supergfxctl"):
             return
-        # Set both ways round, not just off: supergfxd can be restarted or
-        # its mode list can change under a running window, and a row latched
-        # insensitive on one sample would never come back.
+        # Set both ways round, not just off: supergfxd can be restarted under
+        # a running window, and a row latched insensitive on one sample would
+        # never come back. Nothing else blocks the picker -- a short list from
+        # -s is not a reason to take the choice away, only to say so above.
         if active is None:
             self._block_switching(NO_DAEMON_SUBTITLE)
             self.mode_now_row.set_subtitle(
                 "supergfxd is not answering, so the mode cannot be read.")
             return
-        # The reason goes on the page in full, where it is visible, rather
-        # than in a tooltip nobody hovers over and a touchpad cannot produce
-        # at all. This is the control the user could not find.
-        if len(modes) <= 1:
-            self._block_switching(SINGLE_MODE_SUBTITLE.format(mode=modes[0]))
-        else:
-            self._allow_switching()
+        self._allow_switching()
 
     def _render_asusd(self, state):
         """Say what asusd is doing, and offer only what makes sense."""
@@ -713,6 +759,8 @@ class SystemPage(Adw.PreferencesPage):
             return
         self._switching = True
         self.mode_row.set_sensitive(False)
+        # The previous attempt's answer is about the previous attempt.
+        self.mode_answer_row.set_visible(False)
         self.window.toast(f"Switching graphics mode to {mode}…")
         self.window.apply_async(
             lambda: hardware.set_gpu_mode(mode),
@@ -722,12 +770,30 @@ class SystemPage(Adw.PreferencesPage):
         self._switching = False
         self.mode_row.set_sensitive(True)
         ok, message = (False, str(error)) if error is not None else result
+        self._show_mode_answer(mode, ok, message)
         if ok:
             self.window.toast(f"Graphics mode set to {mode}. "
                               f"Log out to finish switching.")
         else:
             self.window.toast(f"Graphics mode change failed: {message}")
         self._refresh_now()
+
+    def _show_mode_answer(self, mode, ok, message):
+        """Put supergfxd's reply on the page, word for word.
+
+        Verbatim and not summarised: when the daemon refuses -- the likely
+        answer for a mode the hardware MUX has ruled out -- its own wording
+        is the only thing that says which of several reasons applied. A
+        toast is gone in five seconds; this stays until the next attempt."""
+        self.mode_answer_row.set_title(f"supergfxd's answer to {mode}")
+        self.mode_answer_value.set_text("accepted" if ok else "refused")
+        for css in ("success", "warning"):
+            self.mode_answer_value.remove_css_class(css)
+        self.mode_answer_value.add_css_class("success" if ok else "warning")
+        self.mode_answer_row.set_subtitle(
+            (message or "").strip()
+            or (MODE_ANSWER_SILENT_OK if ok else MODE_ANSWER_SILENT_FAIL))
+        self.mode_answer_row.set_visible(True)
 
     # -- shell hooks ---------------------------------------------------------
 

@@ -719,12 +719,33 @@ def _read_clamped(path, low, high, root):
 
 # -- Graphics mode (supergfxctl) ---------------------------------------------
 
-# Used only when supergfxctl will not say what it supports. Listing a mode
-# the daemon rejects is harmless -- the switch fails with its message -- but
-# the daemon's own list is always preferred, because on this machine it
-# reports exactly one supported mode and a picker offering three would be
-# offering two that cannot work.
-GPU_MODES_FALLBACK = ("Integrated", "Hybrid", "AsusMuxDgpu")
+# The three modes this app offers, always, in the order a user thinks about
+# them: least power, both, most power. Same list the GTK3 app had.
+GPU_MODES = ("Integrated", "Hybrid", "AsusMuxDgpu")
+
+
+def gpu_mode_choices(active=None, supported=()):
+    """Every mode to offer: the three above, plus anything else in play.
+
+    ``supergfxctl -s`` deliberately does **not** filter this. It answers
+    "what will the daemon accept in the state it is in right now", and on a
+    laptop whose hardware MUX is set to the discrete GPU that answer is the
+    single mode it is already in -- so filtering by it leaves a picker with
+    nothing in it but the current mode, which is how the ability to switch
+    went missing. What the daemon lists is shown to the user as information
+    beside the picker; a mode it will not take comes back refused, in its own
+    words, which is a better answer than an empty list.
+
+    Anything ``-s`` reports that is not one of the three is added rather than
+    dropped -- Vfio, AsusEgpu, NvidiaNoModeset are real modes on the machines
+    that have them -- and so is the mode actually in force, which must always
+    be selectable or the picker would show some other mode as current.
+    """
+    modes = list(GPU_MODES)
+    for extra in list(supported or ()) + [active]:
+        if extra and extra not in modes:
+            modes.append(extra)
+    return modes
 
 
 def parse_supergfx_modes(text):
