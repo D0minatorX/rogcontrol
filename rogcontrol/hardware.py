@@ -717,6 +717,28 @@ def _read_clamped(path, low, high, root):
     return None if val is None else max(low, min(high, val))
 
 
+# -- Firmware settings -------------------------------------------------------
+
+# The startup chime, on the same asus-wmi platform device as the two knobs
+# above. Unlike them it belongs to the machine rather than to a profile: it is
+# stored in the firmware, it happens before any operating system is running,
+# and nobody wants their laptop to start chiming because they picked
+# Performance.
+BOOT_SOUND_PATH = f"{ASUS_WMI_DIR}/boot_sound"
+
+
+def read_boot_sound(root=None):
+    """1 if the firmware plays its chime at power-on, 0 if it does not, None
+    if this machine has no such control.
+
+    Anything else the file might hold is None as well. This feeds a switch
+    with two positions, and guessing which one an unexpected value means
+    would show a state the firmware is not in -- "unavailable" is the honest
+    answer to a reading nothing here understands."""
+    val = read_int(_under(root, BOOT_SOUND_PATH))
+    return val if val in (0, 1) else None
+
+
 # -- Graphics mode (supergfxctl) ---------------------------------------------
 
 # The three modes this app offers, always, in the order a user thinks about
@@ -1156,6 +1178,10 @@ def detect_capabilities(root=None):
     caps["pkg_power"] = find_hwmon_by_name("amdgpu", root=root) is not None
     caps["nv_temp_target"] = os.path.exists(_under(root, f"{ASUS_WMI_DIR}/nv_temp_target"))
     caps["nv_dynamic_boost"] = os.path.exists(_under(root, f"{ASUS_WMI_DIR}/nv_dynamic_boost"))
+    # Presence, not the value: a machine whose firmware has the chime turned
+    # off still has the control, and gating on the reading would make the
+    # switch disappear the moment it was switched off.
+    caps["boot_sound"] = os.path.exists(_under(root, BOOT_SOUND_PATH))
     caps["nvidia"] = have_cmd("nvidia-smi")
     # A separate question from nvidia-smi: the two clock offsets go through
     # nvidia-settings, which is its own package and is missing on plenty of

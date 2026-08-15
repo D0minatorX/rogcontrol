@@ -1,4 +1,5 @@
-"""System: graphics mode, asusd, power-mode sync, the log, and detection.
+"""System: graphics mode, asusd, power-mode sync, the boot sound, the log,
+and detection.
 
 Read-mostly things, one genuinely dangerous control, and one conflict worth
 naming.
@@ -50,6 +51,13 @@ this app moving to the profile that mode maps to. The row used to tell the
 user to "re-select the profile to push it back", which was never possible
 -- selecting the profile that is already current is a no-op in the switcher,
 by design, since it would otherwise cost a full ~20 second re-apply.
+
+The boot sound is here rather than on a tuning page because it is a property
+of the machine and not of how hard it is being driven: the firmware plays it
+before any operating system is running, and switching profile must not change
+it. So it is written straight to the hardware, kept at the top level of the
+config rather than inside a profile, and re-asserted at login by the
+boot-apply service in case a firmware reset has brought the chime back.
 """
 
 import gi
@@ -60,6 +68,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from .. import APP_VERSION  # noqa: E402
+from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
 from .. import profiles as profiles_mod  # noqa: E402
 
@@ -206,6 +215,28 @@ ASUSD_STATE_SUBTITLE = {
         "own. Nothing is competing for the hardware.",
 }
 
+# The boot sound is the one control on this page that is not about a daemon.
+# It follows the tuning pages rather than the status rows around it: the
+# consequence on the row, the paragraph on hover.
+BOOT_SOUND_SUBTITLE = "The chime the firmware plays at power-on"
+
+BOOT_SOUND_TOOLTIP = (
+    "ASUS firmware plays a short chime through the speakers when the laptop "
+    "powers on, before any operating system is running. This switch is the "
+    "firmware's own setting for it — the same one Armoury Crate writes under "
+    "Windows — so it is not part of a profile and does not change when you "
+    "switch one. Writing it needs root, so it goes through this app's "
+    "privileged helper, and it is remembered so the boot-apply service can "
+    "put it back if a firmware reset loses it."
+)
+
+BOOT_SOUND_UNAVAILABLE_SUBTITLE = "No boot_sound control on this machine"
+
+BOOT_SOUND_UNAVAILABLE_TOOLTIP = (
+    "Not available on this machine: the asus-nb-wmi driver exposes no "
+    "boot_sound file, so there is nothing to write.\n\n" + BOOT_SOUND_TOOLTIP
+)
+
 SYNC_DESCRIPTION = (
     "This app and the OS both hold an opinion about the power mode. "
     "Selecting a profile here sets the OS mode to match. Changing it the "
@@ -228,6 +259,10 @@ class SystemPage(Adw.PreferencesPage):
         # systemd has been asked what actually happened, so the two buttons
         # cannot be pressed again mid-flight.
         self._asusd_busy = False
+        # Same idea for the boot sound: true while the helper is being asked
+        # to change it, so a sample that lands mid-write cannot put the
+        # switch back to the value the firmware has not been given yet.
+        self._boot_sound_busy = False
         self.asusd_state = {}
         # What is in the picker, and separately the last non-empty answer
         # supergfxctl -s gave. The two are deliberately not the same list.
@@ -248,6 +283,7 @@ class SystemPage(Adw.PreferencesPage):
         self._build_gpu_mode()
         self._build_asusd()
         self._build_sync()
+        self._build_firmware()
         self._build_log()
         self._build_about()
 
@@ -382,6 +418,23 @@ class SystemPage(Adw.PreferencesPage):
         self.osmode_row, self.osmode_value = self._value_row(
             group, "OS power mode", "power-profiles-daemon's active profile")
         self.sync_row, self.sync_value = self._value_row(group, "In sync")
+
+    def _build_firmware(self):
+        """Settings that live in the firmware rather than in a profile."""
+        group = Adw.PreferencesGroup(title="Firmware")
+        self.add(group)
+        self.boot_sound_row = Adw.SwitchRow(title="Boot sound",
+                                            subtitle=BOOT_SOUND_SUBTITLE)
+        self.boot_sound_row.set_tooltip_text(BOOT_SOUND_TOOLTIP)
+        self.boot_sound_row.connect("notify::active", self._on_boot_sound)
+        group.add(self.boot_sound_row)
+        if not self.caps.get("boot_sound"):
+            # A switch left live that silently does nothing is worse than one
+            # that is visibly unavailable and says why.
+            self.boot_sound_row.set_sensitive(False)
+            self.boot_sound_row.set_subtitle(BOOT_SOUND_UNAVAILABLE_SUBTITLE)
+            self.boot_sound_row.set_tooltip_text(
+                BOOT_SOUND_UNAVAILABLE_TOOLTIP)
 
     def _build_log(self):
         group = Adw.PreferencesGroup(
@@ -539,6 +592,12 @@ class SystemPage(Adw.PreferencesPage):
             # page claiming it is absent while it is fighting over the fans
             # is the worst version of this row.
             "asusd": hardware.read_asusd_state(),
+            # One sysfs read. Sampled every cycle rather than once at
+            # startup for the same reason as the mode above: the firmware
+            # setup screen and a BIOS update both write this, and a switch
+            # read once would show a stale position all session.
+            "boot_sound": (hardware.read_boot_sound()
+                           if self.caps.get("boot_sound") else None),
         }
 
     def _on_sample(self, data, error):
@@ -550,6 +609,7 @@ class SystemPage(Adw.PreferencesPage):
         self._render_modes(data.get("modes") or [], data.get("mode"))
         self._render_asusd(data.get("asusd") or {})
         self._render_sync(data.get("power_mode"))
+        self._render_boot_sound(data.get("boot_sound"))
 
     def _render_modes(self, supported, active):
         """Fill the picker, and report -s beside it without obeying it.
@@ -637,6 +697,56 @@ class SystemPage(Adw.PreferencesPage):
         self.asusd_disable_row.set_visible(installed)
         self.asusd_enable_row.set_visible(installed)
         self.asusd_remove_row.set_visible(installed)
+
+    # -- boot sound ----------------------------------------------------------
+
+    def _render_boot_sound(self, value):
+        """Put the switch where the firmware actually is.
+
+        ``_loading`` around the set, exactly as the mode picker does it:
+        moving the switch here must not look like the user moving it, or
+        every sample would fire a helper call writing back the value it has
+        just read."""
+        if value is None or self._boot_sound_busy:
+            return
+        was_loading = self._loading
+        self._loading = True
+        try:
+            self.boot_sound_row.set_active(bool(value))
+        finally:
+            self._loading = was_loading
+
+    def _on_boot_sound(self, row, _param):
+        if self._loading or self._boot_sound_busy:
+            return
+        wanted = 1 if row.get_active() else 0
+        self._boot_sound_busy = True
+        row.set_sensitive(False)
+        self.window.apply_async(
+            lambda: hardware.run_helper("bootsound", wanted),
+            lambda result, error: self._on_boot_sound_set(
+                wanted, result, error))
+
+    def _on_boot_sound_set(self, wanted, result, error):
+        self._boot_sound_busy = False
+        self.boot_sound_row.set_sensitive(True)
+        ok, message = (False, str(error)) if error is not None else result
+        if ok:
+            # Top level, not inside the profile: this describes the machine,
+            # not how hard it is being driven, so it must not change when a
+            # profile does. The boot-apply service re-asserts it from here
+            # after a firmware reset has forgotten it.
+            self.window.config["boot_sound"] = wanted
+            config_mod.save_config(self.window.config)
+            self.window.toast("Boot sound on — the firmware will chime at "
+                              "power-on." if wanted else
+                              "Boot sound off — the firmware will start "
+                              "silently.")
+        else:
+            self.window.toast(f"Boot sound change failed: {message}")
+        # Ask the firmware rather than assuming the switch worked; a refused
+        # write puts the switch straight back.
+        self._refresh_now()
 
     def _on_check_asusd(self, _button):
         self._refresh_now()

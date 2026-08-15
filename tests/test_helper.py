@@ -57,6 +57,10 @@ ENFORCER = PACKAGE_DIR / "rogcontrol-enforcer.py"
 # tests below reach ryzenadj rather than stopping at a range check.
 GOOD_ARGS = ["35000", "50000", "35000", "80", "-5"]
 
+# The one sysfs file the bootsound action writes, swapped for a temporary
+# file below so the branch under test is the shipped text.
+BOOT_SOUND_PATH = "/sys/devices/platform/asus-nb-wmi/boot_sound"
+
 # The warning ryzenadj prints on this machine every time it runs.
 WARNING = "no compatible ryzen_smu kernel module found, fallback to /dev/mem"
 
@@ -483,6 +487,96 @@ fi
             env=dict(os.environ,
                      ROGCONTROL_HELPER_LOCK_DIR=os.path.join(self.tmp, "gone")))
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+
+class BootSound(unittest.TestCase):
+    """The bootsound action: two values, and nothing else reaches the file.
+
+    Run against the shipped script with only the sysfs path swapped for a
+    temporary file -- the validation under test is the real text, and the
+    write lands somewhere harmless. Nothing here needs root for the same
+    reason: the only privileged thing about this action is where it normally
+    writes.
+
+    A fixed pair of values rather than a range check is the whole point. This
+    is a root-owned write to a firmware knob, and the driver answers anything
+    else with -EINVAL, so a helper that passed the caller's string through
+    would turn a typo into an unexplained failure."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = self._tmp.name
+        self.sysfs = os.path.join(self.tmp, "boot_sound")
+        self.helper = os.path.join(self.tmp, "rogcontrol-helper")
+        text = HELPER.read_text(encoding="utf-8")
+        self.assertIn(BOOT_SOUND_PATH, text)
+        with open(self.helper, "w") as f:
+            f.write(text.replace(BOOT_SOUND_PATH, self.sysfs))
+
+    def present(self, value="0"):
+        """The machine has the control, currently holding ``value``."""
+        with open(self.sysfs, "w") as f:
+            f.write(f"{value}\n")
+
+    def run_bootsound(self, *args):
+        return subprocess.run(["bash", self.helper, "bootsound", *args],
+                              capture_output=True, text=True, timeout=30)
+
+    def written(self):
+        with open(self.sysfs) as f:
+            return f.read().strip()
+
+    def test_on_is_written(self):
+        self.present("0")
+        completed = self.run_bootsound("1")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(self.written(), "1")
+
+    def test_off_is_written(self):
+        self.present("1")
+        completed = self.run_bootsound("0")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(self.written(), "0")
+
+    def test_nothing_but_zero_and_one_is_accepted(self):
+        for bad in ("2", "-1", "on", "off", "true", "", "0 1", "1;reboot",
+                    "01", " 1"):
+            self.present("0")
+            completed = self.run_bootsound(bad)
+            self.assertEqual(completed.returncode, 1, f"{bad!r} was accepted")
+            self.assertIn("bootsound takes 0 (off) or 1 (on)",
+                          completed.stderr)
+            # Refused means refused: the file is untouched.
+            self.assertEqual(self.written(), "0", f"{bad!r} reached the file")
+
+    def test_no_value_at_all_is_refused(self):
+        self.present("0")
+        completed = self.run_bootsound()
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("bootsound takes 0 (off) or 1 (on)", completed.stderr)
+        self.assertEqual(self.written(), "0")
+
+    def test_a_machine_without_the_control_says_so(self):
+        # No file at all: the switch is greyed out in the window, but the
+        # headless callers (boot-apply, a hand-run helper) need a reason
+        # rather than a shell redirection error.
+        completed = self.run_bootsound("1")
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("no boot_sound control on this machine",
+                      completed.stderr)
+
+    def test_the_value_is_checked_before_the_file_is_looked_for(self):
+        # A bad value is refused for being a bad value, on every machine.
+        completed = self.run_bootsound("2")
+        self.assertIn("bootsound takes 0 (off) or 1 (on)", completed.stderr)
+
+    def test_it_is_listed_in_the_usage_line(self):
+        # An action missing from usage is an action nobody finds.
+        completed = subprocess.run(["bash", self.helper],
+                                   capture_output=True, text=True, timeout=30)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("bootsound", completed.stderr)
 
 
 class ErrorMessage(unittest.TestCase):

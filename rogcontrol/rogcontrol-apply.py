@@ -2,7 +2,7 @@
 """
 rogcontrol-apply.py
 Reapplies your last-saved ROG Control profile plus independent settings
-(keyboard brightness, charge limit, GPU clock offsets)
+(keyboard brightness, charge limit, boot sound, GPU clock offsets)
 at login. Retries several times with delays, since some services
 (nvidia, asus-wmi) may not be fully ready right at login.
 
@@ -27,6 +27,11 @@ charge threshold, so re-asserting it costs one helper call, changes nothing
 the user can see, and covers the case where the EC has forgotten it -- and
 a charge limit that has silently lapsed is invisible until the battery is
 already damaged.
+
+The boot sound is global on the same terms, and applied on the same terms:
+nothing else on the machine writes it, the write is idempotent, and a chime
+that has come back because a BIOS update reset the firmware is only heard at
+the next power-on -- by which time nobody is looking at this app.
 """
 
 import json
@@ -189,6 +194,13 @@ def apply_once(config, profile_only=False):
         run_helper("kbd", config["kbd_brightness"])
     if "charge_limit" in config:
         run_helper("charge", config["charge_limit"])
+    # Absent means the user has never set it, so the firmware's own value is
+    # left alone -- there is no sensible default to assert over a setting
+    # that lives in the firmware and that this app did not choose. Once set,
+    # it is re-asserted here so a firmware reset (or a BIOS update, which
+    # returns it to the ASUS default) does not silently bring the chime back.
+    if "boot_sound" in config:
+        run_helper("bootsound", 1 if config["boot_sound"] else 0)
 
 
 def main(argv=None):

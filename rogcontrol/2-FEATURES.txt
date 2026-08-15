@@ -108,6 +108,11 @@ lights. There are buttons to stop and disable it and to put it back. There is
 no uninstall button: removing a package is a transaction you should see, so
 the exact command for your distro is shown for you to run yourself.
 
+A switch for the boot sound — the chime the firmware plays through the
+speakers at power-on. It is a setting of the machine rather than of a profile,
+so it does not change when you switch one, and it is remembered so the
+boot-apply service can put it back if a BIOS update resets the firmware.
+
 
 ALSO
 

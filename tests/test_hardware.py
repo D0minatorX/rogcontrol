@@ -60,6 +60,10 @@ class FakeSysfs(unittest.TestCase):
         write(os.path.join(self.root, hardware.KBD_BACKLIGHT_PATH.lstrip("/")),
               f"{level}\n")
 
+    def boot_sound(self, value):
+        write(os.path.join(self.root, hardware.BOOT_SOUND_PATH.lstrip("/")),
+              f"{value}\n")
+
 
 class TestReadFile(unittest.TestCase):
     def test_missing_file_is_none_not_an_exception(self):
@@ -738,6 +742,49 @@ class TestKeyboard(FakeSysfs):
                          hardware.detect_capabilities(root=self.root))
 
 
+class TestBootSound(FakeSysfs):
+    """The firmware's startup chime.
+
+    Two positions and an "unavailable", which is what the switch on the
+    System page has to be able to show. A machine without the asus-nb-wmi
+    file must land on unavailable rather than on "off": off is a claim about
+    the firmware, and this reader has no basis for it."""
+
+    def test_on_and_off_read_back_as_one_and_zero(self):
+        self.boot_sound(1)
+        self.assertEqual(hardware.read_boot_sound(root=self.root), 1)
+        self.boot_sound(0)
+        self.assertEqual(hardware.read_boot_sound(root=self.root), 0)
+
+    def test_no_such_file_is_none_not_off(self):
+        self.assertIsNone(hardware.read_boot_sound(root=self.root))
+
+    def test_a_value_outside_zero_and_one_is_none(self):
+        # A two-position switch cannot honestly show anything else, and
+        # guessing would put it in a state the firmware is not in.
+        self.boot_sound(2)
+        self.assertIsNone(hardware.read_boot_sound(root=self.root))
+
+    def test_an_unreadable_value_is_none(self):
+        self.boot_sound("N/A")
+        self.assertIsNone(hardware.read_boot_sound(root=self.root))
+
+    def test_the_capability_is_the_file_being_there(self):
+        self.assertFalse(
+            hardware.detect_capabilities(root=self.root)["boot_sound"])
+        self.boot_sound(0)
+        self.assertTrue(
+            hardware.detect_capabilities(root=self.root)["boot_sound"])
+
+    def test_a_chime_that_is_switched_off_is_still_a_control(self):
+        # Gating the capability on the value would make the switch vanish the
+        # moment it was used.
+        self.boot_sound(0)
+        caps = hardware.detect_capabilities(root=self.root)
+        self.assertTrue(caps["boot_sound"])
+        self.assertEqual(hardware.read_boot_sound(root=self.root), 0)
+
+
 class TestCapabilities(FakeSysfs):
     def test_reports_what_the_fake_machine_has(self):
         self.hwmon(10, "asus")
@@ -759,7 +806,7 @@ class TestCapabilities(FakeSysfs):
     def test_bare_machine_reports_nothing_available(self):
         caps = hardware.detect_capabilities(root=self.root)
         for key in ("fan_curve", "fan_rpm", "cpu_temp", "pkg_power",
-                    "charge_limit", "cpu_boost"):
+                    "charge_limit", "cpu_boost", "boot_sound"):
             self.assertFalse(caps[key], key)
         self.assertIsNone(caps["cpu_clock"])
         self.assertEqual(caps["cpu_epp"], [])

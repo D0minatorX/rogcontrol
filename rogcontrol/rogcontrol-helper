@@ -29,7 +29,7 @@ find_hwmon_by_name() {
 }
 
 usage() {
-    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|asusd_status|asusd_disable|asusd_enable> ..." >&2
+    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|bootsound|asusd_status|asusd_disable|asusd_enable> ..." >&2
     exit 1
 }
 
@@ -579,6 +579,27 @@ case "$1" in
         done
         [ -n "$BATT" ] || { echo "no battery with charge_control_end_threshold found" >&2; exit 1; }
         echo "$PCT" > "$BATT"
+        ;;
+
+    bootsound)
+        # The chime the firmware plays through the speakers at power-on,
+        # before any operating system is running. One asus-wmi file holding
+        # one digit.
+        #
+        # Two fixed values and nothing else, checked the same way cpuboost
+        # checks its own: this is a root-owned write to a firmware knob, and
+        # the driver answers anything outside 0/1 with -EINVAL, so passing
+        # the caller's string through would turn a typo into an unexplained
+        # failure -- and would be exactly the kind of unbounded privileged
+        # write this helper exists not to have.
+        shift
+        VAL="$1"
+        [ "$VAL" = "0" ] || [ "$VAL" = "1" ] || {
+            echo "bootsound takes 0 (off) or 1 (on), got: $VAL" >&2; exit 1; }
+        BOOT_SOUND=/sys/devices/platform/asus-nb-wmi/boot_sound
+        [ -e "$BOOT_SOUND" ] || {
+            echo "no boot_sound control on this machine" >&2; exit 1; }
+        echo "$VAL" > "$BOOT_SOUND"
         ;;
 
     asusd_status)
