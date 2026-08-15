@@ -6,9 +6,10 @@ the fan is doing and the rpm the active curve asks for at the temperature the
 EC is actually seeing. That gap is how this machine's fan problem was found,
 and it is why every fan row carries both numbers.
 
-The whole sample -- sysfs reads plus an nvidia-smi call that costs a couple
-of hundred milliseconds -- runs on a worker thread through
-``window.apply_async``. Only the rendering touches widgets.
+The whole sample -- sysfs reads plus a pair of nvidia-smi calls that cost a
+couple of hundred milliseconds each -- runs on a worker thread through
+``window.apply_async``. Only the rendering touches widgets, and neither
+nvidia-smi runs at all on a machine with no card.
 """
 
 import gi
@@ -23,6 +24,24 @@ from ..fancurve import get_rpm_cal, interpolate_curve, pct_to_rpm  # noqa: E402
 
 REFRESH_SECONDS = 2
 DASH = "—"
+
+# One MiB in GiB, since both memory readers answer in MiB.
+MIB_PER_GIB = 1024
+
+
+def format_used_total(used_mib, total_mib):
+    """``"7.1 / 30.5 GiB"``, or a dash if either half is missing.
+
+    GiB for both rows, including VRAM, which nvidia-smi reports in MiB.
+    "1.9 / 11.9 GiB" beside "7.1 / 30.5 GiB" can be compared at a glance;
+    "1920 / 12227 MiB" beside it cannot, and the two rows sit together.
+
+    Both halves or neither: a used figure with no total to read it against
+    is not the thing this row exists to say."""
+    if used_mib is None or total_mib is None:
+        return DASH
+    return (f"{used_mib / MIB_PER_GIB:.1f} / "
+            f"{total_mib / MIB_PER_GIB:.1f} GiB")
 
 
 def curve_percent_at(points, temp_c, n=8):
@@ -95,6 +114,18 @@ class OverviewPage(Adw.PreferencesPage):
             for row in (self.gpu_temp_row, self.gpu_power_row):
                 row.set_subtitle("nvidia-smi not available on this machine")
 
+        memory = Adw.PreferencesGroup(title="Memory")
+        self.add(memory)
+        self.ram_row, self.ram_val = self._value_row(
+            memory, "RAM",
+            "In use against installed — what is left is what a program can "
+            "still have")
+        self.vram_row, self.vram_val = self._value_row(
+            memory, "VRAM", "The NVIDIA card's own memory")
+        if not self.window.caps.get("nvidia"):
+            self.vram_row.set_subtitle(
+                "nvidia-smi not available on this machine")
+
         fans = Adw.PreferencesGroup(
             title="Fans",
             description="Measured speed, against what the active curve asks "
@@ -147,8 +178,13 @@ class OverviewPage(Adw.PreferencesPage):
 
     def _sample(self):
         """Read everything. Runs on a worker thread -- no widgets in here."""
+        have_nvidia = self.window.caps.get("nvidia")
         gpu_temp, gpu_power = (hardware.read_nvidia_stats()
-                               if self.window.caps.get("nvidia") else (None, None))
+                               if have_nvidia else (None, None))
+        # Skipped without a card for the same reason the two above are: the
+        # exec fails immediately and would still cost a fork every two
+        # seconds to arrive back at the dash it starts on.
+        vram = hardware.read_vram() if have_nvidia else (None, None)
         percent, charging = hardware.read_battery()
         return {
             "cpu_temp": hardware.read_cpu_temp(),
@@ -156,6 +192,8 @@ class OverviewPage(Adw.PreferencesPage):
             "pkg_power": hardware.read_package_power_w(),
             "gpu_temp": gpu_temp,
             "gpu_power": gpu_power,
+            "ram": hardware.read_memory(),
+            "vram": vram,
             "fan_rpm": hardware.read_fan_rpms(),
             "curve_enabled": hardware.read_fan_curve_enabled(),
             "battery": (percent, charging),
@@ -187,6 +225,11 @@ class OverviewPage(Adw.PreferencesPage):
         gpu_power = data.get("gpu_power")
         self.gpu_power_val.set_text(
             DASH if gpu_power is None else f"{gpu_power:.1f} W")
+
+        self.ram_val.set_text(
+            format_used_total(*(data.get("ram") or (None, None))))
+        self.vram_val.set_text(
+            format_used_total(*(data.get("vram") or (None, None))))
 
         self._render_fans(data.get("fan_rpm") or {}, cpu_temp)
         self._render_battery(data)

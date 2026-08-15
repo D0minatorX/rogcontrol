@@ -116,6 +116,7 @@ boot-apply service can put it back if a BIOS update resets the firmware.
 
 ALSO
 
+  * Live RAM and VRAM use on the overview page, beside the temperatures
   * A tray icon that shows and switches the active profile
   * Keyboard shortcuts for cycling profiles and lighting modes
   * Settings survive suspend, reboot and firmware resets — a background

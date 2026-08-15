@@ -489,36 +489,105 @@ def cpu_apply_plan(values, caps=None):
     return plan
 
 
+# -- Memory ------------------------------------------------------------------
+
+MEMINFO_PATH = "/proc/meminfo"
+
+
+def read_memory(root=None):
+    """``(used_mib, total_mib)`` of system RAM, or ``(None, None)``.
+
+    Used is MemTotal minus MemAvailable, NOT MemTotal minus MemFree. MemFree
+    on a healthy Linux is close to zero -- the kernel spends everything spare
+    on page cache and buffers, and hands it back the instant something wants
+    it -- so a "used" built from MemFree reads 95% on an idle machine and is
+    the reason people keep reporting memory leaks that are not there.
+    MemAvailable is the kernel's own estimate of what a new process could
+    have without swapping, which is what a person means by memory that is
+    free, so what is left over is what they mean by memory that is used.
+
+    /proc/meminfo counts in kB, which it means as KiB. Answering in MiB keeps
+    this the same unit as the VRAM reader, so the two rows can be formatted
+    by one function and compared by eye.
+
+    (None, None) rather than a partial answer if either figure is missing:
+    both halves of "7.1 / 30.5 GiB" have to come from the same reading for
+    the pair to mean anything. MemAvailable has been there since Linux 3.14
+    (2014), so in practice this is the unreadable-file case."""
+    text = read_file(_under(root, MEMINFO_PATH))
+    if text is None:
+        return None, None
+    found = {}
+    for line in text.splitlines():
+        name, _, rest = line.partition(":")
+        if name in ("MemTotal", "MemAvailable"):
+            words = rest.split()
+            try:
+                found[name] = int(words[0])
+            except (IndexError, ValueError):
+                return None, None
+    total, available = found.get("MemTotal"), found.get("MemAvailable")
+    if total is None or available is None:
+        return None, None
+    # MemAvailable is an estimate and is free to come out above MemTotal on a
+    # machine with a lot of reclaimable cache; a negative "used" would draw a
+    # row that reads as broken.
+    return max(0, total - available) / 1024, total / 1024
+
+
 # -- GPU ---------------------------------------------------------------------
 
-def read_nvidia_stats(timeout=5):
-    """(temp_c, power_w) for the NVIDIA card, either of which may be None.
+def read_nvidia_query(fields, timeout=5):
+    """The named ``--query-gpu`` fields as floats, in order, each None if the
+    card had no number for it.
 
-    One nvidia-smi call for both, because each invocation costs a couple of
-    hundred milliseconds and this runs on a 2-second timer. Every failure
-    mode -- no driver, no binary, card powered down under supergfxctl,
-    '[N/A]' where a number should be -- lands on None rather than an
-    exception, since a laptop with the dGPU asleep is a normal state and not
-    a reason for the overview to stop updating."""
+    One nvidia-smi call per group of fields, because each invocation costs a
+    couple of hundred milliseconds and the callers run on a 2-second timer.
+    Every failure mode -- no driver, no binary, card powered down under
+    supergfxctl, '[N/A]' where a number should be -- lands on None rather
+    than an exception, since a laptop with the dGPU asleep is a normal state
+    and not a reason for the overview to stop updating."""
+    blanks = tuple(None for _ in fields)
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=temperature.gpu,power.draw",
+            ["nvidia-smi", "--query-gpu=" + ",".join(fields),
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=timeout)
     except Exception:
-        return None, None
+        return blanks
     if result.returncode != 0 or not result.stdout.strip():
-        return None, None
+        return blanks
     # Multi-GPU machines print one line per card; the first is the one this
     # app drives.
-    fields = result.stdout.strip().splitlines()[0].split(",")
+    columns = result.stdout.strip().splitlines()[0].split(",")
     out = []
-    for field in (fields + ["", ""])[:2]:
+    # Padded, so a card that answers with fewer columns than were asked for
+    # gives None for the missing ones instead of an IndexError.
+    for column in (columns + [""] * len(fields))[:len(fields)]:
         try:
-            out.append(float(field.strip()))
+            out.append(float(column.strip()))
         except ValueError:
             out.append(None)
-    return out[0], out[1]
+    return tuple(out)
+
+
+def read_nvidia_stats(timeout=5):
+    """(temp_c, power_w) for the NVIDIA card, either of which may be None."""
+    return read_nvidia_query(("temperature.gpu", "power.draw"),
+                             timeout=timeout)
+
+
+def read_vram(timeout=5):
+    """(used_mib, total_mib) of the NVIDIA card's own memory, or (None, None).
+
+    Its own call rather than two more columns on read_nvidia_stats: that one
+    has three callers and two of them -- the GPU page's readout and the
+    keyboard's GPU-temperature colour -- want a temperature and nothing
+    else, and would then be paying to parse memory figures they throw away.
+
+    MiB, which is nvidia-smi's own unit here; the page decides what to show
+    it in."""
+    return read_nvidia_query(("memory.used", "memory.total"), timeout=timeout)
 
 
 # Ranges every GPU control is bounded by.

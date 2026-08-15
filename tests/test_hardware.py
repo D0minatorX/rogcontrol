@@ -10,6 +10,7 @@ and wrong paths, not wrong parsing, are what actually broke in this codebase
 
 import os
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -63,6 +64,9 @@ class FakeSysfs(unittest.TestCase):
     def boot_sound(self, value):
         write(os.path.join(self.root, hardware.BOOT_SOUND_PATH.lstrip("/")),
               f"{value}\n")
+
+    def meminfo(self, text):
+        write(os.path.join(self.root, hardware.MEMINFO_PATH.lstrip("/")), text)
 
 
 class TestReadFile(unittest.TestCase):
@@ -740,6 +744,137 @@ class TestKeyboard(FakeSysfs):
         # is deliberately free of -- the app fills it in.
         self.assertNotIn("kbd_ambient",
                          hardware.detect_capabilities(root=self.root))
+
+
+# A real /proc/meminfo from this machine, cut to the lines that matter plus
+# a couple that must be ignored. MemFree is deliberately far below
+# MemAvailable, which is the ordinary state of a Linux box and the whole
+# reason the used figure is not built from it.
+REAL_MEMINFO = """MemTotal:       32032296 kB
+MemFree:          325580 kB
+MemAvailable:   24946248 kB
+Buffers:          912344 kB
+Cached:         19822108 kB
+SwapTotal:             0 kB
+"""
+
+
+class TestMemory(FakeSysfs):
+    """System RAM, off /proc/meminfo.
+
+    Used is MemTotal - MemAvailable. Built from MemFree instead it would read
+    99% on this sample -- the kernel had spent nearly everything on cache and
+    would have handed it straight back -- which is the reading that makes
+    people think something is leaking."""
+
+    def test_used_is_total_minus_available(self):
+        self.meminfo(REAL_MEMINFO)
+        used, total = hardware.read_memory(root=self.root)
+        self.assertAlmostEqual(total, 32032296 / 1024, places=3)
+        self.assertAlmostEqual(used, (32032296 - 24946248) / 1024, places=3)
+
+    def test_used_is_not_total_minus_free(self):
+        # The distinction this reader exists for, asserted rather than
+        # described: MemFree would make this ~31 GiB of 30.5 GiB used.
+        self.meminfo(REAL_MEMINFO)
+        used, total = hardware.read_memory(root=self.root)
+        self.assertLess(used, total / 2)
+
+    def test_the_answer_is_in_mib(self):
+        # Same unit as the VRAM reader, so one formatter serves both rows.
+        self.meminfo("MemTotal:        1048576 kB\nMemAvailable:     524288 kB\n")
+        self.assertEqual(hardware.read_memory(root=self.root), (512.0, 1024.0))
+
+    def test_no_meminfo_at_all_is_none(self):
+        self.assertEqual(hardware.read_memory(root=self.root), (None, None))
+
+    def test_a_meminfo_without_memavailable_is_none(self):
+        # Pre-3.14 kernels. Falling back to MemFree would be the wrong
+        # number; half an answer would be a row that cannot be read.
+        self.meminfo("MemTotal:       32032296 kB\nMemFree:          325580 kB\n")
+        self.assertEqual(hardware.read_memory(root=self.root), (None, None))
+
+    def test_a_meminfo_without_memtotal_is_none(self):
+        self.meminfo("MemAvailable:   24946248 kB\n")
+        self.assertEqual(hardware.read_memory(root=self.root), (None, None))
+
+    def test_an_unparseable_figure_is_none(self):
+        self.meminfo("MemTotal:       lots kB\nMemAvailable:   24946248 kB\n")
+        self.assertEqual(hardware.read_memory(root=self.root), (None, None))
+
+    def test_an_empty_meminfo_is_none(self):
+        self.meminfo("")
+        self.assertEqual(hardware.read_memory(root=self.root), (None, None))
+
+    def test_more_available_than_total_never_goes_negative(self):
+        # MemAvailable is an estimate; a negative "used" would draw a row
+        # that reads as broken.
+        self.meminfo("MemTotal:        1048576 kB\nMemAvailable:    2097152 kB\n")
+        used, total = hardware.read_memory(root=self.root)
+        self.assertEqual(used, 0)
+        self.assertEqual(total, 1024.0)
+
+
+class TestVram(FakeSysfs):
+    """The card's own memory, off nvidia-smi.
+
+    A machine with no NVIDIA card is the case that matters: the overview
+    shows a dash there and keeps updating, exactly as the temperature and
+    power rows beside it already do."""
+
+    def smi(self, stdout, returncode=0):
+        return mock.patch.object(
+            hardware.subprocess, "run",
+            return_value=types.SimpleNamespace(
+                returncode=returncode, stdout=stdout, stderr=""))
+
+    def test_used_and_total_in_mib(self):
+        with self.smi("1920, 12227\n"):
+            self.assertEqual(hardware.read_vram(), (1920.0, 12227.0))
+
+    def test_it_asks_for_exactly_the_two_memory_fields(self):
+        # A typo in a query field is accepted by nvidia-smi as an error only
+        # at runtime, so the field names are worth pinning.
+        with self.smi("1920, 12227\n") as run:
+            hardware.read_vram()
+        argv = run.call_args[0][0]
+        self.assertIn("--query-gpu=memory.used,memory.total", argv)
+        self.assertIn("--format=csv,noheader,nounits", argv)
+
+    def test_no_nvidia_smi_on_the_machine_is_a_pair_of_nones(self):
+        with mock.patch.object(hardware.subprocess, "run",
+                               side_effect=FileNotFoundError("nvidia-smi")):
+            self.assertEqual(hardware.read_vram(), (None, None))
+
+    def test_a_driver_that_answers_with_an_error_is_a_pair_of_nones(self):
+        # What a card powered down under supergfxctl produces.
+        with self.smi("", returncode=9):
+            self.assertEqual(hardware.read_vram(), (None, None))
+
+    def test_no_output_at_all_is_a_pair_of_nones(self):
+        with self.smi("\n"):
+            self.assertEqual(hardware.read_vram(), (None, None))
+
+    def test_not_available_is_none_for_that_column_alone(self):
+        with self.smi("[N/A], 12227\n"):
+            self.assertEqual(hardware.read_vram(), (None, 12227.0))
+
+    def test_a_short_answer_pads_rather_than_raising(self):
+        with self.smi("1920\n"):
+            self.assertEqual(hardware.read_vram(), (1920.0, None))
+
+    def test_multi_gpu_reports_the_first_card(self):
+        with self.smi("1920, 12227\n40, 24564\n"):
+            self.assertEqual(hardware.read_vram(), (1920.0, 12227.0))
+
+    def test_the_temperature_reader_still_asks_for_its_own_two_fields(self):
+        # read_vram and read_nvidia_stats share one query function; the
+        # other callers of the latter must not start paying for memory
+        # columns they throw away.
+        with self.smi("46, 6.71\n") as run:
+            self.assertEqual(hardware.read_nvidia_stats(), (46.0, 6.71))
+        self.assertIn("--query-gpu=temperature.gpu,power.draw",
+                      run.call_args[0][0])
 
 
 class TestBootSound(FakeSysfs):
