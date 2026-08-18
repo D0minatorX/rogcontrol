@@ -1,0 +1,192 @@
+ROG CONTROL — WHAT IT DOES
+==========================
+
+A G-Helper-style control panel for ASUS ROG laptops on Linux, without needing
+asusctl. One window, a tray icon, and background services that keep your
+settings in force.
+
+
+PROFILES
+
+Four to start with — Quiet, Balanced Power, Balanced Performance, Performance
+— and you can add your own.
+
+A profile holds everything at once: CPU power limits, undervolt, turbo on or
+off, a maximum clock, an energy preference, GPU limits, and a fan curve for
+each of the three fans. Switching profile applies all of it and moves the
+system power mode to match, so the OS and the app never disagree.
+
+The two Balanced profiles have identical CPU and GPU limits and differ in how
+hard the CPU chases clocks — one leans to battery life, the other to
+response. Balanced Performance also runs its fans a little higher than
+Balanced Power, since it is the one meant for when you notice the fans less
+than the response.
+
+New and Delete live in the header menu, one profile at a time. Export writes
+EVERYTHING — every profile, which one is current, the charge limit, keyboard
+settings, auto-switch targets, fan RPM calibration — to one JSON file, so it
+doubles as a full backup. Import reads it back: point it at a backup and it
+asks to confirm before replacing everything with what is in the file: this
+is a restore, not a merge, and there is no undo. Point it at an older
+single-profile export instead and it merges that one profile in safely, same
+as it always has, renaming it rather than overwriting anything with the same
+name.
+
+
+FANS
+
+An eight-point curve per fan, dragged on a graph showing real RPM rather than
+percentages. Eight points is exactly what the hardware stores, so what you
+draw is what runs — nothing is interpolated behind your back. Arrow keys nudge
+a selected point for fine adjustment.
+
+"Calibrate fan RPM" measures how your own fans respond, so the graph tells the
+truth on your machine rather than on the developer's.
+
+Curves are re-asserted in the background, because the embedded controller
+throws them away every time the power mode changes.
+
+
+CPU
+
+STAPM, fast and slow power limits, temperature target, Curve Optimizer
+undervolt, turbo boost, and a maximum core clock.
+
+Nothing is written until you press Apply. Moving a control changes what the
+page is asking for and says so in a banner at the top; the chip is untouched
+until you decide. Apply writes the whole page in the one order that works —
+the limits, then boost, then the energy preference, then the clock ceiling,
+because the boost switch resets every policy's ceiling — and saves it to the
+active profile only once the hardware has taken it. Leaving the page without
+applying discards the change; it is never applied behind your back.
+
+The clock setting is a ceiling, not a fixed speed — cores still drop to idle
+underneath it. Measured with a 3.0 GHz cap: a loaded core sat at 2974 MHz
+while idle cores sat at 1492 MHz.
+
+The undervolt carries a warning for a reason. Too negative freezes the machine
+under load; this laptop locked solid at −20. Move two or three counts at a
+time and test.
+
+
+GPU
+
+Power limit, core and memory clock offsets, a clock ceiling, NVIDIA Dynamic
+Boost and temperature target. Ranges are read from your card, not hardcoded.
+
+Applied on the same terms as the CPU page: an Apply button, a banner naming
+what is not on the card yet, and a profile that is only written once the card
+has accepted the setting.
+
+The graphics mode: what the display is plugged into now, and a picker to
+switch between Integrated, Hybrid and AsusMuxDgpu. Integrated and Hybrid swap
+by restarting the display stack; switching into or out of AsusMuxDgpu moves
+the hardware MUX, which only the firmware can do, so that one offers to
+reboot for you. Whatever supergfxd answers is repeated on the page word for
+word, so a refusal says which of several reasons applied.
+
+Live CPU and GPU temperatures and the speed of the fan cooling each are shown
+on their own pages, refreshed every two seconds. The GPU reads "Idle" while
+the card is asleep — and stays asleep, because the page checks its power
+state in sysfs rather than waking it with nvidia-smi to ask.
+
+
+KEYBOARD
+
+Brightness, and ten lighting modes: Static, Breathing, Pulse, Colour Cycle,
+Rainbow, Gradient Static, GPU Temp Colour, CPU Temp Colour, Battery Level, and
+Ambient.
+
+Ambient follows what is on screen: the display is split into four vertical
+bands, each lighting the zone beneath it. It uses the desktop's screen-sharing
+portal, so permission is asked once and remembered.
+
+Modes your hardware cannot perform are not offered rather than failing
+silently.
+
+
+BATTERY
+
+A charge limit, and automatic profile switching on plug and unplug — pick a
+profile for mains and one for battery. That runs in the background service, so
+it works whether or not the window is open.
+
+
+SYSTEM
+
+Whether asusctl's daemon, asusd, is installed and running. It matters because
+it drives the same hardware as this app — the same platform knobs, fan curves
+and keyboard lighting — so with both running they fight over the fans and the
+lights. There are buttons to stop and disable it and to put it back. There is
+no uninstall button: removing a package is a transaction you should see, so
+the exact command for your distro is shown for you to run yourself.
+
+A switch for the boot sound — the chime the firmware plays through the
+speakers at power-on. It is a setting of the machine rather than of a profile,
+so it does not change when you switch one, and it is remembered so the
+boot-apply service can put it back if a BIOS update resets the firmware.
+
+
+ALSO
+
+  * Live RAM and VRAM use on the overview page, beside the temperatures
+  * A tray icon that shows and switches the active profile
+  * Keyboard shortcuts for cycling profiles and lighting modes
+  * Settings survive suspend, reboot and firmware resets — a background
+    service re-asserts them
+  * Everything you configure is in one file, ~/.config/rogcontrol.json
+
+
+WHAT WE LEARNED MEASURING THIS LAPTOP
+-------------------------------------
+
+Some of this took days to pin down and is worth knowing if you are chasing the
+same things.
+
+The fans "ignoring" your curve
+    The embedded controller reads a CPU temperature Linux never exposes. It
+    takes short excursions into the 85-90 °C band several times a minute while
+    k10temp reports 60 °C, and it applies YOUR curve to that hidden number. So
+    the fans are not disobeying the curve, they are obeying it at a temperature
+    you cannot see. The custom curve stays enabled throughout — verified over
+    179 consecutive samples.
+
+    Nothing on the software side changes this: not a clock cap, turbo off,
+    undervolt, power limits, energy preference, the GPU, or how often anything
+    is polled. All measured, all ruled out.
+
+    What does work is the curve's shape. Hold one value across the whole band
+    those hidden readings reach (roughly 50-90 °C) and put the real ramp above
+    it. The excursion then has nothing to climb to. Measured: fan swing dropped
+    from 600 rpm to 100-300 rpm, with nothing above 2400 rpm.
+
+    All four stock profiles ship with that shape — flat from 50 °C to 86 °C,
+    the ramp above 90 °C, scaled per profile — so a fresh install is quiet
+    without having to find this out first.
+
+There is a minimum fan speed, and it is not zero
+    5 %, 10 % and 15 % all produce 2100-2600 rpm on this machine — that is the
+    slowest these fans will spin. Below that they stop completely (0 % gives
+    0 rpm). "Quiet but spinning" under about 2100 rpm is not a setting, it is
+    not a capability.
+
+Fan curve writes need spacing
+    The controller silently drops curve writes fired less than about eight
+    seconds apart across channels. That is why applying a curve takes roughly
+    sixteen seconds and cannot be hurried.
+
+Turbo boost and the fans
+    A boost spike hits 85-90 °C for a few milliseconds even at idle, which is
+    enough for the controller to react. Turning boost off removes those spikes,
+    at the cost of peak single-thread speed.
+
+Energy preference and the performance governor
+    Setting the OS power mode to Performance switches the CPU governor to
+    "performance", and the kernel then ignores the energy preference entirely.
+    That is expected, not a failure — the governor already pins maximum
+    performance.
+
+Screen capture for Ambient
+    On Wayland the desktop portal is the only route. Screenshots were measured
+    at 1.5-5 seconds each and a 4 MB file per capture, so the mode streams
+    instead, paced to two frames a second.

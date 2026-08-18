@@ -1,0 +1,670 @@
+#!/bin/bash
+# rogcontrol-helper
+# Must live at /usr/local/bin/rogcontrol-helper, owned by root, mode 755.
+# Only ever invoked via the sudoers rule set up for it. Every value is
+# validated against a hard safety range before anything is written.
+
+set -e
+
+# Prefer a locally built copy, else whatever is on PATH (the AUR package
+# installs to /usr/bin). Hardcoding one path meant a perfectly good
+# packaged ryzenadj was ignored.
+if [ -x /usr/local/bin/ryzenadj ]; then
+    RYZENADJ=/usr/local/bin/ryzenadj
+else
+    RYZENADJ="$(command -v ryzenadj 2>/dev/null || echo /usr/local/bin/ryzenadj)"
+fi
+
+is_int() { [[ "$1" =~ ^[0-9]+$ ]]; }
+is_signed_int() { [[ "$1" =~ ^-?[0-9]+$ ]]; }
+
+find_hwmon_by_name() {
+    for d in /sys/class/hwmon/hwmon*; do
+        if [ -f "$d/name" ] && [ "$(cat "$d/name")" == "$1" ]; then
+            echo "$d"
+            return 0
+        fi
+    done
+    return 1
+}
+
+usage() {
+    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|bootsound|asusd_status|asusd_disable|asusd_enable> ..." >&2
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Serialising the SMU.
+#
+# ryzenadj drives the SMU through its mailbox. On a machine with no
+# ryzen_smu kernel module -- this one -- it gets there through /dev/mem, and
+# nothing in that path arbitrates between processes. Two ryzenadj runs at
+# once therefore interleave their mailbox transactions and BOTH lose: the
+# measured result is "set_tctl_temp is rejected by SMU" / "PCI Bus is not
+# writeable" and exit 255, with the machine left half-configured (the power
+# limits applied, tctl-temp and coall not). It happens in ordinary use
+# because the background enforcer re-applies the CPU limits every 60 seconds
+# while the window and the profile-cycle hotkey apply on demand; ten
+# concurrent pairs run by hand produced three to seven such failures.
+#
+# So the cpu action takes an exclusive lock and concurrent callers queue.
+# Only cpu. Every other action here reaches its hardware through a kernel
+# driver that already serialises writers -- sysfs (cpufreq, hwmon, asus-wmi,
+# power_supply) is serialised per write by the kernel, nvidia-smi goes
+# through the NVIDIA driver's own ioctl locking, and the asusd actions go
+# through systemd -- so none of them can interleave the way the /dev/mem
+# mailbox does. Two callers racing there settle on one of the two values,
+# which is the same outcome as calling twice in a row. The fan curve is
+# deliberately left alone as well: its writes are spaced 8 seconds apart by
+# the callers, and putting them behind this lock would let a CPU apply
+# delay that cadence. kbdrgb reaches the keyboard over USB via rogauracore,
+# which claims the interface exclusively through libusb -- a second one is
+# refused by the kernel rather than allowed to interleave -- and sharing
+# this lock would make a keyboard colour change queue behind a CPU apply.
+SMU_LOCK_WAIT=5
+
+# Where the lock file lives. /run is a root-owned tmpfs: nobody else can
+# pre-create the file, and it cannot survive a reboot as a stale leftover.
+# /var/lock is the fallback for a system without /run.
+#
+# ROGCONTROL_HELPER_LOCK_DIR exists so the test suite can exercise the
+# locking without root, and is honoured ONLY when not running as root -- the
+# real thing runs under sudo, where an environment variable must never be
+# able to point a root-owned write somewhere of the caller's choosing.
+smu_lock_file() {
+    local d
+    if [ "$(id -u)" != 0 ] && [ -n "${ROGCONTROL_HELPER_LOCK_DIR:-}" ] \
+       && [ -d "$ROGCONTROL_HELPER_LOCK_DIR" ] && [ -w "$ROGCONTROL_HELPER_LOCK_DIR" ]; then
+        printf '%s\n' "$ROGCONTROL_HELPER_LOCK_DIR/rogcontrol-helper.lock"
+        return 0
+    fi
+    for d in /run /var/lock; do
+        if [ -d "$d" ] && [ -w "$d" ]; then
+            printf '%s\n' "$d/rogcontrol-helper.lock"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Hold the lock for the rest of this action. flock on a file descriptor, not
+# a hand-rolled lockfile: the kernel drops it when this process dies, so a
+# crashed or killed helper -- or a crashed ryzenadj, which inherits fd 9 and
+# so holds the lock for its own run -- cannot leave a stale lock behind.
+#
+# The wait is bounded. A caller that cannot get in within SMU_LOCK_WAIT
+# seconds is told so and stops, rather than sitting there until its own
+# subprocess timeout kills it with no explanation (the window allows 10
+# seconds per helper call, the enforcer 30).
+#
+# If there is nowhere to put the lock, or no flock to take it with, the
+# action still runs: that is exactly today's behaviour, and refusing to
+# apply a CPU limit because a lock file could not be created would turn a
+# missing convenience into a broken machine. Neither can happen under sudo
+# on a systemd machine, where /run and util-linux are both always there.
+take_smu_lock() {
+    local file
+    file=$(smu_lock_file) || return 0
+    command -v flock >/dev/null 2>&1 || return 0
+    { exec 9>>"$file"; } 2>/dev/null || return 0
+    if ! flock -w "$SMU_LOCK_WAIT" 9; then
+        echo "another rogcontrol CPU apply is in progress (waited ${SMU_LOCK_WAIT}s); nothing was changed" >&2
+        exit 1
+    fi
+    return 0
+}
+
+# The asusd actions take no arguments at all: the unit name is written into
+# this script and never comes from the caller. Anything extra is a caller
+# that thinks it is passing a unit name, and is refused rather than ignored.
+no_args() {
+    NAME="$1"; shift
+    [ "$#" -eq 0 ] || { echo "$NAME takes no arguments" >&2; exit 1; }
+}
+
+case "$1" in
+    cpu)
+        shift
+        STAPM="$1"; FAST="$2"; SLOW="$3"; TEMP="$4"; COALL="$5"
+        for v in "$STAPM" "$FAST" "$SLOW" "$TEMP"; do
+            is_int "$v" || { echo "Invalid numeric value: $v" >&2; exit 1; }
+        done
+        is_signed_int "$COALL" || { echo "Invalid coall value: $COALL" >&2; exit 1; }
+        [ "$STAPM" -ge 15000 ] && [ "$STAPM" -le 150000 ] || { echo "stapm-limit out of safe range (15000-150000)" >&2; exit 1; }
+        [ "$FAST" -ge 15000 ] && [ "$FAST" -le 165000 ] || { echo "fast-limit out of safe range (15000-165000)" >&2; exit 1; }
+        [ "$SLOW" -ge 15000 ] && [ "$SLOW" -le 150000 ] || { echo "slow-limit out of safe range (15000-150000)" >&2; exit 1; }
+        [ "$TEMP" -ge 60 ] && [ "$TEMP" -le 100 ] || { echo "tctl-temp out of safe range (60-100)" >&2; exit 1; }
+        [ "$COALL" -ge -30 ] && [ "$COALL" -le 0 ] || { echo "coall out of safe range (-30 to 0)" >&2; exit 1; }
+        # One retry, then give up. On a machine with no ryzen_smu module --
+        # this one -- ryzenadj reaches the SMU mailbox through /dev/mem, and
+        # that path occasionally loses a race with whatever else is touching
+        # the mailbox: the identical call succeeds a moment later. Nine such
+        # failures were logged over three days while ten consecutive manual
+        # runs all passed.
+        #
+        # Exactly one retry. A real failure (secure boot, an unsupported
+        # model, no /dev/mem) fails the same way twice, so a loop would only
+        # postpone the report and hold the caller open while it did. The
+        # first attempt's output is dropped because a first attempt that is
+        # about to be retried has nothing to say; the second attempt runs
+        # with its streams untouched, so what it prints is what the caller
+        # reports. Nothing above this line changes -- every value has already
+        # been range-checked, and the retry re-runs the same checked values.
+        #
+        # Serialise from here down, after the range checks: a call with a
+        # bad value is refused immediately instead of queueing behind
+        # somebody else's apply to be refused later. The lock covers both
+        # attempts of the retry, so the retry is a retry of the whole
+        # exclusive apply and not a second racer.
+        take_smu_lock
+        RYZENADJ_ARGS=(--stapm-limit="$STAPM" --fast-limit="$FAST"
+                       --slow-limit="$SLOW" --tctl-temp="$TEMP"
+                       --set-coall="$COALL")
+        if "$RYZENADJ" "${RYZENADJ_ARGS[@]}" >/dev/null 2>&1; then
+            exit 0
+        fi
+        sleep 0.3
+        exec "$RYZENADJ" "${RYZENADJ_ARGS[@]}"
+        ;;
+
+    cpuboost)
+        # Turbo/boost on or off, through cpufreq. Turning it off pins every
+        # core at its base clock, which removes the millisecond-long boost
+        # spikes that the embedded controller reads as 85-90 C -- measured on
+        # this machine, those spikes are what make the fans surge while
+        # k10temp still reports 57-60 C. Costs peak single-thread speed.
+        shift
+        VAL="$1"
+        [ "$VAL" = "0" ] || [ "$VAL" = "1" ] || {
+            echo "cpuboost takes 0 (off) or 1 (on), got: $VAL" >&2; exit 1; }
+        GLOBAL=/sys/devices/system/cpu/cpufreq/boost
+        if [ -e "$GLOBAL" ]; then
+            echo "$VAL" > "$GLOBAL"
+            exit 0
+        fi
+        # amd-pstate exposes one global switch, but acpi-cpufreq and the
+        # intel drivers expose it per policy, so fall back to those.
+        WROTE=0
+        for p in /sys/devices/system/cpu/cpufreq/policy*/boost; do
+            [ -e "$p" ] || continue
+            echo "$VAL" > "$p"
+            WROTE=1
+        done
+        if [ "$WROTE" = 0 ]; then
+            echo "no cpufreq boost control on this machine" >&2
+            exit 1
+        fi
+        ;;
+
+    cpuclock)
+        # Ceiling on core clock, in kHz, written to every cpufreq policy.
+        # This is a maximum only: cores still drop as low as the governor
+        # wants when there is nothing to do, so idle power is unaffected.
+        #
+        # "max" restores the hardware maximum, which is how a profile says
+        # "no limit" -- without it, switching from a limited profile to an
+        # unlimited one would leave the old cap in place.
+        #
+        # Measured on a G614PR: the kernel stores the requested value
+        # verbatim on all 32 policies, no rounding to a CPPC step.
+        shift
+        VAL="$1"
+        POLICIES=(/sys/devices/system/cpu/cpufreq/policy*/scaling_max_freq)
+        [ -e "${POLICIES[0]}" ] || {
+            echo "no cpufreq policies on this machine" >&2; exit 1; }
+        P0=$(dirname "${POLICIES[0]}")
+        HW_MAX=$(cat "$P0/cpuinfo_max_freq")
+        if [ "$VAL" = "max" ]; then
+            VAL="$HW_MAX"
+        else
+            is_int "$VAL" || { echo "Invalid clock (kHz): $VAL" >&2; exit 1; }
+            HW_MIN=$(cat "$P0/cpuinfo_min_freq")
+            [ "$VAL" -le "$HW_MAX" ] || {
+                echo "clock $VAL kHz above this CPU's maximum ($HW_MAX)" >&2; exit 1; }
+            [ "$VAL" -ge "$HW_MIN" ] || {
+                echo "clock $VAL kHz below this CPU's minimum ($HW_MIN)" >&2; exit 1; }
+            # The ceiling cannot sit under the floor. Lower the floor to match
+            # rather than letting the kernel silently reject the write.
+            for m in /sys/devices/system/cpu/cpufreq/policy*/scaling_min_freq; do
+                [ -e "$m" ] || continue
+                CUR_MIN=$(cat "$m")
+                if [ "$CUR_MIN" -gt "$VAL" ]; then
+                    echo "$VAL" > "$m"
+                fi
+            done
+        fi
+        for f in "${POLICIES[@]}"; do
+            [ -e "$f" ] || continue
+            echo "$VAL" > "$f"
+        done
+        ;;
+
+    cpuepp)
+        # Energy Performance Preference: how eagerly the governor reaches for
+        # high clocks. This is a hint, not a ceiling -- a burst can still hit
+        # max clock under any setting -- so it changes average behaviour and
+        # battery life rather than capping anything.
+        #
+        # The valid names come from the kernel itself rather than a hardcoded
+        # list, since they differ between amd-pstate and intel_pstate. "custom"
+        # is excluded on purpose: it needs a raw 0-255 value written through a
+        # different path, and offering it here would just produce confusing
+        # failures.
+        shift
+        PREF="$1"
+        [ -n "$PREF" ] || { echo "cpuepp needs a preference name" >&2; exit 1; }
+        [ "$PREF" != "custom" ] || {
+            echo "cpuepp does not support 'custom'" >&2; exit 1; }
+        # BEFORE the name is validated, not after. While the governor is
+        # "performance" the kernel shortens
+        # energy_performance_available_preferences to that one word, so
+        # validating the profile's stored name against that list rejected
+        # every legitimate preference -- "invalid EPP preference
+        # 'balance_power'; machine offers: performance" on every single
+        # apply, logged by the enforcer once a cycle. The name was never
+        # invalid; the list was just temporarily one entry long.
+        #
+        # The kernel rejects an EPP write outright while the governor is
+        # "performance", and that is not an error worth reporting: the
+        # governor pins every core at maximum performance, so the preference
+        # would have nothing to influence. It is also not a state this app
+        # chose -- power-profiles-daemon switches the governor to
+        # "performance" whenever the OS power mode is set to Performance, so
+        # selecting the Performance profile put the machine here.
+        #
+        # Succeed quietly instead. The profile keeps its stored preference and
+        # it takes effect the moment the governor returns to "powersave",
+        # which is what happens on the way back to any other profile. Failing
+        # here made every Performance apply report an error, and made the
+        # background enforcer log one every cycle.
+        for g in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do
+            [ -e "$g" ] || continue
+            if [ "$(cat "$g")" = "performance" ]; then
+                echo "governor is 'performance'; EPP has no effect and was not written"
+                exit 0
+            fi
+            break
+        done
+        AVAIL_FILE=""
+        for p in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_available_preferences; do
+            [ -e "$p" ] || continue
+            AVAIL_FILE="$p"
+            break
+        done
+        [ -n "$AVAIL_FILE" ] || {
+            echo "no EPP control on this machine" >&2; exit 1; }
+        MATCH=0
+        for a in $(cat "$AVAIL_FILE"); do
+            [ "$a" = "$PREF" ] && MATCH=1
+        done
+        [ "$MATCH" = 1 ] || {
+            echo "invalid EPP preference '$PREF'; machine offers: $(cat "$AVAIL_FILE")" >&2
+            exit 1; }
+        WROTE=0
+        for p in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference; do
+            [ -e "$p" ] || continue
+            echo "$PREF" > "$p"
+            WROTE=1
+        done
+        if [ "$WROTE" = 0 ]; then
+            echo "no EPP control on this machine" >&2
+            exit 1
+        fi
+        ;;
+
+    gpu)
+        shift
+        WATTS="$1"
+        is_int "$WATTS" || { echo "Invalid watts: $WATTS" >&2; exit 1; }
+        # Generous sanity bound only. The real per-GPU limit is enforced by
+        # nvidia-smi itself, which rejects anything outside the card's
+        # min/max -- hardcoding one laptop's 140W ceiling here would break
+        # every other card.
+        [ "$WATTS" -ge 1 ] && [ "$WATTS" -le 1000 ] || { echo "watts out of sane range (1-1000)" >&2; exit 1; }
+        exec nvidia-smi -pl "$WATTS"
+        ;;
+
+    nvboost)
+        # NVIDIA Dynamic Boost, in watts. This is an asus-wmi platform knob,
+        # not an nvidia-smi one -- the firmware decides how much of the
+        # shared CPU/GPU power budget it may hand to the GPU. Range comes
+        # straight from the kernel driver (NVIDIA_BOOST_MIN/MAX in
+        # asus-wmi.c); anything outside it is rejected with -EINVAL.
+        shift
+        VAL="$1"
+        NODE=/sys/devices/platform/asus-nb-wmi/nv_dynamic_boost
+        is_int "$VAL" || { echo "Invalid dynamic boost: $VAL" >&2; exit 1; }
+        [ "$VAL" -ge 5 ] && [ "$VAL" -le 25 ] || { echo "dynamic boost out of range (5-25 W)" >&2; exit 1; }
+        [ -w "$NODE" ] || { echo "nv_dynamic_boost not supported on this machine" >&2; exit 1; }
+        echo "$VAL" > "$NODE"
+        ;;
+
+    nvtemp)
+        # GPU temperature target in degrees C. Also an asus-wmi knob; range
+        # is NVIDIA_TEMP_MIN/MAX from the kernel driver.
+        shift
+        VAL="$1"
+        NODE=/sys/devices/platform/asus-nb-wmi/nv_temp_target
+        is_int "$VAL" || { echo "Invalid temp target: $VAL" >&2; exit 1; }
+        [ "$VAL" -ge 75 ] && [ "$VAL" -le 87 ] || { echo "temp target out of range (75-87 C)" >&2; exit 1; }
+        [ -w "$NODE" ] || { echo "nv_temp_target not supported on this machine" >&2; exit 1; }
+        echo "$VAL" > "$NODE"
+        ;;
+
+    gpuclocklimit)
+        # Caps the GPU core clock. "reset" restores the default unlocked
+        # behaviour. Unlike the clock OFFSET (which nvidia-settings applies
+        # on top of the stock curve), this is a hard ceiling via nvidia-smi.
+        shift
+        VAL="$1"
+        if [ "$VAL" = "reset" ]; then
+            exec nvidia-smi -rgc
+        fi
+        is_int "$VAL" || { echo "Invalid clock limit: $VAL" >&2; exit 1; }
+        # Sanity bound only -- nvidia-smi enforces the card's actual range.
+        [ "$VAL" -ge 100 ] && [ "$VAL" -le 10000 ] || { echo "clock limit out of sane range (100-10000 MHz)" >&2; exit 1; }
+        # Some driver versions want an explicit min,max pair and reject a
+        # single value, so try the pair form first and fall back.
+        nvidia-smi -lgc "0,$VAL" 2>/dev/null || exec nvidia-smi -lgc "$VAL"
+        ;;
+
+    fan)
+        shift
+        CH="$1"; shift
+        [[ "$CH" =~ ^[1-3]$ ]] || { echo "Invalid fan channel: $CH (must be 1-3)" >&2; exit 1; }
+        if [ "$#" -ne 16 ]; then
+            echo "Expected 16 values (8 temp/pwm pairs), got $#" >&2
+            exit 1
+        fi
+        FAN_HWMON=$(find_hwmon_by_name asus_custom_fan_curve) || {
+            echo "asus_custom_fan_curve hwmon device not found" >&2
+            exit 1
+        }
+        POINT=1
+        while [ "$#" -gt 0 ]; do
+            T="$1"; P="$2"; shift 2
+            is_int "$T" || { echo "Invalid temp: $T" >&2; exit 1; }
+            is_int "$P" || { echo "Invalid pwm: $P" >&2; exit 1; }
+            [ "$T" -ge 0 ] && [ "$T" -le 100 ] || { echo "temp out of range (0-100): $T" >&2; exit 1; }
+            [ "$P" -ge 0 ] && [ "$P" -le 255 ] || { echo "pwm out of range (0-255): $P" >&2; exit 1; }
+            echo "$T" > "$FAN_HWMON/pwm${CH}_auto_point${POINT}_temp"
+            echo "$P" > "$FAN_HWMON/pwm${CH}_auto_point${POINT}_pwm"
+            POINT=$((POINT + 1))
+        done
+        # REQUIRED: the asus-wmi custom fan curve interface silently
+        # disables itself on every power-profile/mode change (confirmed by
+        # the kernel driver's own author -- "the curve is definitely
+        # disabled on profile change and will remain disabled until turned
+        # on again"). Writing the points alone is not enough; pwm<N>_enable
+        # must be explicitly set to 1 ("enable and write settings out")
+        # every time, or the BIOS silently ignores everything just written
+        # and falls back to its own curve -- this was the real cause of
+        # fans never reaching the RPMs the curve asked for.
+        echo "1" > "$FAN_HWMON/pwm${CH}_enable"
+        ;;
+
+    kbd)
+        shift
+        LVL="$1"
+        is_int "$LVL" || { echo "Invalid level: $LVL" >&2; exit 1; }
+        [ "$LVL" -ge 0 ] && [ "$LVL" -le 3 ] || { echo "level out of range (0-3)" >&2; exit 1; }
+        echo "$LVL" > /sys/class/leds/asus::kbd_backlight/brightness
+        ;;
+
+    kbdrgb)
+        # kbdrgb <command> <r 0-255> <g 0-255> <b 0-255> [r2 g2 b2 r3 g3 b3 r4 g4 b4]
+        # Delegates to rogauracore, a mature open-source tool with confirmed
+        # support for device ID 0b05:19b6 (the N-Key controller on this
+        # laptop, verified via `lsusb`) -- this replaces the old direct
+        # sysfs write to kbd_rgb_mode, which doesn't exist on this hardware.
+        shift
+        CMD="$1"; shift
+        ROGAURACORE=$(command -v rogauracore) || {
+            echo "rogauracore is not installed" >&2
+            exit 1
+        }
+        hex2() { printf '%02x' "$1"; }
+
+        case "$CMD" in
+            single_static|single_breathing)
+                R="$1"; G="$2"; B="$3"
+                for v in "$R" "$G" "$B"; do
+                    is_int "$v" || { echo "Invalid color value: $v" >&2; exit 1; }
+                    [ "$v" -ge 0 ] && [ "$v" -le 255 ] || { echo "color out of range (0-255): $v" >&2; exit 1; }
+                done
+                HEX="$(hex2 "$R")$(hex2 "$G")$(hex2 "$B")"
+                if [ "$CMD" = "single_breathing" ]; then
+                    R2="$4"; G2="$5"; B2="$6"
+                    for v in "$R2" "$G2" "$B2"; do
+                        is_int "$v" || { echo "Invalid second color value: $v" >&2; exit 1; }
+                        [ "$v" -ge 0 ] && [ "$v" -le 255 ] || { echo "second color out of range (0-255): $v" >&2; exit 1; }
+                    done
+                    HEX2="$(hex2 "$R2")$(hex2 "$G2")$(hex2 "$B2")"
+                    # single_breathing COLOR1 [COLOR2] [SPEED]. The speed was
+                    # never passed, so every position of the speed slider
+                    # produced an identical fade. Defaults to 2 when absent so
+                    # an older caller still works.
+                    SPEED="${7:-2}"
+                    is_int "$SPEED" || { echo "Invalid speed: $SPEED" >&2; exit 1; }
+                    [ "$SPEED" -ge 1 ] && [ "$SPEED" -le 3 ] || { echo "speed out of range (1-3)" >&2; exit 1; }
+                    exec "$ROGAURACORE" single_breathing "$HEX" "$HEX2" "$SPEED"
+                else
+                    exec "$ROGAURACORE" single_static "$HEX"
+                fi
+                ;;
+            single_pulsing)
+                # single_pulsing COLOR SPEED -- rogauracore's actual distinct
+                # pulse effect (a sharper on/off flash, not the slow
+                # breathing fade). Previously "Pulse" in the UI was faked as
+                # single_breathing fading to black, which is visually
+                # indistinguishable from Breathing since it's the exact same
+                # breathing animation curve, just with a different second
+                # color. rogauracore speed range is 1-3, unlike the other
+                # commands here which historically used 0-2.
+                R="$1"; G="$2"; B="$3"; SPEED="$4"
+                for v in "$R" "$G" "$B"; do
+                    is_int "$v" || { echo "Invalid color value: $v" >&2; exit 1; }
+                    [ "$v" -ge 0 ] && [ "$v" -le 255 ] || { echo "color out of range (0-255): $v" >&2; exit 1; }
+                done
+                is_int "$SPEED" || { echo "Invalid speed: $SPEED" >&2; exit 1; }
+                [ "$SPEED" -ge 1 ] && [ "$SPEED" -le 3 ] || { echo "speed out of range (1-3)" >&2; exit 1; }
+                HEX="$(hex2 "$R")$(hex2 "$G")$(hex2 "$B")"
+                exec "$ROGAURACORE" single_pulsing "$HEX" "$SPEED"
+                ;;
+            single_colorcycle)
+                # Color Cycle takes no color at all -- only a speed. It was
+                # previously falling into the same branch as single_static/
+                # single_breathing, which validated R/G/B first regardless
+                # of command, so an empty/missing color slot always failed
+                # with "Invalid color value" even though none was needed.
+                SPEED="$1"
+                is_int "$SPEED" || { echo "Invalid speed: $SPEED" >&2; exit 1; }
+                [ "$SPEED" -ge 1 ] && [ "$SPEED" -le 3 ] || { echo "speed out of range (1-3)" >&2; exit 1; }
+                exec "$ROGAURACORE" single_colorcycle "$SPEED"
+                ;;
+            multi_static)
+                # multi_static COLOR1 COLOR2 COLOR3 COLOR4 -- one color per
+                # keyboard zone (confirmed rogauracore signature).
+                ARGS=("$@")
+                HEXES=""
+                for i in 0 1 2 3; do
+                    base=$(( i * 3 ))
+                    R="${ARGS[$base]}"
+                    G="${ARGS[$((base + 1))]}"
+                    B="${ARGS[$((base + 2))]}"
+                    for v in "$R" "$G" "$B"; do
+                        is_int "$v" || { echo "Invalid zone $((i + 1)) color value: $v" >&2; exit 1; }
+                        [ "$v" -ge 0 ] && [ "$v" -le 255 ] || { echo "zone $((i + 1)) color out of range (0-255): $v" >&2; exit 1; }
+                    done
+                    HEXES="$HEXES $(hex2 "$R")$(hex2 "$G")$(hex2 "$B")"
+                done
+                exec "$ROGAURACORE" multi_static $HEXES
+                ;;
+            multi_breathing)
+                # multi_breathing COLOR1 COLOR2 COLOR3 COLOR4 SPEED -- the
+                # four zones animate together, cycling through the colours
+                # given. Same 12 colour values as multi_static, plus a speed.
+                # This is a firmware effect, so it costs nothing to run: no
+                # process wakes up to drive the animation.
+                ARGS=("$@")
+                if [ "${#ARGS[@]}" -ne 13 ]; then
+                    echo "Expected 12 color values and a speed, got ${#ARGS[@]}" >&2
+                    exit 1
+                fi
+                HEXES=""
+                for i in 0 1 2 3; do
+                    base=$(( i * 3 ))
+                    R="${ARGS[$base]}"
+                    G="${ARGS[$((base + 1))]}"
+                    B="${ARGS[$((base + 2))]}"
+                    for v in "$R" "$G" "$B"; do
+                        is_int "$v" || { echo "Invalid zone $((i + 1)) color value: $v" >&2; exit 1; }
+                        [ "$v" -ge 0 ] && [ "$v" -le 255 ] || { echo "zone $((i + 1)) color out of range (0-255): $v" >&2; exit 1; }
+                    done
+                    HEXES="$HEXES $(hex2 "$R")$(hex2 "$G")$(hex2 "$B")"
+                done
+                SPEED="${ARGS[12]}"
+                is_int "$SPEED" || { echo "Invalid speed: $SPEED" >&2; exit 1; }
+                [ "$SPEED" -ge 1 ] && [ "$SPEED" -le 3 ] || { echo "speed out of range (1-3)" >&2; exit 1; }
+                exec "$ROGAURACORE" multi_breathing $HEXES "$SPEED"
+                ;;
+            rainbow)
+                # rainbow [SPEED] -- same omission as single_breathing above.
+                SPEED="${1:-2}"
+                is_int "$SPEED" || { echo "Invalid speed: $SPEED" >&2; exit 1; }
+                [ "$SPEED" -ge 1 ] && [ "$SPEED" -le 3 ] || { echo "speed out of range (1-3)" >&2; exit 1; }
+                exec "$ROGAURACORE" rainbow "$SPEED"
+                ;;
+            off)
+                exec "$ROGAURACORE" single_static 000000
+                ;;
+            *)
+                echo "Unknown kbdrgb command: $CMD" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+
+    kbdrgb_brightness)
+        # kbdrgb_brightness <off|low|dim|medium|high|bright|0-3>
+        #
+        # These are exactly the words rogauracore knows (NAMED_BRIGHTNESSES in
+        # its source), plus the numeric 0-3 it also accepts. This used to allow
+        # "med" and "full", which rogauracore does NOT recognise: unknown words
+        # fall through to strtol(), which returns 0 for non-numeric text, and 0
+        # means OFF. So "med" and "full" silently switched the keyboard off
+        # instead of setting medium/full brightness.
+        #
+        # Validating here matters because rogauracore cannot be relied on to
+        # report the problem: it exits 0 even for a brightness value it could
+        # not interpret.
+        shift
+        LEVEL="$1"
+        ROGAURACORE=$(command -v rogauracore) || {
+            echo "rogauracore is not installed" >&2
+            exit 1
+        }
+        case "$LEVEL" in
+            off|low|dim|medium|high|bright|0|1|2|3)
+                exec "$ROGAURACORE" brightness "$LEVEL" ;;
+            *)
+                echo "Invalid brightness level: $LEVEL" >&2
+                echo "Must be one of: off low dim medium high bright 0 1 2 3" >&2
+                exit 1 ;;
+        esac
+        ;;
+
+    charge)
+        shift
+        PCT="$1"
+        is_int "$PCT" || { echo "Invalid percentage: $PCT" >&2; exit 1; }
+        [ "$PCT" -ge 0 ] && [ "$PCT" -le 100 ] || { echo "percentage out of range (0-100)" >&2; exit 1; }
+        # Find the battery rather than assuming BAT0 -- plenty of laptops
+        # enumerate theirs as BAT1, where the old hardcoded path silently
+        # did nothing.
+        BATT=""
+        for b in /sys/class/power_supply/*/charge_control_end_threshold; do
+            [ -w "$b" ] && { BATT="$b"; break; }
+        done
+        [ -n "$BATT" ] || { echo "no battery with charge_control_end_threshold found" >&2; exit 1; }
+        echo "$PCT" > "$BATT"
+        ;;
+
+    bootsound)
+        # The chime the firmware plays through the speakers at power-on,
+        # before any operating system is running. One asus-wmi file holding
+        # one digit.
+        #
+        # Two fixed values and nothing else, checked the same way cpuboost
+        # checks its own: this is a root-owned write to a firmware knob, and
+        # the driver answers anything outside 0/1 with -EINVAL, so passing
+        # the caller's string through would turn a typo into an unexplained
+        # failure -- and would be exactly the kind of unbounded privileged
+        # write this helper exists not to have.
+        shift
+        VAL="$1"
+        [ "$VAL" = "0" ] || [ "$VAL" = "1" ] || {
+            echo "bootsound takes 0 (off) or 1 (on), got: $VAL" >&2; exit 1; }
+        BOOT_SOUND=/sys/devices/platform/asus-nb-wmi/boot_sound
+        [ -e "$BOOT_SOUND" ] || {
+            echo "no boot_sound control on this machine" >&2; exit 1; }
+        echo "$VAL" > "$BOOT_SOUND"
+        ;;
+
+    asusd_status)
+        # Reports one of: not-installed, active, inactive-enabled,
+        # inactive-disabled -- deliberately narrow (only ever targets the
+        # literal unit name "asusd", never a caller-supplied name) so this
+        # can't be turned into a generic systemctl-as-root passthrough.
+        #
+        # The window does not use this: reading a unit's state needs no
+        # privilege, so it asks systemctl directly (hardware.read_asusd_state)
+        # rather than spending a sudo on a question any user may ask. It stays
+        # because install.sh calls it to prove the sudoers rule works.
+        shift
+        no_args asusd_status "$@"
+        if ! systemctl list-unit-files asusd.service >/dev/null 2>&1 \
+           || ! systemctl list-unit-files asusd.service 2>/dev/null | grep -q asusd.service; then
+            echo "not-installed"
+            exit 0
+        fi
+        if systemctl is-active --quiet asusd.service; then
+            echo "active"
+        elif systemctl is-enabled --quiet asusd.service 2>/dev/null; then
+            echo "inactive-enabled"
+        else
+            echo "inactive-disabled"
+        fi
+        ;;
+
+    asusd_disable)
+        # Stop asusd and keep it stopped. It drives the same asus-wmi knobs,
+        # fan curves and keyboard lighting as this app, so the two re-assert
+        # different settings at each other for as long as both are running.
+        #
+        # Reversible by design: asusd_enable below is the way back, and
+        # neither action removes anything.
+        shift
+        no_args asusd_disable "$@"
+        systemctl disable --now asusd.service
+        ;;
+
+    asusd_enable)
+        # The way back. --now so the service is running again when this
+        # returns, rather than only after the next boot.
+        shift
+        no_args asusd_enable "$@"
+        systemctl enable --now asusd.service
+        ;;
+
+    # There is deliberately no action that removes the asusctl package.
+    # Removing packages is a transaction the user should see, in their own
+    # terminal, with its own confirmation and its own dependency list -- the
+    # window shows the exact command for the detected distro instead. A root
+    # "remove this package" primitive sitting in a passwordless helper is
+    # also exactly the kind of thing this helper exists not to have.
+
+    *)
+        usage
+        ;;
+esac

@@ -1,0 +1,93 @@
+name: Bug report
+description: Something isn't working right
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report. The more information you provide, the easier it will be to fix it!
+
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Rules
+      options:
+        - label: I made myself familiar with the README and the "If something is wrong" section of [1-HOW-TO-INSTALL.txt](https://github.com/D0minatorX/rogcontrol/blob/gtk4-ui/rogcontrol/1-HOW-TO-INSTALL.txt).
+          required: true
+        - label: I understand that, if insufficient information or no logs are provided, my issue may be closed without an answer.
+          required: true
+
+  - type: textarea
+    id: whats-wrong
+    attributes:
+      label: What's wrong?
+      description: Provide a detailed description of what is wrong or does not work as expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce the bug?
+      description: Describe how to reproduce the behaviour. Be as specific as possible.
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. Scroll down to '...'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Run `rogcontrol --self-test` in a terminal, and check `journalctl --user -u rogcontrol-enforcer -u rogcontrol-tray --since "1 hour ago"` for the background services. Paste the relevant output here, or drag and drop a log file.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device and model
+      description: Which ASUS ROG laptop do you use?
+      placeholder: e.g. ROG Strix G16 G614PR
+    validations:
+      required: true
+
+  - type: input
+    id: asusd
+    attributes:
+      label: asusd status
+      description: Is asusctl's daemon (asusd) installed, and is it running? Check the System page.
+      placeholder: e.g. installed, stopped
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: ROG Control version, or the commit/date if built from source.
+      placeholder: e.g. v1.0
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      description: Which distro, desktop environment, and X11/Wayland?
+      placeholder: e.g. CachyOS, GNOME, Wayland
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional information
+      description: If applicable, add screenshots or other relevant information to help explain your problem.
+    validations:
+      required: false

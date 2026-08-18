@@ -1,0 +1,177 @@
+ROG CONTROL — HOW TO INSTALL
+============================
+
+For ASUS ROG laptops running Linux. Tested on a ROG Strix G614PR
+(Ryzen 9 8940HX, RTX 5070 Ti) on Arch/CachyOS with GNOME on Wayland.
+
+
+WHAT YOU NEED FIRST
+-------------------
+
+GTK4 and libadwaita. The installer checks for them before touching anything
+and stops with the package names if they are missing:
+
+    Arch/CachyOS   sudo pacman -S gtk4 libadwaita python-gobject
+    Fedora         sudo dnf install gtk4 libadwaita python3-gobject
+    Debian/Ubuntu  sudo apt install libgtk-4-1 libadwaita-1-0 python3-gi
+
+Everything else is optional and only costs the feature that needs it. The
+installer detects what is missing and offers to install it:
+
+    ryzenadj        CPU power limits and undervolt (AMD only)
+    nvidia-utils    GPU temperature and power limit
+    nvidia-settings GPU clock offsets
+    supergfxctl     switching between integrated and hybrid graphics
+    rogauracore     keyboard colours and lighting modes
+    libayatana-appindicator   the tray icon
+    libnotify       desktop notifications
+
+
+INSTALLING
+----------
+
+Unzip it, then from inside the folder:
+
+    ./install.sh
+
+Do NOT run it as root. It asks for your password twice, and only for the two
+things that genuinely need it:
+
+  * installing the privileged helper to /usr/local/bin/rogcontrol-helper
+  * adding a sudoers rule so the app can call that one helper without a
+    password prompt every time you move a slider
+
+The rule grants exactly one binary to your user. It is validated with visudo
+before being put in place, because a malformed sudoers file can lock you out
+of sudo entirely.
+
+The installer will:
+
+  * check GTK4 and libadwaita, and stop if they are absent
+  * confirm the machine is an ASUS
+  * install missing optional dependencies, with your permission
+  * build ryzenadj and rogauracore from source if your distro has no
+    package for them -- Arch/CachyOS only, via an AUR helper; on Fedora and
+    Debian/Ubuntu these two are not packaged and the installer only warns,
+    since it does not carry a source build for those toolchains
+  * install the app to ~/.local/lib/rogcontrol and a launcher on your PATH
+  * install the tray, the background services, the icon and the menu entry
+  * on a FRESH install, write the default settings and apply them
+  * on an UPDATE, keep every setting you have and back the file up first
+
+It ends by listing which features work on your machine and which do not, and
+why.
+
+
+AFTER INSTALLING
+
+    rogcontrol            open the window
+    rogcontrol-tray       the tray icon (starts by itself at every login)
+
+The window is also in your applications menu as "ROG Control".
+
+One thing worth doing once: open the Fans page and press "Calibrate fan RPM".
+It takes about two minutes and measures how your fans actually respond, so
+the graphs show real numbers for your machine instead of the ones measured on
+the developer's laptop.
+
+
+KEYBOARD SHORTCUTS
+
+The installer does not bind these for you — a hotkey is a personal choice,
+and every desktop binds them a different way. These are installed to
+~/.local/bin (or, for the window itself, already on your PATH) ready to
+bind to any key you like:
+
+    ~/.local/bin/rogcontrol-cycle-profile.py       next profile
+    ~/.local/bin/rogcontrol-cycle-kbdlight.py      next lighting mode
+    ~/.local/bin/rogcontrol-adjust-kbdbrightness.py up|down   keyboard backlight brightness
+    ~/.local/bin/rogcontrol-adjust-kbdspeed.py      up|down   current lighting effect's speed
+    rogcontrol --show                              bring the window up
+    rogcontrol --hide                              put it away without quitting
+
+The brightness and speed scripts take one argument, so each needs its own
+shortcut for "up" and one for "down" -- four bindings, not two. The speed
+one only does anything on Breathing, Pulse, Color Cycle or Rainbow; on any
+other lighting mode it notifies that there is nothing to speed up, since
+those modes are a fixed picture with no animation to change.
+
+"--show" and "--hide" are two ends of one thing, not a toggle: --show
+always brings the window up (even if it was never running), --hide always
+puts it away, and --hide never quits the app -- the window stays alive,
+invisible, so a following --show is instant. If you want one key that does
+either depending on current state instead of two dedicated ones, "rogcontrol
+--toggle" is what the tray's "Show window" item itself uses.
+
+On GNOME:
+
+    1. Settings > Keyboard > View and Customize Shortcuts
+    2. Scroll down, click "Custom Shortcuts", then "+"
+    3. Name:    ROG Control — Next Profile
+       Command: /home/YOUR_USERNAME/.local/bin/rogcontrol-cycle-profile.py
+       Shortcut: whatever key combo you want, e.g. Super+F5
+    4. Repeat for each shortcut above. For "up"/"down" scripts, add two
+       separate custom shortcuts, one with the command ending " up" and one
+       ending " down". For --show/--hide, the command is just "rogcontrol
+       --show" (rogcontrol is already on your PATH, no leading path needed).
+
+GNOME's custom-shortcut dialog needs the full path for the scripts under
+~/.local/bin, not "~" — use your actual home directory. Other desktops (KDE
+System Settings > Shortcuts > Custom Shortcuts, etc.) bind a command to a
+key the same way; point it at the same commands.
+
+If you reinstall clean later, these bindings are NOT part of the app —
+they live in your desktop's own settings (GNOME stores them under
+dconf), so uninstalling or wiping ~/.config/rogcontrol.json does not
+remove them, and a fresh install does not restore them. Re-add them once
+after any clean install.
+
+
+UPDATING
+--------
+
+Run ./install.sh from the newer version. It detects the existing install and
+keeps your profiles, fan curves, calibration and keyboard settings. Your
+settings file is copied to a dated backup beside it first.
+
+
+YOUR SETTINGS
+
+Everything you configure lives in ONE file:
+
+    ~/.config/rogcontrol.json
+
+Profiles, fan curves, CPU and GPU limits, keyboard colours, charge limit, fan
+calibration — all of it. Copy that file to move your setup to another machine
+or to keep a backup. Nothing is stored anywhere else.
+
+
+UNINSTALLING
+------------
+
+    ~/.local/bin/rogcontrol-uninstall.sh
+
+It removes the app, the helper, the sudoers rule and the services. It leaves
+your settings file alone unless you ask for it to go.
+
+
+IF SOMETHING IS WRONG
+---------------------
+
+The window will not open
+    Run `rogcontrol --self-test` in a terminal. It builds every page and
+    prints the first thing that fails.
+
+Nothing happens when you click the icon in the applications menu
+    Log out and back in once. The menu database caches entries.
+
+A control is greyed out
+    Hover it — the tooltip names the missing dependency.
+
+CPU limits do nothing
+    ryzenadj needs a supported AMD chip and, on some kernels, the ryzen_smu
+    module. The app reports what the helper said rather than failing quietly.
+
+The fans do not follow the curve
+    Read the fan section of README.txt. This is a real and well
+    understood hardware behaviour, and the answer is in the curve's shape.
