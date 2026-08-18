@@ -69,6 +69,33 @@ POLL_SECONDS = 5
 # if one still sits in the theme directory under the same name.
 ICON_PATH = os.path.expanduser(
     "~/.local/share/icons/hicolor/256x256/apps/rogcontrol.png")
+ICON_QUIET_PATH = os.path.expanduser(
+    "~/.local/share/icons/hicolor/256x256/apps/rogcontrol-quiet.png")
+ICON_BALANCED_PATH = os.path.expanduser(
+    "~/.local/share/icons/hicolor/256x256/apps/rogcontrol-balanced.png")
+
+# Which icon colour goes with which profile: blue for Quiet, green for
+# either Balanced tier, red for Performance -- and red again for anything
+# the user made themselves, since a profile they built to push the machine
+# harder than a stock tier reads the same as Performance does.
+PROFILE_ICON_PATH = {
+    "Quiet": ICON_QUIET_PATH,
+    "Balanced Power": ICON_BALANCED_PATH,
+    "Balanced Performance": ICON_BALANCED_PATH,
+    "Performance": ICON_PATH,
+}
+
+
+def icon_for_profile(name):
+    """The icon file for whichever profile is current.
+
+    Falls back to ICON_PATH (red) both for Performance and for a name not
+    in the map at all -- a custom profile is exactly that fallback case,
+    and the file is checked for existence before use, so an icon variant
+    missing from an older install degrades to the app icon rather than an
+    AppIndicator error."""
+    path = PROFILE_ICON_PATH.get(name, ICON_PATH)
+    return path if os.path.exists(path) else ICON_PATH
 
 
 def apply_command():
@@ -121,9 +148,30 @@ def spawn(argv, env=None):
               file=sys.stderr)
 
 
+# The exit code that means "the user chose Quit", as opposed to any other
+# way this process can stop.
+#
+# It exists because the two are indistinguishable otherwise, and the service
+# has to treat them oppositely. The tray was seen exiting 0 on its own -- no
+# crash, no traceback -- and staying dead, which is what Restart=on-failure
+# does with a clean exit; the icon vanished and never came back. Restart=always
+# fixed that and broke Quit instead, because Quit is also a clean exit, so the
+# tray came straight back every time it was dismissed.
+#
+# So a deliberate quit says so with its own code, and the unit names that one
+# code in RestartPreventExitStatus. Everything else, exit 0 included, is still
+# treated as a death worth restarting.
+QUIT_EXIT_CODE = 42
+
+
 class Tray:
     def __init__(self):
         self.config = config_mod.load_config()
+        # True only when Quit was chosen from this menu. A SIGTERM (systemctl
+        # stop, logout) leaves it False: systemd is not restarting the
+        # service in that case anyway, and a stop is not the user saying they
+        # never want the icon back.
+        self.user_quit = False
         # Set while the menu is being pointed at a profile chosen somewhere
         # else. RadioMenuItem fires "toggled" for the item being deselected
         # as well as the one being selected, and again when we mirror an
@@ -134,13 +182,30 @@ class Tray:
         self._shown = []
         self._none_item = None
 
-        icon = ICON_PATH if os.path.exists(ICON_PATH) else "rogcontrol"
+        # Picked from the config already loaded above, not a second read --
+        # startup shows whichever profile is actually current from the
+        # first frame, rather than the red default until the first poll.
+        current = self.config.get("current_profile")
+        icon = icon_for_profile(current) if os.path.exists(ICON_PATH) \
+            else "rogcontrol"
+        self._icon_profile = current
         self.indicator = AppIndicator.Indicator.new(
             "rogcontrol", icon, AppIndicator.IndicatorCategory.HARDWARE)
         self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
         self.indicator.set_title("ROG Control")
         self._build_menu()
         GLib.timeout_add_seconds(POLL_SECONDS, self._poll)
+
+    def _update_icon(self, current):
+        """Point the indicator at the colour for whichever profile is
+        current, skipping the call when nothing changed -- set_icon_full
+        reloads the file from disk every time, and the poll calls this
+        every 5 seconds whether the profile moved or not."""
+        if current == self._icon_profile:
+            return
+        self._icon_profile = current
+        self.indicator.set_icon_full(icon_for_profile(current),
+                                     current or "ROG Control")
 
     # -- menu ----------------------------------------------------------------
 
@@ -231,6 +296,7 @@ class Tray:
             return
         self.config["current_profile"] = name
         config_mod.save_config(self.config)
+        self._update_icon(name)
         # Applied now rather than left to the enforcer, which would take up
         # to its 60 second cycle to notice -- a tray switch has to feel
         # immediate or it reads as having done nothing.
@@ -246,6 +312,7 @@ class Tray:
         # which also means this is harmless when nothing is running.
         argv, env = app_command("--quit")
         spawn(argv, env)
+        self.user_quit = True
         self.stop()
 
     def stop(self, *_args):
@@ -257,13 +324,15 @@ class Tray:
     def _poll(self):
         """Follow the config, whoever changed it."""
         self.config = config_mod.load_config()
+        current = self.config.get("current_profile")
         if self._stock_profiles() != self._shown:
             # A profile was added, renamed or deleted. Rebuilding is the only
             # honest answer -- a stale menu offers a switch to a profile that
             # is no longer there.
             self._build_menu()
         else:
-            self._sync_menu(self.config.get("current_profile"))
+            self._sync_menu(current)
+        self._update_icon(current)
         return GLib.SOURCE_CONTINUE
 
 
@@ -276,7 +345,10 @@ def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         add_unix_signal(GLib.PRIORITY_DEFAULT, sig, tray.stop)
     Gtk.main()
-    return 0
+    # See QUIT_EXIT_CODE: the unit restarts this on any other exit, so a
+    # deliberate Quit has to be distinguishable from the clean exits it was
+    # seen making on its own.
+    return QUIT_EXIT_CODE if tray.user_quit else 0
 
 
 if __name__ == "__main__":

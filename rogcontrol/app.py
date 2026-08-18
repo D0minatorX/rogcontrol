@@ -49,6 +49,11 @@ from .widgets.ambient import ambient_available  # noqa: E402
 
 APP_ID = "org.rogcontrol.RogControl"
 
+# What to call each CPU apply step when one of them fails. Keyed by the step
+# names in hardware.CPU_APPLY_STEPS.
+STEP_LABELS = {"limits": "CPU limits", "boost": "CPU boost",
+               "epp": "CPU energy preference", "clock": "CPU clock cap"}
+
 # The smallest window this layout is meant to be usable at -- roughly a phone
 # in portrait. Nothing here is allowed to demand more than this: a page that
 # does shows up as a window that refuses to be dragged narrower, which is the
@@ -62,7 +67,7 @@ PAGE_SPECS = (
     ("gpu", "GPU", "video-display-symbolic"),
     ("fans", "Fans", "weather-windy-symbolic"),
     ("battery", "Battery", "battery-good-symbolic"),
-    ("keyboard", "Keyboard", "input-keyboard-symbolic"),
+    ("keyboard", "Keyboard", "keyboard-brightness-symbolic"),
     ("system", "System", "emblem-system-symbolic"),
 )
 
@@ -114,7 +119,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_size_request(MIN_WIDTH, MIN_HEIGHT)
 
         # True while a whole profile is being pushed at the hardware. The
-        # fan portion alone takes ~16 seconds (see CHANNEL_GAP_S), so the
+        # fan portion alone takes ~10 seconds (see CHANNEL_GAP_S), so the
         # window has to be able to say "still working" rather than start a
         # second, overlapping apply.
         self._applying_profile = False
@@ -129,6 +134,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._config_watch = GLib.timeout_add_seconds(
             config_mod.CONFIG_POLL_SECONDS, self.check_external_config_change)
         self.connect("destroy", self._on_destroy)
+        self.connect("close-request", self._on_close_request)
 
     # -- construction --------------------------------------------------------
 
@@ -188,12 +194,29 @@ class MainWindow(Adw.ApplicationWindow):
         header.pack_end(self._build_profile_menu())
         header.pack_end(self._build_profile_switcher())
 
+        # The visible page's own actions -- Apply/Revert, or Calibrate/Apply
+        # on the fans page -- sit at the start of the header, beside the page
+        # title. Every page's box is packed once here and all but the current
+        # one hidden, rather than re-parenting buttons on each navigation: a
+        # widget has one parent, and moving it around on every page change is
+        # a good way to end up with the CPU page's Apply button on the GPU
+        # page. See widgets/action_buttons.py.
+        self.page_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                                    spacing=6)
+        header.pack_start(self.page_actions)
+
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         for page_id, label, _icon in PAGE_SPECS:
             page = self._build_page(page_id, label)
             self.pages[page_id] = page
             self.stack.add_named(page, page_id)
+            # Pages that have header actions say so with an action_box; the
+            # read-only ones (Overview, System) simply do not have one.
+            box = getattr(page, "action_box", None)
+            if box is not None:
+                box.set_visible(False)
+                self.page_actions.append(box)
 
         self.toast_overlay = Adw.ToastOverlay()
         self.toast_overlay.set_child(self.stack)
@@ -271,8 +294,8 @@ class MainWindow(Adw.ApplicationWindow):
         edit.append("New Profile…", "win.new-profile")
         edit.append("Delete Profile…", "win.delete-profile")
         transfer = Gio.Menu()
-        transfer.append("Import Profiles…", "win.import-profiles")
-        transfer.append("Export Profile…", "win.export-profile")
+        transfer.append("Import…", "win.import-profiles")
+        transfer.append("Export Backup…", "win.export-profile")
         menu = Gio.Menu()
         menu.append_section(None, edit)
         menu.append_section(None, transfer)
@@ -332,8 +355,16 @@ class MainWindow(Adw.ApplicationWindow):
             return
         self.stack.set_visible_child_name(row.page_id)
         self.content_title.set_title(row.page_label)
+        self._show_page_actions(row.page_id)
         if self.split.get_collapsed():
             self.split.set_show_content(True)
+
+    def _show_page_actions(self, page_id):
+        """Show the visible page's header buttons and hide the rest."""
+        for other_id, page in self.pages.items():
+            box = getattr(page, "action_box", None)
+            if box is not None:
+                box.set_visible(other_id == page_id)
 
     def select_page(self, page_id):
         for row in self.sidebar_list:
@@ -507,21 +538,19 @@ class MainWindow(Adw.ApplicationWindow):
             self.apply_profile_async(current)
 
     def _on_export_profile(self, _action, _param):
-        name = self.current_profile_name()
-        if not name:
-            self.toast("There is no profile to export.")
-            return
+        # Everything, not the one profile on screen -- this is the backup,
+        # so leaving anything out would make it a worse one than just
+        # copying ~/.config/rogcontrol.json by hand.
         dialog = Gtk.FileDialog()
-        dialog.set_title(f"Export “{name}”")
-        # A slash in a profile name is a path separator in a filename.
-        dialog.set_initial_name(f"{name.replace('/', '_')}.rogprofile.json")
+        dialog.set_title("Export Backup")
+        dialog.set_initial_name("rogcontrol-backup.json")
         dialog.set_filters(self._json_filters())
         # Gtk.FileDialog, not Gtk.FileChooserDialog: the latter is deprecated
         # in GTK 4.10 and its .run() needs a nested main loop, which is the
         # thing this rewrite is built to avoid.
-        dialog.save(self, None, self._on_export_chosen, name)
+        dialog.save(self, None, self._on_export_chosen)
 
-    def _on_export_chosen(self, dialog, result, name):
+    def _on_export_chosen(self, dialog, result):
         try:
             file = dialog.save_finish(result)
         except GLib.Error:
@@ -529,18 +558,18 @@ class MainWindow(Adw.ApplicationWindow):
         path = file.get_path() if file is not None else None
         if not path:
             return
-        payload = config_mod.export_payload(self.config, [name])
+        payload = config_mod.export_backup(self.config)
         try:
             with open(path, "w") as f:
                 json.dump(payload, f, indent=2)
         except (OSError, TypeError, ValueError) as e:
             self.toast(f"Export failed: {e}")
             return
-        self.toast(f"Exported “{name}” to {os.path.basename(path)}.")
+        self.toast(f"Backed up everything to {os.path.basename(path)}.")
 
     def _on_import_profiles(self, _action, _param):
         dialog = Gtk.FileDialog()
-        dialog.set_title("Import profiles")
+        dialog.set_title("Import")
         dialog.set_filters(self._json_filters())
         dialog.open(self, None, self._on_import_chosen)
 
@@ -557,6 +586,14 @@ class MainWindow(Adw.ApplicationWindow):
                 data = json.load(f)
         except (OSError, json.JSONDecodeError, ValueError) as e:
             self.toast(f"Could not read that file: {e}")
+            return
+        # A full backup replaces everything and cannot be undone, so it
+        # gets a confirmation the same way Delete does. An old-style file
+        # that shares one or a few profiles has no backup marker and merges
+        # in immediately, exactly as it always has -- that path is already
+        # safe by construction (see import_profiles).
+        if config_mod.is_backup_file(data):
+            self._confirm_restore_backup(data)
             return
         try:
             # Validates the whole file before it touches the config: a file
@@ -576,6 +613,39 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self.toast(f"Imported {len(names)} profiles — "
                        f"select one to apply.")
+
+    def _confirm_restore_backup(self, data):
+        profiles = data.get("profiles")
+        count = len(profiles) if isinstance(profiles, dict) else 0
+        body = (f"This replaces every profile and setting you have now "
+                f"with the {count} profile"
+                f"{'s' if count != 1 else ''} and settings in this backup. "
+                f"This cannot be undone.")
+        dialog = Adw.AlertDialog(heading="Restore this backup?", body=body)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("restore", "Restore")
+        dialog.set_response_appearance("restore",
+                                       Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_restore_response, data)
+        dialog.present(self)
+
+    def _on_restore_response(self, _dialog, response, data):
+        if response != "restore":
+            return
+        try:
+            # Raises before cfg.clear() runs, so a corrupt or truncated
+            # backup leaves the current config untouched rather than
+            # replacing it with half a file.
+            config_mod.restore_backup(self.config, data)
+        except ValueError as e:
+            self.toast(f"Could not restore: {e}")
+            return
+        config_mod.save_config(self.config)
+        self._refresh_profile_list()
+        self.reload_pages()
+        self.toast("Backup restored.")
 
     @staticmethod
     def _json_filters():
@@ -655,24 +725,14 @@ class MainWindow(Adw.ApplicationWindow):
         cpu = profile.get("cpu") or {}
         if cpu:
             step("Applying the CPU power limits…")
-            if all(k in cpu for k in ("stapm", "fast", "slow", "temp")):
-                do("CPU limits", lambda: hardware.run_helper(
-                    "cpu", cpu["stapm"], cpu["fast"], cpu["slow"], cpu["temp"],
-                    cpu.get("coall", 0)))
-            # A missing key means the profile has no preference, so the
-            # setting is left wherever it is rather than forced to a default
-            # every profile would then start carrying.
-            if "boost" in cpu and self.caps.get("cpu_boost"):
-                do("CPU boost", lambda: hardware.run_helper(
-                    "cpuboost", 1 if cpu["boost"] else 0))
-            if "epp" in cpu and self.caps.get("cpu_epp"):
-                do("CPU energy preference", lambda: hardware.run_helper(
-                    "cpuepp", cpu["epp"]))
-            # Last, after boost. 0 means "no ceiling" and still has to be
-            # written, or a cap from the previous profile survives the switch.
-            if "max_freq" in cpu and self.caps.get("cpu_clock"):
-                do("CPU clock cap", lambda: hardware.run_helper(
-                    "cpuclock", cpu["max_freq"] or "max"))
+            # hardware.cpu_apply_plan, not a chain of ifs. This was the
+            # fifth hand-maintained copy of the CPU apply in the tree, and
+            # like three of the others it never learned about the clock
+            # floor: switching profile from this window wrote every other
+            # CPU setting and silently dropped min_freq.
+            for step_name, args in hardware.cpu_apply_plan(cpu, self.caps):
+                do(STEP_LABELS.get(step_name, step_name),
+                   lambda a=args: hardware.run_helper(*a))
 
         gpu = profile.get("gpu") or {}
         if gpu:
@@ -705,13 +765,35 @@ class MainWindow(Adw.ApplicationWindow):
 
         fans = profile.get("fans") or {}
         if fans and self.caps.get("fan_curve"):
-            channels = [ch for ch in hardware.FAN_CHANNELS if ch in fans]
+            # Only the channels whose curve is not already the one the
+            # controller is running. Each write costs a CHANNEL_GAP_S gap
+            # before the next, so a switch that used to take ~16 seconds
+            # regardless now costs that gap per channel that actually
+            # changed -- and nothing at all when the curves match, which is
+            # every switch back to a profile whose fans are the same as the
+            # current one's.
+            #
+            # Read from the driver rather than remembered: the EC drops
+            # curves behind this app's back on every power-mode change, and a
+            # channel it has thrown away has to be rewritten even though
+            # nothing in the config moved.
+            held = {ch: hardware.read_fan_curve_points(ch)
+                    for ch in hardware.FAN_CHANNELS}
+            enabled = hardware.read_fan_curve_enabled()
+            channels = [
+                ch for ch in hardware.FAN_CHANNELS
+                if ch in fans
+                and not (enabled.get(ch) is not False
+                         and held.get(ch) is not None
+                         and fancurve.curve_matches_hardware(fans[ch],
+                                                             held[ch]))]
             for i, channel in enumerate(channels):
                 if i > 0:
-                    # Mandatory, and measured on this machine: the asus-wmi
-                    # EC silently drops curve writes fired closer together
-                    # than this. 0.5s left two channels of three stuck on
-                    # their old curve; 8s converged every time.
+                    # Mandatory: the asus-wmi EC can silently drop curve
+                    # writes fired too close together. First measured this
+                    # as an 8s-only requirement (0.5s left channels stuck);
+                    # a later retest found 0.5s-8s all held, so CHANNEL_GAP_S
+                    # was lowered to 5s for margin over the retested floor.
                     step(f"Waiting {CHANNEL_GAP_S}s — the fan controller "
                          f"ignores curves written closer together…")
                     time.sleep(CHANNEL_GAP_S)
@@ -754,7 +836,7 @@ class MainWindow(Adw.ApplicationWindow):
         The re-read is deliberately not treated as a user edit. ``_loading``
         is set around the profile switcher so that following the file does
         not fire an apply, which would turn every external switch into a
-        second ~16 second fan write from this side."""
+        second ~10 second fan write from this side."""
         mtime = _config_mtime()
         if not config_mod.config_file_moved_on(self._last_config_mtime, mtime):
             # First sample, or the file is gone: record and read nothing.
@@ -812,6 +894,20 @@ class MainWindow(Adw.ApplicationWindow):
         if self._config_watch is not None:
             GLib.source_remove(self._config_watch)
             self._config_watch = None
+
+    def _on_close_request(self, _widget):
+        """Remember the window's size for next launch.
+
+        "close-request" rather than "destroy": the widget is still fully
+        realized here, so get_width()/get_height() report the size on
+        screen. By the time "destroy" runs that is no longer guaranteed.
+        Returning False lets the close proceed -- this only ever observes
+        it, never blocks it."""
+        width, height = self.get_width(), self.get_height()
+        if width > 0 and height > 0:
+            self.config["window_size"] = [width, height]
+            config_mod.save_config(self.config)
+        return False
 
     # -- Ambient -----------------------------------------------------------
 
@@ -903,15 +999,32 @@ class RogControlApp(Adw.Application):
         self.win = None
 
     def _ensure_window(self):
+        # Opening the window puts the tray icon back. The tray's own Quit
+        # stops its service for good -- systemd is told not to restart that
+        # one exit code (see QUIT_EXIT_CODE in rogcontrol-tray) -- so
+        # launching the app is the way back, and doing it here covers every
+        # route that opens a window: the launcher, --show, --toggle. --quit
+        # returns before this and so cannot resurrect the tray it just
+        # dismissed.
+        hardware.start_tray()
         if self.win is None:
-            config = config_mod.load_config()
-            caps = hardware.detect_capabilities()
             # Asked once, here, rather than by the GPU page: the System
             # page's About row needs the same answer, and two pages each
             # forking nvidia-smi at startup would cost half a second for one
             # fact. On a machine with no NVIDIA card the exec fails
             # immediately and the fallback ranges come back.
-            caps["gpu_limits"] = hardware.detect_gpu_limits()
+            #
+            # Asked BEFORE load_config, and its answer handed in: the one
+            # time this matters is a fresh install, where it is what lets
+            # the stock profiles start out scaled to the card actually
+            # fitted instead of the 140W one they were written against. An
+            # existing config ignores it entirely -- migrate_config only
+            # reads it while creating profiles from scratch.
+            gpu_limits = hardware.detect_gpu_limits()
+            config = config_mod.load_config(gpu_min_w=gpu_limits["min_w"],
+                                            gpu_max_w=gpu_limits["max_w"])
+            caps = hardware.detect_capabilities()
+            caps["gpu_limits"] = gpu_limits
             # Asked here rather than inside detect_capabilities, which is
             # standard library only so the helper scripts and the tests can
             # import it: answering this needs GStreamer and a session bus.
@@ -925,7 +1038,32 @@ class RogControlApp(Adw.Application):
                 # applied. Skipped under --self-test, which must not start a
                 # screen capture or change what the keyboard is doing.
                 self.win.start_saved_ambient()
+                if (caps.get("fan_curve") and not config.get("fan_rpm_cal")
+                        and not config.get("fan_calibration_prompted")):
+                    # The RPM figures are the developer's own machine's until
+                    # this runs once -- see fancurve.FAN_RPM_CAL -- so this
+                    # puts the same Calibrate dialog the Fans page's own
+                    # button opens in front of the user unasked, the one
+                    # time it is likely to still be true that they have not
+                    # seen it. idle_add so it appears after the window has
+                    # actually mapped, not fighting the initial layout pass.
+                    GLib.idle_add(self._prompt_first_run_calibration)
         return self.win
+
+    def _prompt_first_run_calibration(self):
+        # Marked BEFORE the dialog is even shown, not after a response: a
+        # crash or a force-quit mid-dialog must not re-arm this every launch
+        # forever, which is exactly the kind of nag this is trying not to
+        # be. Cancelling the dialog is a real answer -- "not now" -- and the
+        # tooltip on the Calibrate button (see pages/fans.py) is what is
+        # left to remind them after this one showing.
+        self.win.config["fan_calibration_prompted"] = True
+        config_mod.save_config(self.win.config)
+        self.win.select_page("fans")
+        fans_page = self.win.pages.get("fans")
+        if fans_page is not None:
+            fans_page._on_calibrate_clicked(None)
+        return GLib.SOURCE_REMOVE
 
     def do_shutdown(self):
         # Ambient holds a screen-capture session and a sampling thread open,
@@ -959,6 +1097,16 @@ class RogControlApp(Adw.Application):
                 win.set_visible(False)
             else:
                 win.present()
+        elif "--show" in args:
+            # One-directional, unlike --toggle: a "show" shortcut should
+            # always bring the window up, never hide an already-visible one.
+            win.present()
+        elif "--hide" in args:
+            # The other direction of --show. Hides rather than closes: the
+            # window stays alive, invisible, exactly as --toggle's hide
+            # branch does, so a following --show is instant rather than a
+            # fresh launch.
+            win.set_visible(False)
         elif "--minimized" in args:
             # Built but never shown. The window still belongs to the
             # application, which is what keeps the process alive with nothing

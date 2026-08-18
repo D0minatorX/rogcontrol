@@ -39,7 +39,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, GLib, GObject, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, GLib, GObject, Gtk, Pango  # noqa: E402
 
 # How long the control has to sit still before ``changed`` is emitted. Long
 # enough to swallow a drag from one end of the scale to the other, short
@@ -48,6 +48,43 @@ SETTLE_MS = 400
 
 # U+2212 MINUS SIGN, not a hyphen. See format_value.
 MINUS = "−"
+
+# Trimming the row's height.
+#
+# libadwaita builds these rows for a title and a subtitle, and this one puts
+# a full-width scale under both -- so the stock padding, sized for a row that
+# is one line of text, is applied around three stacked things. Seven of them
+# on the CPU page is a page that has to be scrolled to see its own Tuning
+# group.
+#
+# Applied to a class of this widget's own rather than to ``row`` globally:
+# the same padding on the ordinary rows around it is correct, and only this
+# row's stacked layout makes it too much.
+_ROW_CSS = b"""
+.rc-slider-row { padding-top: 8px; padding-bottom: 8px; min-height: 0; }
+.rc-slider-row > box.header { margin-top: 0; margin-bottom: 0; }
+.rc-slider-row > box.header > box.title { margin-bottom: 0; }
+.rc-slider-row .subtitle { font-size: 0.82em; }
+.rc-slider-row scale { min-height: 0; margin: 0; padding-top: 0; padding-bottom: 0; }
+.rc-slider-row scale trough { min-height: 4px; margin-top: 2px; margin-bottom: 2px; }
+.rc-slider-row scale slider { min-width: 16px; min-height: 16px; margin: -6px; }
+"""
+_css_loaded = False
+
+
+def _load_row_css():
+    """Once per process, at first use -- there is no display at import."""
+    global _css_loaded
+    if _css_loaded:
+        return
+    display = Gdk.Display.get_default()
+    if display is None:
+        return
+    provider = Gtk.CssProvider()
+    provider.load_from_data(_ROW_CSS)
+    Gtk.StyleContext.add_provider_for_display(
+        display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    _css_loaded = True
 
 
 class SliderRow(Adw.PreferencesRow):
@@ -69,6 +106,8 @@ class SliderRow(Adw.PreferencesRow):
                  step=1.0, digits=0, unit="", settle_ms=SETTLE_MS,
                  page_step=None, tooltip=""):
         super().__init__()
+        _load_row_css()
+        self.add_css_class("rc-slider-row")
         # No markup anywhere: these strings are hardware descriptions that
         # already contain "&" and "<" as often as not, and a stray entity is
         # a warning at best and a missing subtitle at worst.

@@ -12,7 +12,7 @@ its own, so a profile switch cannot have an opinion about it.
 --profile-only is the split, and this pins it from both ends: what the flag
 removes (the keyboard, and nothing else), and what it must NOT remove -- the
 profile itself, the charge limit, and the two hardware invariants that live
-in this same function, the 8-second gap between fan channels and the
+in this same function, the CHANNEL_GAP_S gap between fan channels and the
 boost-then-EPP-then-clock order.
 
 The script is loaded from its path: hyphens make it a script name rather
@@ -123,6 +123,23 @@ class ApplyScope(unittest.TestCase):
                          "fan"):
             self.assertIn(expected, actions)
 
+    def test_a_profile_switch_skips_the_gpu_while_integrated(self):
+        """Integrated powers the card off -- nvidia-smi cannot reach it, so
+        this used to log an ERROR every apply instead of just skipping."""
+        module = self.apply
+        with mock.patch.object(
+                module, "run_helper",
+                side_effect=lambda *a: self.calls.append(
+                    [str(x) for x in a])), \
+             mock.patch.object(module.hardware, "set_power_mode_for_profile",
+                               return_value=(True, "")), \
+             mock.patch.object(module.hardware, "dgpu_available",
+                               return_value=False), \
+             mock.patch.object(module.subprocess, "run"), \
+             mock.patch.object(module.time, "sleep"):
+            module.apply_once(make_config(), profile_only=True)
+        self.assertNotIn("gpu", self.actions())
+
     def test_a_profile_switch_still_sets_the_charge_limit(self):
         """Global like the keyboard, and deliberately kept: nothing outside
         this app ever writes the charge threshold, so re-asserting it fights
@@ -148,15 +165,16 @@ class ApplyScope(unittest.TestCase):
     # -- the invariants, which live in the same function ---------------------
 
     def test_the_fan_channel_gap_survives_both_modes(self):
-        """8 seconds between channels. The asus-wmi EC silently drops curve
-        writes fired closer together."""
+        """CHANNEL_GAP_S between channels. The asus-wmi EC can silently drop
+        curve writes fired too close together."""
         for profile_only in (False, True):
             with self.subTest(profile_only=profile_only):
                 self.calls, self.slept = [], []
                 self.run_apply(profile_only=profile_only)
                 fans = [c for c in self.calls if c[0] == "fan"]
                 self.assertEqual(len(fans), 3)
-                self.assertEqual(self.slept, [8, 8])
+                gap = self.apply.CHANNEL_GAP_S
+                self.assertEqual(self.slept, [gap, gap])
 
     def test_the_cpu_order_survives_both_modes(self):
         """boost, then EPP, then the clock cap: writing cpufreq's boost
@@ -193,8 +211,14 @@ class ApplyScope(unittest.TestCase):
         return seen
 
     def test_the_flag_reaches_apply_once(self):
-        self.assertEqual(self.run_main(["--profile-only"]),
-                         [True] * self.apply.RETRIES)
+        """One pass, not RETRIES.
+
+        The retries exist for login, where nvidia and asus-wmi may not be up
+        yet. A profile switch is the other caller and nothing is going to
+        become ready for it, so running the whole apply three times ten
+        seconds apart bought nothing and cost everything: measured at 69
+        seconds for a switch with 16 seconds of work in it."""
+        self.assertEqual(self.run_main(["--profile-only"]), [True])
 
     def test_no_flag_is_a_full_apply(self):
         """The boot service passes no arguments and must keep everything."""
@@ -203,6 +227,11 @@ class ApplyScope(unittest.TestCase):
     def test_an_unrelated_argument_does_not_turn_the_flag_on(self):
         self.assertEqual(self.run_main(["--quiet"]),
                          [False] * self.apply.RETRIES)
+
+    def test_only_the_profile_switch_skips_the_retries(self):
+        """Login keeps them; that is the whole reason they exist."""
+        self.assertEqual(len(self.run_main([])), self.apply.RETRIES)
+        self.assertEqual(len(self.run_main(["--profile-only"])), 1)
 
 
 class TrayPassesTheFlag(unittest.TestCase):

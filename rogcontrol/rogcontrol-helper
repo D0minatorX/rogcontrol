@@ -255,21 +255,15 @@ case "$1" in
         [ -n "$PREF" ] || { echo "cpuepp needs a preference name" >&2; exit 1; }
         [ "$PREF" != "custom" ] || {
             echo "cpuepp does not support 'custom'" >&2; exit 1; }
-        AVAIL_FILE=""
-        for p in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_available_preferences; do
-            [ -e "$p" ] || continue
-            AVAIL_FILE="$p"
-            break
-        done
-        [ -n "$AVAIL_FILE" ] || {
-            echo "no EPP control on this machine" >&2; exit 1; }
-        MATCH=0
-        for a in $(cat "$AVAIL_FILE"); do
-            [ "$a" = "$PREF" ] && MATCH=1
-        done
-        [ "$MATCH" = 1 ] || {
-            echo "invalid EPP preference '$PREF'; machine offers: $(cat "$AVAIL_FILE")" >&2
-            exit 1; }
+        # BEFORE the name is validated, not after. While the governor is
+        # "performance" the kernel shortens
+        # energy_performance_available_preferences to that one word, so
+        # validating the profile's stored name against that list rejected
+        # every legitimate preference -- "invalid EPP preference
+        # 'balance_power'; machine offers: performance" on every single
+        # apply, logged by the enforcer once a cycle. The name was never
+        # invalid; the list was just temporarily one entry long.
+        #
         # The kernel rejects an EPP write outright while the governor is
         # "performance", and that is not an error worth reporting: the
         # governor pins every core at maximum performance, so the preference
@@ -291,6 +285,21 @@ case "$1" in
             fi
             break
         done
+        AVAIL_FILE=""
+        for p in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_available_preferences; do
+            [ -e "$p" ] || continue
+            AVAIL_FILE="$p"
+            break
+        done
+        [ -n "$AVAIL_FILE" ] || {
+            echo "no EPP control on this machine" >&2; exit 1; }
+        MATCH=0
+        for a in $(cat "$AVAIL_FILE"); do
+            [ "$a" = "$PREF" ] && MATCH=1
+        done
+        [ "$MATCH" = 1 ] || {
+            echo "invalid EPP preference '$PREF'; machine offers: $(cat "$AVAIL_FILE")" >&2
+            exit 1; }
         WROTE=0
         for p in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference; do
             [ -e "$p" ] || continue

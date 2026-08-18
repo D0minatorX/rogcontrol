@@ -35,6 +35,13 @@ DEFAULT_CONFIG = {
     "battery_profile": "Quiet",
     "window_size": [600, 700],
     "fan_display_unit": "percent",
+    # Whether the app has already put the fan-calibration prompt in front of
+    # the user once. Set the first time it is shown, whether they run it or
+    # dismiss it -- this gates a one-time nudge, not a recurring nag, so a
+    # config with it already True (an update, or a config carried over from
+    # a backup) must never be re-prompted just because fan_rpm_cal happens
+    # to still be missing.
+    "fan_calibration_prompted": False,
 }
 
 
@@ -252,6 +259,75 @@ def import_profiles(cfg, data):
     return imported
 
 
+# Stamped only into a full backup, so Import can tell "everything, replace
+# it" apart from an old-style file that shares one or more profiles to be
+# merged in safely. Its absence, not its value, is what Import checks against
+# -- there is deliberately no migration chain here either, for the same
+# reason CONFIG_VERSION has none: nothing has needed one yet.
+BACKUP_MARKER = "rogcontrol_backup_version"
+BACKUP_FILE_VERSION = 1
+
+
+def export_backup(cfg):
+    """What Export writes: the whole config, not one profile.
+
+    Every profile, which one is current, the charge limit, the keyboard
+    settings, the AC/battery auto-switch targets, fan RPM calibration --
+    everything that used to be left out. Deep-copied for the same reason
+    export_payload is: the file being serialised must not change under the
+    writer while a page edits the live config."""
+    backup = json.loads(json.dumps(cfg))
+    backup[BACKUP_MARKER] = BACKUP_FILE_VERSION
+    return backup
+
+
+def is_backup_file(data):
+    """True for a file export_backup wrote, False for anything else --
+    including an old single-profile export, which has no marker and is
+    still a valid (safer, merge-only) import."""
+    return isinstance(data, dict) and BACKUP_MARKER in data
+
+
+def parse_backup(data):
+    """Validate a full backup file. Raises ValueError with a user message.
+
+    Lighter than parse_import on purpose: a backup came from this app's own
+    Export, not a stranger's hand-edited file, so it is checked for being
+    *readable* rather than picked apart section by section."""
+    if not isinstance(data, dict):
+        raise ValueError("this is not a backup file (the top level is not "
+                         "a JSON object)")
+    profiles = data.get("profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        raise ValueError("this backup has no profiles")
+    for name, profile in profiles.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("this backup has a profile with no name")
+        if not isinstance(profile, dict):
+            raise ValueError(f"“{name}” is not a profile")
+    return data
+
+
+def restore_backup(cfg, data):
+    """Replace ``cfg`` in place with a full backup's contents.
+
+    Unlike import_profiles, this REPLACES rather than merges: restoring a
+    backup means going back to exactly that saved state, not layering it on
+    top of whatever profiles happen to be here now. There is no undo, which
+    is why the window confirms with the user before calling this -- by the
+    time this function runs, that choice has already been made.
+
+    migrate_config runs over the result so a backup taken on an older
+    version still comes back with every key this version expects."""
+    backup = parse_backup(data)
+    cfg.clear()
+    for key, value in backup.items():
+        if key == BACKUP_MARKER:
+            continue
+        cfg[key] = json.loads(json.dumps(value))
+    return migrate_config(cfg)
+
+
 # How often an open window re-checks the config file. The window is not the
 # only writer -- the enforcer's AC auto-switch and its power-mode adoption,
 # the tray and the hotkey cycler all write it -- and a window that loaded the
@@ -300,9 +376,9 @@ def reload_decision(current, fresh):
 # --- where the result of a deferred apply may be written ---------------------
 #
 # Every Apply in this app is deferred, and the fan page's is deferred by
-# sixteen seconds: three curve writes eight seconds apart, because the EC
-# drops curves fired closer together than that. Pressing Apply and learning
-# the answer are therefore sixteen seconds apart, and the active profile can
+# about ten seconds: three curve writes CHANNEL_GAP_S apart, because the EC
+# can drop curves fired too close together. Pressing Apply and learning
+# the answer are therefore about ten seconds apart, and the active profile can
 # move in between -- the user can pick another one, so can the tray and the
 # hotkey cycler, and the enforcer does it unprompted when the charger comes
 # out or the OS power mode changes.
@@ -443,7 +519,7 @@ def migrate_config(cfg, gpu_min_w=1, gpu_max_w=140):
     return cfg
 
 
-def load_config(path=None):
+def load_config(path=None, gpu_min_w=1, gpu_max_w=140):
     """Load the user's config, migrating it forward in place. A config that
     cannot be parsed is preserved as a .corrupt-<timestamp> copy rather than
     being silently replaced -- the previous behaviour overwrote it on the
@@ -451,14 +527,22 @@ def load_config(path=None):
 
     ``path`` defaults to CONFIG_PATH, and is read when called rather than
     bound into the signature so that tests (and anything else with its own
-    config) can point this somewhere else."""
+    config) can point this somewhere else.
+
+    ``gpu_min_w``/``gpu_max_w`` are passed straight through to
+    migrate_config, and matter only the one time it creates the stock
+    profiles from scratch: a caller that has already asked the real card
+    (hardware.detect_gpu_limits) gets a fresh install tailored to it
+    instead of the numbers this was written against. Callers with no such
+    answer -- the hotkey scripts, the tests -- are unaffected by leaving
+    these at their defaults, which are exactly migrate_config's own."""
     path = CONFIG_PATH if path is None else path
     if os.path.exists(path):
         try:
             with open(path) as f:
                 cfg = json.load(f)
             if isinstance(cfg, dict):
-                return migrate_config(cfg)
+                return migrate_config(cfg, gpu_min_w=gpu_min_w, gpu_max_w=gpu_max_w)
             raise ValueError("config is not a JSON object")
         except (OSError, json.JSONDecodeError, ValueError) as e:
             stamp = int(time.time())
@@ -475,7 +559,7 @@ def load_config(path=None):
                       f"kept a copy at {backup}", file=sys.stderr)
             except OSError:
                 pass
-    return migrate_config({})
+    return migrate_config({}, gpu_min_w=gpu_min_w, gpu_max_w=gpu_max_w)
 
 
 def save_config(cfg, path=None):

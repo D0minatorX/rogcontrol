@@ -1,27 +1,33 @@
 """Fans: three curve editors, one Apply button, and an honest status line.
 
 This page is the reason the app exists, and it is built around one hardware
-fact that shapes everything on it: **the embedded controller silently drops
-fan-curve writes fired less than eight seconds apart on different channels.**
-Measured on this machine -- one channel alone always took; a 0.5 s gap left
-two of three fans stuck on their old curve indefinitely; an 8 s gap worked
-every time. So writing all three curves takes about sixteen seconds.
+fact that shapes everything on it: **the embedded controller can silently
+drop fan-curve writes fired too close together on different channels.**
+The first measurement on this machine found a 0.5 s gap left two of three
+fans stuck on their old curve, so 8 s was adopted as the safe value. A later,
+more careful re-test -- 0.5 s through 8 s, several rounds each, reading the
+curve back from the driver after every round -- found 0.5 s through 8 s all
+held; the original 0.5 s failure was not reproduced. 5 s was kept as the
+working value, for margin over the retested floor rather than because
+anything shorter was shown to fail. So writing all three curves takes about
+ten seconds.
 
 Everything else here follows from that:
 
 * **Nothing is applied on drag.** A hardware write per dragged point would
-  be sixteen seconds long here, with the next drag interrupting the last one
+  be ten seconds long here, with the next drag interrupting the last one
   mid-gap -- which is exactly how the old version managed to look like it
   was ignoring the curve while it was in fact re-pushing it constantly.
   There is an Apply button instead, and the CPU and GPU pages now follow
   this page rather than the other way round.
 * **The apply runs on a worker thread with a progress bar**, because a
-  sixteen second freeze is indistinguishable from a hang.
-* **The page says when the curves on screen are not the ones the fans are
-  running.** It knows because it reads the curve back out of the driver
-  every two seconds and compares, rather than tracking a dirty flag: a flag
-  only knows what this window did, and the EC drops curves behind its back
-  on every power-mode change.
+  ten second freeze is indistinguishable from a hang.
+* **The page says when the embedded controller has thrown the curve away.**
+  It knows because it reads the curve back out of the driver every two
+  seconds, rather than tracking a dirty flag: a flag only knows what this
+  window did, and the EC drops curves behind its back on every power-mode
+  change. That is the one thing left on the banner -- an edit that has not
+  been applied yet needs no banner, because Apply is in the header bar.
 
 The Y axis of every graph is real rpm, from this machine's own measured
 calibration, and the calibration is per fan -- the mid fan reaches 7814 rpm
@@ -41,49 +47,67 @@ from gi.repository import Adw, GLib, Gtk  # noqa: E402
 from .. import config as config_mod  # noqa: E402
 from .. import fancurve  # noqa: E402
 from .. import hardware  # noqa: E402
+from ..widgets.action_buttons import make_action_buttons  # noqa: E402
 from ..widgets.curve_editor import CurveEditor  # noqa: E402
 
 REFRESH_SECONDS = 2
 DASH = "—"
 
 # Seconds between one channel's curve write and the next. See the module
-# docstring: this is a measured hardware constant, not a comfort margin.
-CHANNEL_GAP_S = 8
+# docstring: retested down to 0.5s with no failures, kept at 5s for margin.
+CHANNEL_GAP_S = 5
 
-# Percentages the calibration drives the fans to, and how long a fan needs
-# to settle at a new one. Both carried over from the old app, which is where
-# the numbers in fancurve.FAN_RPM_CAL came from: three points spread across
-# the usable range is enough for a straight-line fit, and a fan reaches its
-# new steady speed in about twenty seconds.
-CAL_PERCENTS = (20, 45, 70)
-CAL_SETTLE_S = 22
+# Percentages the calibration drives the fans to. The three-point version
+# of this (20/45/70, no 100%) shipped first and undersold itself: a
+# straight line fit to three mid-range points is only as good as the
+# assumption that the fan's real response IS a straight line all the way
+# to the top, which is exactly the thing this app cannot know without
+# measuring it -- and on at least one real machine the fitted ceiling
+# missed the fan's actual measured rpm at a flat 100% curve. FAN_RPM_CAL's
+# own original measurement (see fancurve.py) always included a real 100%
+# sample for this reason; the app-driven calibration just never matched
+# it until now.
+CAL_PERCENTS = (20, 45, 70, 100)
+
+# How settling is judged done, rather than assumed done. A fixed 22s wait
+# -- measured against low/mid percentages, where the jump from idle is
+# small -- was the other half of the same bug: driven straight to a flat
+# 100% on a real machine, one fan was still climbing a full minute in and
+# did not stop until close to 80s, more than 3000 rpm past where the 22s
+# mark had caught it. Polling for "stopped climbing" adapts to however big
+# a jump each step actually is, rather than assuming every step needs the
+# same wait -- most settle well before CAL_SETTLE_MAX_S, which is the
+# giving-up point, not the expected time.
+CAL_SETTLE_POLL_S = 3
+CAL_SETTLE_STABLE_SAMPLES = 3
+# A little above the ~100 rpm granularity the driver reports, so ordinary
+# read jitter cannot restart the stability count.
+CAL_SETTLE_STABLE_BAND = 150
+CAL_SETTLE_MAX_S = 100
 
 APPLY_TOOLTIP = (
-    "Writes all three curves to the fan controller. Takes about 16 seconds: "
-    "the controller drops curve writes sent less than 8 seconds apart, so "
+    "Writes all three curves to the fan controller. Takes about 10 seconds: "
+    "the controller can drop curve writes sent too close together, so "
     "each fan is written on its own and waited out."
 )
 
 CALIBRATE_TOOLTIP = (
     "Measures how these fans actually respond, so the rpm figures on the "
-    "graphs are this machine's rather than the developer's. Takes about two "
-    "and a half minutes and the fans will audibly speed up and slow down."
+    "graphs are this machine's rather than the developer's. Takes a few "
+    "minutes -- longer if a fan needs more time to settle at full speed "
+    "-- and the fans will audibly speed up and slow down."
 )
 
 CALIBRATE_BODY = (
     "This measures how your fans actually respond, so the rpm figures shown "
     "are yours rather than estimates.\n\n"
-    "• Takes about two and a half minutes\n"
-    "• The fans will audibly speed up and slow down\n"
+    "• Takes a few minutes -- each step waits for the fans to actually stop "
+    "changing speed, not a fixed guess\n"
+    "• The fans will audibly speed up and slow down, briefly at full speed\n"
     "• The background enforcer is paused, then restarted\n"
     "• Your saved curves are not modified, and are written back at the end\n\n"
     "Best run while the machine is idle."
 )
-
-# Kept in visible text rather than on hover: it is not an explanation of the
-# button, it is the state of the numbers already on screen -- every rpm
-# figure on this page is somebody else's laptop until this is run once.
-UNCALIBRATED_SUBTITLE = "The rpm figures on these graphs are not yet yours"
 
 UNCALIBRATED_NOTE = (
     "The rpm figures on these graphs are estimates measured on the "
@@ -104,6 +128,7 @@ class FansPage(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.window = window
         self.editors = {}
+        self.fan_groups = {}
         self.rpm_labels = {}
         self._sampling = False
         self._working = False
@@ -133,15 +158,20 @@ class FansPage(Gtk.Box):
         page.set_vexpand(True)
         self.append(page)
 
+        self._build_action_buttons()
         for channel in hardware.FAN_CHANNELS:
-            page.add(self._build_fan_group(channel))
-        page.add(self._build_actions_group())
+            group = self._build_fan_group(channel)
+            self.fan_groups[channel] = group
+            page.add(group)
+        page.add(self._build_calibration_group())
 
         if not self.window.caps.get("fan_curve"):
             self._disable_everything()
         elif not self.window.config.get("fan_rpm_cal"):
-            self.calibrate_row.set_subtitle(UNCALIBRATED_SUBTITLE)
-            self.calibrate_row.set_tooltip_text(
+            # On the button, which is the only place the calibration is
+            # mentioned now. The rpm figures being someone else's is worth
+            # saying, but not worth a permanent row above three graphs.
+            self.calibrate_button.set_tooltip_text(
                 UNCALIBRATED_NOTE + "\n\n" + CALIBRATE_TOOLTIP)
 
     def _build_fan_group(self, channel):
@@ -186,30 +216,36 @@ class FansPage(Gtk.Box):
         group.add(row)
         return group
 
-    def _build_actions_group(self):
-        group = Adw.PreferencesGroup(title="Fan controller")
+    def _build_action_buttons(self):
+        """This page's header-bar buttons: Calibrate, then Apply.
 
-        self.apply_row = Adw.ActionRow(title="Apply fan curves",
-                                       subtitle="Takes about 16 seconds")
-        self.apply_row.set_tooltip_text(APPLY_TOOLTIP)
-        self.apply_button = Gtk.Button(label="Apply")
-        self.apply_button.set_valign(Gtk.Align.CENTER)
-        self.apply_button.add_css_class("suggested-action")
-        self.apply_button.connect("clicked", self._on_apply_clicked)
-        self.apply_row.add_suffix(self.apply_button)
-        self.apply_row.set_activatable_widget(self.apply_button)
-        group.add(self.apply_row)
+        No Revert: the curve editors show the profile itself rather than a
+        staged copy of it, so there is no pending edit to discard. Calibrate
+        takes Revert's place as the non-suggested action -- see
+        widgets/action_buttons.py.
 
-        self.calibrate_row = Adw.ActionRow(
-            title="Calibrate fan RPM",
-            subtitle="Takes about two and a half minutes, audibly")
-        self.calibrate_row.set_tooltip_text(CALIBRATE_TOOLTIP)
-        self.calibrate_button = Gtk.Button(label="Calibrate")
-        self.calibrate_button.set_valign(Gtk.Align.CENTER)
-        self.calibrate_button.connect("clicked", self._on_calibrate_clicked)
-        self.calibrate_row.add_suffix(self.calibrate_button)
-        self.calibrate_row.set_activatable_widget(self.calibrate_button)
-        group.add(self.calibrate_row)
+        The progress bar the calibration drives stays on the page below,
+        because a header bar is no place for something that has to be
+        watched for two and a half minutes."""
+        self.action_box, (self.calibrate_button, self.apply_button) = (
+            make_action_buttons((
+                ("Calibrate", self._on_calibrate_clicked, CALIBRATE_TOOLTIP,
+                 False),
+                ("Apply", self._on_apply_clicked, APPLY_TOOLTIP, True),
+            )))
+
+    def _build_calibration_group(self):
+        """Just the progress bar the long jobs drive.
+
+        There is no "Calibrate fan RPM" row any more. The button is in the
+        header bar and carries the same explanation on hover, so the row was
+        a title and a subtitle restating a control that was no longer next
+        to it. The whole group hides itself when the bar is hidden -- see
+        _start_progress -- rather than leaving a titled group with nothing
+        under it."""
+        self.progress_group = group = Adw.PreferencesGroup(
+            title="Fan controller")
+        group.set_visible(False)
 
         self.progress = Gtk.ProgressBar()
         self.progress.set_show_text(True)
@@ -229,9 +265,13 @@ class FansPage(Gtk.Box):
         return group
 
     def _disable_everything(self):
-        for widget in list(self.editors.values()) + [self.apply_button,
-                                                     self.calibrate_button]:
-            widget.set_sensitive(False)
+        """Hide every control this machine cannot act on -- the whole page,
+        in practice, since asus_custom_fan_curve is what all of it needs.
+        The banner is what is left to say why."""
+        for group in self.fan_groups.values():
+            group.set_visible(False)
+        for widget in (self.apply_button, self.calibrate_button):
+            widget.set_visible(False)
         self.banner.set_title(
             "This kernel or model does not expose asus_custom_fan_curve, so "
             "fan curves cannot be set.")
@@ -329,15 +369,14 @@ class FansPage(Gtk.Box):
             # job's own code owns it until it finishes.
             return
         names = hardware.FAN_LABELS
-        mismatched = self._mismatched_channels()
+        # No "not applied yet" arm: Apply is in the header bar, always
+        # visible, so a banner saying a curve had been dragged but not
+        # written was repeating the button. What is kept is the case the
+        # button cannot express -- the embedded controller throwing the
+        # custom curve away on its own, behind the user's back, which is
+        # this page's reason for reading the hardware back at all.
         dropped = self._dropped_channels()
-        if mismatched:
-            which = ", ".join(names[ch] for ch in mismatched)
-            self._show_banner(
-                f"Not applied yet — {which} " +
-                ("is" if len(mismatched) == 1 else "are") +
-                " running a different curve.", button="Apply")
-        elif dropped:
+        if dropped:
             which = ", ".join(names[ch] for ch in dropped)
             self._show_banner(
                 f"The fan controller has dropped the custom curve on "
@@ -365,6 +404,7 @@ class FansPage(Gtk.Box):
         self.progress.set_fraction(0.0)
         self.progress.set_text(text)
         self.progress_row.set_visible(True)
+        self.progress_group.set_visible(True)
         if self._progress_source is None:
             self._progress_source = GLib.timeout_add(200, self._progress_tick)
 
@@ -389,6 +429,7 @@ class FansPage(Gtk.Box):
             GLib.source_remove(self._progress_source)
             self._progress_source = None
         self.progress_row.set_visible(False)
+        self.progress_group.set_visible(False)
 
     def _set_busy(self, busy):
         self._working = busy
@@ -520,10 +561,13 @@ class FansPage(Gtk.Box):
         points = {ch: editor.get_points()
                   for ch, editor in self.editors.items()}
         channels = list(hardware.FAN_CHANNELS)
-        # Three measurement steps, each two inter-channel gaps plus a settle,
-        # and then the user's own curves written back at the end.
-        per_step = CHANNEL_GAP_S * (len(channels) - 1) + CAL_SETTLE_S
-        total = len(CAL_PERCENTS) * per_step + CHANNEL_GAP_S * (len(channels) - 1)
+        # Progress-bar pacing only -- the real wait is adaptive (_settle)
+        # and ends whenever each step actually stabilises, not on this
+        # schedule. _start_progress caps the fraction short of 100% until
+        # the work really finishes, so a step that runs long just leaves
+        # the bar parked rather than lying about being done.
+        per_step_estimate = CHANNEL_GAP_S * (len(channels) - 1) + 60
+        total = len(CAL_PERCENTS) * per_step_estimate + CHANNEL_GAP_S * (len(channels) - 1)
 
         self._set_busy(True)
         self._show_banner("Calibrating the fans — this takes a couple of "
@@ -534,30 +578,23 @@ class FansPage(Gtk.Box):
             self._on_calibrated)
 
     def _calibration_worker(self, points, channels):
-        """Drive the fans to three known percentages and fit floor + slope.
+        """Drive the fans to four known percentages and fit floor + slope.
 
         Worker thread. All three fans are driven to the *same* flat
         percentage at once so that one settle wait covers every channel
-        rather than one wait per channel -- three separate sweeps would take
-        six minutes instead of two.
+        rather than one wait per channel.
 
         The enforcer is stopped first because it re-asserts the profile's
         curve on its own schedule, and a curve pushed back mid-measurement
         makes the fan settle somewhere nobody asked for. The user's curves
         are written back at the end whether the fit worked or not, so a
-        failed calibration cannot leave the fans pinned at a flat 70%."""
+        failed calibration cannot leave the fans pinned at a flat curve."""
         samples = {ch: [] for ch in channels}
         enforcer_paused = hardware.set_enforcer_running(False)
         try:
             for step, pct in enumerate(CAL_PERCENTS, start=1):
                 self._write_flat(channels, pct, step)
-                for remaining in range(CAL_SETTLE_S, 0, -1):
-                    GLib.idle_add(
-                        self._set_progress_text,
-                        f"Step {step} of {len(CAL_PERCENTS)} at {pct}% — "
-                        f"letting the fans settle, {remaining}s")
-                    time.sleep(1)
-                rpms = hardware.read_fan_rpms()
+                rpms = self._settle(channels, pct, step)
                 for channel in channels:
                     samples[channel].append((pct, rpms.get(channel)))
 
@@ -581,8 +618,44 @@ class FansPage(Gtk.Box):
             if enforcer_paused:
                 hardware.set_enforcer_running(True)
 
+    def _settle(self, channels, pct, step):
+        """Poll every channel's rpm until none of them are still moving, or
+        CAL_SETTLE_MAX_S has passed. Returns the last reading for each.
+
+        A channel counts as settled once its own last
+        CAL_SETTLE_STABLE_SAMPLES readings, CAL_SETTLE_POLL_S apart, sit
+        within CAL_SETTLE_STABLE_BAND of each other -- but this keeps
+        sampling every channel until ALL of them have, since one fan
+        settling first (usually the smaller jump of the two lower steps)
+        must not cut the wait short for a slower one still climbing."""
+        history = {ch: [] for ch in channels}
+        start = time.monotonic()
+        while True:
+            rpms = hardware.read_fan_rpms()
+            for ch in channels:
+                history[ch].append(rpms.get(ch))
+            elapsed = time.monotonic() - start
+            GLib.idle_add(
+                self._set_progress_text,
+                f"Step {step} of {len(CAL_PERCENTS)} at {pct}% — letting "
+                f"the fans settle, {int(elapsed)}s")
+            if all(self._is_settled(history[ch]) for ch in channels):
+                break
+            if elapsed >= CAL_SETTLE_MAX_S:
+                break
+            time.sleep(CAL_SETTLE_POLL_S)
+        return {ch: history[ch][-1] for ch in channels}
+
+    @staticmethod
+    def _is_settled(readings):
+        tail = [r for r in readings[-CAL_SETTLE_STABLE_SAMPLES:]
+               if r is not None]
+        if len(tail) < CAL_SETTLE_STABLE_SAMPLES:
+            return False
+        return max(tail) - min(tail) <= CAL_SETTLE_STABLE_BAND
+
     def _write_flat(self, channels, pct, step):
-        """Hold every fan at one flat percentage, respecting the 8s gap."""
+        """Hold every fan at one flat percentage, respecting CHANNEL_GAP_S."""
         flat = []
         for temp in (30, 40, 50, 55, 60, 65, 70, 90):
             flat += [temp, fancurve.pct_to_pwm255(pct)]

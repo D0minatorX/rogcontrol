@@ -1,9 +1,10 @@
 """CPU page: power limits and tuning, written when Apply is pressed.
 
 Nothing on this page reaches the hardware until Apply. Moving a slider
-changes a pending value and raises the banner at the top of the page; the
-banner names what has not been written yet and carries its own Apply button,
-exactly as the Fans page does, so all three tuning pages behave alike.
+changes a pending value and nothing else: Apply and Revert live in the
+header bar, visible at every scroll position, so all three tuning pages
+behave alike and none of them push the page down with a banner to say a
+change is waiting.
 
 That is a deliberate reversal. This page used to apply a control 400 ms after
 it stopped moving, which meant dragging STAPM from 25 to 75 W could push a
@@ -36,12 +37,13 @@ from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
+from ..widgets.action_buttons import apply_revert_buttons  # noqa: E402
 from ..widgets.slider_row import SliderRow, align_value_widths  # noqa: E402
+from ..widgets.stat_row import StatCell, build_stat_row  # noqa: E402
 
-# The sliders report as soon as they move rather than after a settle: nothing
-# is applied here any more, so the only thing a change drives is the banner,
-# and a banner that appears half a second after the handle does looks like a
-# lag rather than a consequence.
+# The sliders report as soon as they move rather than after a settle:
+# nothing is applied here any more, so a change only updates the pending
+# value the Apply button will write.
 SETTLE_MS = 0
 
 # How often the live readings are refreshed, matching the Overview and GPU
@@ -126,6 +128,24 @@ STEP_ROWS = {
     "clock": ("clock",),
 }
 
+# Which config keys each step writes into the profile once the hardware has
+# taken it. A table rather than an if/elif chain in _save: the chain grew a
+# branch per step, and a step added to the apply plan without one reached the
+# hardware on every Apply and was never saved -- the profile came back
+# without it every time the page reloaded. Keyed by every step in
+# hardware.CPU_APPLY_STEPS, checked by a test.
+STEP_SAVES = {
+    "limits": ("stapm", "fast", "slow", "temp", "coall"),
+    "boost": ("boost",),
+    # The profile already owns the energy preference; the apply only
+    # re-asserts it, so there is nothing to write back.
+    "epp": (),
+    # Both stored even when 0: 0 means "this profile wants no ceiling/floor"
+    # and still has to be applied, or switching away from a limited profile
+    # would leave its limit behind.
+    "clock": ("max_freq",),
+}
+
 STEP_LABELS = {
     "limits": "Power limits",
     "boost": "Turbo boost",
@@ -183,23 +203,29 @@ class CpuPage(Gtk.Box):
         page.set_vexpand(True)
         self.append(page)
 
-        status = Adw.PreferencesGroup(title="Processor")
+        # Named, as the GPU page names the card. "Processor" alone is the one
+        # thing on this page the user already knows.
+        status = Adw.PreferencesGroup(
+            title="Processor",
+            description=hardware.read_cpu_name() or "Unknown processor")
         page.add(status)
-        # Temperature first, then the fan answering it: this is the pair the
-        # fan curve is tuned against, and the GPU page shows the same two in
-        # the same order.
-        self.temp_row, self.temp_value = self._live_row(status, "Temperature")
-        self.temp_row.set_subtitle(
+        # Temperature first, then the fan answering it, side by side on one
+        # row: the fan speed only means anything next to the temperature
+        # that caused it. The GPU page shows the same two the same way.
+        self.temp_cell = StatCell(
+            "Temperature",
             "k10temp Tctl — the reading the embedded controller drives the "
             "fans from.")
-        self.fan_row, self.fan_value = self._live_row(
-            status, hardware.FAN_LABELS[FAN_CHANNEL])
+        self.fan_cell = StatCell(hardware.FAN_LABELS[FAN_CHANNEL])
+        build_stat_row(status, (self.temp_cell, self.fan_cell))
+        self.temp_value = self.temp_cell.value
+        self.fan_value = self.fan_cell.value
         if not self.caps.get("cpu_temp"):
-            self.temp_row.set_subtitle("No CPU temperature sensor found on "
-                                       "this machine")
+            self.temp_cell.set_note("No CPU temperature sensor found on this "
+                                    "machine.")
         if not self.caps.get("fan_rpm"):
-            self.fan_row.set_subtitle("No asus hwmon fan reading on this "
-                                      "machine")
+            self.fan_cell.set_note("No asus hwmon fan reading on this "
+                                   "machine.")
 
         limits = Adw.PreferencesGroup(
             title="Power limits",
@@ -256,31 +282,18 @@ class CpuPage(Gtk.Box):
         tuning.add(clock)
         self.rows["clock"] = clock
 
-        page.add(self._build_actions_group())
+
+        self._build_actions_group()
         self._apply_capability_gating(limits, tuning)
 
     def _build_actions_group(self):
-        group = Adw.PreferencesGroup(title="Apply")
-        self.apply_row = Adw.ActionRow(title="Apply CPU settings",
-                                       subtitle="Takes a second or two")
-        self.apply_row.set_tooltip_text(APPLY_TOOLTIP)
-        self.apply_button = Gtk.Button(label="Apply")
-        self.apply_button.set_valign(Gtk.Align.CENTER)
-        self.apply_button.add_css_class("suggested-action")
-        self.apply_button.connect("clicked", self._on_apply_clicked)
-        self.apply_row.add_suffix(self.apply_button)
-        self.apply_row.set_activatable_widget(self.apply_button)
-        group.add(self.apply_row)
-
-        self.revert_button = Gtk.Button(label="Revert")
-        self.revert_button.set_valign(Gtk.Align.CENTER)
-        self.revert_button.connect("clicked", self._on_revert_clicked)
-        revert_row = Adw.ActionRow(title="Discard unapplied changes")
-        revert_row.set_tooltip_text(REVERT_TOOLTIP)
-        revert_row.add_suffix(self.revert_button)
-        revert_row.set_activatable_widget(self.revert_button)
-        group.add(revert_row)
-        return group
+        """The page's header-bar buttons. Not added to the page itself --
+        the window packs this beside the title. See
+        widgets/action_buttons.py."""
+        self.action_box, self.apply_button, self.revert_button = (
+            apply_revert_buttons(
+                self._on_apply_clicked, self._on_revert_clicked,
+                apply_tooltip=APPLY_TOOLTIP, revert_tooltip=REVERT_TOOLTIP))
 
     def _live_row(self, group, title):
         """An ActionRow whose suffix label carries the live reading."""
@@ -294,27 +307,29 @@ class CpuPage(Gtk.Box):
         group.add(row)
         return row, label
 
-    def _apply_capability_gating(self, limits_group, _tuning_group):
-        """Grey out what this machine cannot do, and say why.
+    def _apply_capability_gating(self, limits_group, tuning_group):
+        """Hide what this machine cannot do.
 
-        A control left live that silently does nothing is worse than one
-        that is visibly unavailable, which is the whole reason capabilities
-        are probed at all."""
+        A control for a setting this machine cannot act on is not a choice
+        the user can make here, so it does not belong on the page at all --
+        unlike a disabled control, which still claims a row's worth of
+        space and a place in the layout for something that will never work
+        on this hardware."""
         if not self.caps.get("ryzenadj"):
-            for key in ("stapm", "fast", "slow", "temp", "coall"):
-                self.rows[key].set_sensitive(False)
-            limits_group.set_description(
-                "ryzenadj is not installed — power limits and Curve "
-                "Optimizer are unavailable. Boost and the clock ceiling go "
-                "through cpufreq and still work.")
+            # Every row in "Power limits" is one field of the single
+            # ryzenadj write hardware.cpu_apply_plan makes -- with it
+            # unavailable, nothing is left in the group at all.
+            limits_group.set_visible(False)
+            self.rows["coall"].set_visible(False)
         if not self.caps.get("cpu_boost"):
-            self.rows["boost"].set_sensitive(False)
-            self.rows["boost"].set_subtitle(
-                "No cpufreq boost switch on this machine.")
+            self.rows["boost"].set_visible(False)
         if not self.caps.get("cpu_clock"):
-            self.rows["clock"].set_sensitive(False)
-            self.rows["clock"].set_subtitle(
-                "No cpufreq clock limit on this machine.")
+            self.rows["clock"].set_visible(False)
+        # "Tuning" holds nothing else -- if all three of its rows just went,
+        # an empty titled group would be left standing for no reason.
+        if not any(self.rows[key].get_visible()
+                  for key in ("coall", "boost", "clock")):
+            tuning_group.set_visible(False)
 
     # -- loading -------------------------------------------------------------
 
@@ -357,6 +372,7 @@ class CpuPage(Gtk.Box):
             row = self.rows["clock"]
             row.set_value(self._clamp(row, ghz))
             self._applied["clock"] = row.get_value()
+
         finally:
             self._loading = was_loading
         self._update_banner()
@@ -460,21 +476,14 @@ class CpuPage(Gtk.Box):
             # The banner is the progress line while an apply is running; the
             # apply owns it until it finishes.
             return
-        dirty = self._dirty_keys()
-        if not dirty:
-            self.banner.set_revealed(False)
-            return
-        titles = {"stapm": "power limits", "fast": "power limits",
-                  "slow": "power limits", "temp": "power limits",
-                  "coall": "Curve Optimizer", "boost": "turbo boost",
-                  "clock": "the clock ceiling"}
-        named = []
-        for key in dirty:
-            name = titles[key]
-            if name not in named:
-                named.append(name)
-        self._show_banner("Not applied yet — " + ", ".join(named)
-                          + " changed.", button="Apply")
+        # No "not applied yet" banner. Apply and Revert are in the header
+        # bar now, visible on every page and at every scroll position, so a
+        # full-width bar appearing the instant a slider moves said nothing
+        # the buttons were not already saying -- and it said it by pushing
+        # the whole page down a line. The banner is kept for the things the
+        # buttons cannot say: an apply that failed, and a machine that
+        # cannot do this at all.
+        self.banner.set_revealed(False)
 
     def _show_banner(self, text, button=None):
         self.banner.set_title(text)
@@ -616,18 +625,8 @@ class CpuPage(Gtk.Box):
         and the next window to open would show it as fact."""
         data = {}
         for step in steps:
-            if step == "limits":
-                for key in ("stapm", "fast", "slow", "temp", "coall"):
-                    data[key] = values[key]
-            elif step == "boost":
-                data["boost"] = values["boost"]
-            elif step == "clock":
-                # Stored even when 0: that means "this profile wants no
-                # ceiling" and still has to be applied, or switching away
-                # from a limited profile would leave its cap behind.
-                data["max_freq"] = values["max_freq"]
-            # "epp" keeps nothing here: the profile already owns it, and the
-            # apply only re-asserts it.
+            for key in STEP_SAVES.get(step, ()):
+                data[key] = values[key]
         refused = config_mod.save_deferred(
             self.window.config, target, "cpu", data, "CPU settings")
         if refused is not None:

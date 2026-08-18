@@ -21,13 +21,29 @@ class StockProfiles(unittest.TestCase):
         for name, epp in want.items():
             self.assertEqual(profiles.DEFAULT_PROFILES[name]["cpu"]["epp"], epp)
 
-    def test_the_two_balanced_profiles_differ_only_in_epp(self):
+    def test_the_two_balanced_profiles_differ_only_in_epp_and_cpu_gpu_limits(self):
+        # CPU and GPU limits are identical bar EPP -- that part of the "two
+        # Balanced profiles" idea still holds. The fan curve is deliberately
+        # NOT shared any more: Balanced Performance runs a bit hotter/louder
+        # than Balanced Power on purpose, so the two are audibly different
+        # even though the chip is capped the same either way.
         a = dict(profiles.DEFAULT_PROFILES["Balanced Power"]["cpu"])
         b = dict(profiles.DEFAULT_PROFILES["Balanced Performance"]["cpu"])
         a.pop("epp"); b.pop("epp")
         self.assertEqual(a, b)
-        self.assertEqual(profiles.DEFAULT_PROFILES["Balanced Power"]["fans"],
-                         profiles.DEFAULT_PROFILES["Balanced Performance"]["fans"])
+        self.assertEqual(profiles.DEFAULT_PROFILES["Balanced Power"]["gpu"],
+                         profiles.DEFAULT_PROFILES["Balanced Performance"]["gpu"])
+        power_fans = profiles.DEFAULT_PROFILES["Balanced Power"]["fans"]
+        perf_fans = profiles.DEFAULT_PROFILES["Balanced Performance"]["fans"]
+        self.assertNotEqual(power_fans, perf_fans)
+        for channel in ("1", "2", "3"):
+            for (temp_a, pct_a), (temp_b, pct_b) in zip(power_fans[channel],
+                                                         perf_fans[channel]):
+                self.assertEqual(temp_a, temp_b, f"channel {channel} temps")
+                self.assertGreaterEqual(pct_b, pct_a,
+                                        f"Balanced Performance channel "
+                                        f"{channel} should run at or above "
+                                        f"Balanced Power at {temp_a} C")
 
 
 class FieldTunedValues(unittest.TestCase):
@@ -82,30 +98,30 @@ class FieldTunedValues(unittest.TestCase):
         real ramp above 90 C. See the comment above DEFAULT_PROFILES."""
         want = {
             "Quiet": {
-                "main": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8],
-                         [90, 10], [93, 50], [96, 90]],
-                "mid": [[50, 6], [60, 6], [70, 6], [80, 6], [86, 6],
-                        [90, 8], [93, 50], [96, 90]]},
+                "main": [[50, 6], [60, 6], [70, 6], [80, 6], [86, 6],
+                         [90, 8], [93, 40], [96, 80]],
+                "mid": [[50, 5], [60, 5], [70, 5], [80, 5], [86, 5],
+                        [90, 6], [93, 40], [96, 80]]},
             "Balanced Power": {
-                "main": [[50, 10], [60, 10], [70, 10], [80, 10], [86, 10],
-                         [90, 12], [93, 60], [96, 100]],
-                "mid": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8],
-                        [90, 10], [93, 60], [96, 100]]},
+                "main": [[50, 9], [60, 9], [70, 9], [80, 9], [86, 9],
+                         [90, 12], [93, 55], [96, 95]],
+                "mid": [[50, 7], [60, 7], [70, 7], [80, 7], [86, 7],
+                        [90, 10], [93, 55], [96, 95]]},
             "Balanced Performance": {
-                "main": [[50, 10], [60, 10], [70, 10], [80, 10], [86, 10],
-                         [90, 12], [93, 60], [96, 100]],
-                "mid": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8],
-                        [90, 10], [93, 60], [96, 100]]},
+                "main": [[50, 11], [60, 11], [70, 11], [80, 11], [86, 11],
+                         [90, 14], [93, 65], [96, 100]],
+                "mid": [[50, 9], [60, 9], [70, 9], [80, 9], [86, 9],
+                        [90, 12], [93, 65], [96, 100]]},
             "Performance": {
-                "main": [[50, 16], [60, 16], [70, 16], [80, 16], [86, 16],
-                         [90, 18], [93, 75], [96, 100]],
-                "mid": [[50, 14], [60, 14], [70, 14], [80, 14], [86, 14],
-                        [90, 16], [93, 75], [96, 100]]},
+                "main": [[50, 18], [70, 18], [86, 18], [89, 24], [92, 50],
+                         [94, 75], [97, 92], [100, 100]],
+                "mid": [[50, 16], [70, 16], [86, 16], [89, 20], [92, 45],
+                        [94, 70], [97, 90], [100, 100]]},
         }
         for name, curves in want.items():
             fans = profiles.DEFAULT_PROFILES[name]["fans"]
-            # The CPU and GPU fans share a curve; the mid fan runs two points
-            # cooler, which is how it was measured.
+            # The CPU and GPU fans share a curve; the mid fan runs cooler,
+            # which is how it was measured.
             for channel in ("1", "2"):
                 self.assertEqual(fans[channel], curves["main"],
                                  f"{name} channel {channel}")
@@ -116,11 +132,13 @@ class FieldTunedValues(unittest.TestCase):
 
         This is the whole fix: Tctl bursts to 77-88 C in under a second at
         idle, the EC follows it within about a second, and any slope in that
-        band turns those bursts into audible fan surges."""
+        band turns those bursts into audible fan surges. Performance spends
+        fewer points holding the band (three, not five -- it needs the other
+        five for a graduated ramp instead) but the band is exactly as flat."""
         for name, prof in profiles.DEFAULT_PROFILES.items():
             for channel, points in prof["fans"].items():
                 band = [pct for temp, pct in points if 50 <= temp <= 86]
-                self.assertGreaterEqual(len(band), 5,
+                self.assertGreaterEqual(len(band), 3,
                                         f"{name} channel {channel} band")
                 self.assertEqual(len(set(band)), 1,
                                  f"{name} channel {channel} is not flat "
@@ -235,7 +253,7 @@ class TailoredDefaults(unittest.TestCase):
         out = profiles.tailored_default_profiles(gpu_min_w=5, gpu_max_w=140)
         out["Performance"]["fans"]["1"][0][1] = 99
         self.assertEqual(profiles.DEFAULT_PROFILES["Performance"]["fans"]["1"][0],
-                         [50, 16])
+                         [50, 18])
 
     def test_tiers_keep_their_documented_shape(self):
         # The docstring promises Quiet ~46%, Balanced ~71%, Performance 100%

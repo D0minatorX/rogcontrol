@@ -16,12 +16,21 @@ off, a maximum clock, an energy preference, GPU limits, and a fan curve for
 each of the three fans. Switching profile applies all of it and moves the
 system power mode to match, so the OS and the app never disagree.
 
-The two Balanced profiles have identical limits and differ only in how hard
-the CPU chases clocks — one leans to battery life, the other to response.
+The two Balanced profiles have identical CPU and GPU limits and differ in how
+hard the CPU chases clocks — one leans to battery life, the other to
+response. Balanced Performance also runs its fans a little higher than
+Balanced Power, since it is the one meant for when you notice the fans less
+than the response.
 
-New, Delete, Import and Export live in the header menu. Export writes a
-profile to a JSON file you can share or keep; Import validates a file before
-merging it, so a bad file cannot damage your settings.
+New and Delete live in the header menu, one profile at a time. Export writes
+EVERYTHING — every profile, which one is current, the charge limit, keyboard
+settings, auto-switch targets, fan RPM calibration — to one JSON file, so it
+doubles as a full backup. Import reads it back: point it at a backup and it
+asks to confirm before replacing everything with what is in the file: this
+is a restore, not a merge, and there is no undo. Point it at an older
+single-profile export instead and it merges that one profile in safely, same
+as it always has, renaming it rather than overwriting anything with the same
+name.
 
 
 FANS
@@ -69,8 +78,17 @@ Applied on the same terms as the CPU page: an Apply button, a banner naming
 what is not on the card yet, and a profile that is only written once the card
 has accepted the setting.
 
+The graphics mode: what the display is plugged into now, and a picker to
+switch between Integrated, Hybrid and AsusMuxDgpu. Integrated and Hybrid swap
+by restarting the display stack; switching into or out of AsusMuxDgpu moves
+the hardware MUX, which only the firmware can do, so that one offers to
+reboot for you. Whatever supergfxd answers is repeated on the page word for
+word, so a refusal says which of several reasons applied.
+
 Live CPU and GPU temperatures and the speed of the fan cooling each are shown
-on their own pages, refreshed every two seconds.
+on their own pages, refreshed every two seconds. The GPU reads "Idle" while
+the card is asleep — and stays asleep, because the page checks its power
+state in sysfs rather than waking it with nvidia-smi to ask.
 
 
 KEYBOARD
@@ -95,11 +113,6 @@ it works whether or not the window is open.
 
 
 SYSTEM
-
-The graphics mode supergfxd reports, what it will let you switch to, and — if
-it will not let you switch at all — why, in plain text on the page rather than
-hidden in a tooltip. On a laptop whose hardware MUX is set in the firmware,
-supergfxd offers exactly one mode, and that is what it says.
 
 Whether asusctl's daemon, asusd, is installed and running. It matters because
 it drives the same hardware as this app — the same platform knobs, fan curves

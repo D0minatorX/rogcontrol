@@ -105,6 +105,24 @@ class FitRpmCal(unittest.TestCase):
     def test_too_few_usable_readings_is_none(self):
         self.assertIsNone(fancurve.fit_rpm_cal([(20, 2641), (45, None)]))
 
+    def test_the_ceiling_is_exactly_what_was_measured_there(self):
+        """The actual bug report: a mid fan measured 7800 rpm at a flat
+        100% curve, and the least-squares fit this replaced reported 7400
+        -- the regression line balanced the high point against three lower
+        ones instead of matching it. What the highest sampled percentage
+        measured must be exactly what pct_to_rpm(100, ...) reports, not a
+        value averaged down to fit everything else."""
+        samples = [(20, 2200), (45, 4100), (70, 6100), (100, 7800)]
+        floor, slope = fancurve.fit_rpm_cal(samples)
+        self.assertEqual(fancurve.pct_to_rpm(100, floor, slope), 7800)
+        self.assertEqual(fancurve.pct_to_rpm(20, floor, slope), 2200)
+
+    def test_extreme_points_win_even_out_of_order_or_duplicated(self):
+        samples = [(70, 6100), (20, 2200), (100, 7800), (45, 4100),
+                  (100, 7800)]
+        floor, slope = fancurve.fit_rpm_cal(samples)
+        self.assertEqual(fancurve.pct_to_rpm(100, floor, slope), 7800)
+
     def test_a_fan_that_never_moved_is_rejected(self):
         # Slope of zero (or negative) means the fan did not respond. Saving
         # that calibration would make every rpm figure in the app wrong in a

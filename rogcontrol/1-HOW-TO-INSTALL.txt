@@ -50,7 +50,10 @@ The installer will:
   * check GTK4 and libadwaita, and stop if they are absent
   * confirm the machine is an ASUS
   * install missing optional dependencies, with your permission
-  * build ryzenadj from source if your distro has no package for it
+  * build ryzenadj and rogauracore from source if your distro has no
+    package for them -- Arch/CachyOS only, via an AUR helper; on Fedora and
+    Debian/Ubuntu these two are not packaged and the installer only warns,
+    since it does not carry a source build for those toolchains
   * install the app to ~/.local/lib/rogcontrol and a launcher on your PATH
   * install the tray, the background services, the icon and the menu entry
   * on a FRESH install, write the default settings and apply them
@@ -71,6 +74,57 @@ One thing worth doing once: open the Fans page and press "Calibrate fan RPM".
 It takes about two minutes and measures how your fans actually respond, so
 the graphs show real numbers for your machine instead of the ones measured on
 the developer's laptop.
+
+
+KEYBOARD SHORTCUTS
+
+The installer does not bind these for you — a hotkey is a personal choice,
+and every desktop binds them a different way. These are installed to
+~/.local/bin (or, for the window itself, already on your PATH) ready to
+bind to any key you like:
+
+    ~/.local/bin/rogcontrol-cycle-profile.py       next profile
+    ~/.local/bin/rogcontrol-cycle-kbdlight.py      next lighting mode
+    ~/.local/bin/rogcontrol-adjust-kbdbrightness.py up|down   keyboard backlight brightness
+    ~/.local/bin/rogcontrol-adjust-kbdspeed.py      up|down   current lighting effect's speed
+    rogcontrol --show                              bring the window up
+    rogcontrol --hide                              put it away without quitting
+
+The brightness and speed scripts take one argument, so each needs its own
+shortcut for "up" and one for "down" -- four bindings, not two. The speed
+one only does anything on Breathing, Pulse, Color Cycle or Rainbow; on any
+other lighting mode it notifies that there is nothing to speed up, since
+those modes are a fixed picture with no animation to change.
+
+"--show" and "--hide" are two ends of one thing, not a toggle: --show
+always brings the window up (even if it was never running), --hide always
+puts it away, and --hide never quits the app -- the window stays alive,
+invisible, so a following --show is instant. If you want one key that does
+either depending on current state instead of two dedicated ones, "rogcontrol
+--toggle" is what the tray's "Show window" item itself uses.
+
+On GNOME:
+
+    1. Settings > Keyboard > View and Customize Shortcuts
+    2. Scroll down, click "Custom Shortcuts", then "+"
+    3. Name:    ROG Control — Next Profile
+       Command: /home/YOUR_USERNAME/.local/bin/rogcontrol-cycle-profile.py
+       Shortcut: whatever key combo you want, e.g. Super+F5
+    4. Repeat for each shortcut above. For "up"/"down" scripts, add two
+       separate custom shortcuts, one with the command ending " up" and one
+       ending " down". For --show/--hide, the command is just "rogcontrol
+       --show" (rogcontrol is already on your PATH, no leading path needed).
+
+GNOME's custom-shortcut dialog needs the full path for the scripts under
+~/.local/bin, not "~" — use your actual home directory. Other desktops (KDE
+System Settings > Shortcuts > Custom Shortcuts, etc.) bind a command to a
+key the same way; point it at the same commands.
+
+If you reinstall clean later, these bindings are NOT part of the app —
+they live in your desktop's own settings (GNOME stores them under
+dconf), so uninstalling or wiping ~/.config/rogcontrol.json does not
+remove them, and a fresh install does not restore them. Re-add them once
+after any clean install.
 
 
 UPDATING
@@ -119,5 +173,5 @@ CPU limits do nothing
     module. The app reports what the helper said rather than failing quietly.
 
 The fans do not follow the curve
-    Read the fan section of 2-FEATURES.txt. This is a real and well
+    Read the fan section of README.txt. This is a real and well
     understood hardware behaviour, and the answer is in the curve's shape.

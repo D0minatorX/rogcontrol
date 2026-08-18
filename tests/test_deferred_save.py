@@ -3,11 +3,11 @@
 THE BUG THIS PINS, which reached a user and destroyed real settings:
 
 Every Apply in this app hands the work to a thread and answers later. The
-fan page answers about sixteen seconds later, because the embedded
-controller drops curve writes fired closer together than eight seconds and
-there are three channels. The page then asked the window "which profile is
-current?" to decide where to save -- at that point, not at the point the
-button was pressed.
+fan page answers about ten seconds later, because the embedded controller
+can drop curve writes fired too close together and there are three
+channels. The page then asked the window "which profile is current?" to
+decide where to save -- at that point, not at the point the button was
+pressed.
 
 Sixteen seconds is long enough for the answer to have changed. The user can
 pick another profile, so can the tray and the hotkey cycler, and the

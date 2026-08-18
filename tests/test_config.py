@@ -32,7 +32,12 @@ def _require_default_path_resolved_at_call_time():
     So this fails closed: no test in this file runs at all.
     """
     for func in (config.save_config, config.load_config):
-        if func.__defaults__ != (None,):
+        # ``path`` is each function's first parameter, so its default is
+        # the first entry -- checked positionally rather than requiring the
+        # whole tuple to be exactly (None,), since load_config has since
+        # grown gpu_min_w/gpu_max_w defaults of its own after it that have
+        # nothing to do with this invariant.
+        if not func.__defaults__ or func.__defaults__[0] is not None:
             raise AssertionError(
                 f"rogcontrol.config.{func.__name__} no longer defaults its "
                 f"path to None (__defaults__ = {func.__defaults__!r}). "
@@ -160,7 +165,7 @@ class Migration(unittest.TestCase):
         out = config.migrate_config({"profiles": {"Quiet": {"cpu": {}}}})
         out["profiles"]["Quiet"]["fans"]["1"][0][1] = 99
         self.assertEqual(profiles.DEFAULT_PROFILES["Quiet"]["fans"]["1"][0],
-                         [50, 8])
+                         [50, 6])
 
     def test_a_profile_that_is_not_a_dict_is_left_alone(self):
         out = config.migrate_config({"profiles": {"Quiet": {"cpu": {}, "gpu": {},
@@ -256,6 +261,20 @@ class SaveAndLoad(unittest.TestCase):
         config.load_config(self.path)
         backups = [n for n in os.listdir(self.dir) if ".corrupt-" in n]
         self.assertEqual(len(backups), 1)
+
+    def test_a_fresh_load_tailors_to_the_gpu_limits_passed_in(self):
+        # No file at self.path yet: the fresh-install path, the one moment
+        # app.py's own hardware.detect_gpu_limits() answer is supposed to
+        # reach the stock profiles instead of being silently dropped.
+        out = config.load_config(self.path, gpu_min_w=5, gpu_max_w=70)
+        self.assertEqual(out["profiles"]["Performance"]["gpu"]["watts"], 70)
+
+    def test_an_existing_config_ignores_the_gpu_limits_passed_in(self):
+        cfg = config.migrate_config({})
+        cfg["profiles"]["Performance"]["gpu"]["watts"] = 130
+        config.save_config(cfg, self.path)
+        out = config.load_config(self.path, gpu_min_w=5, gpu_max_w=70)
+        self.assertEqual(out["profiles"]["Performance"]["gpu"]["watts"], 130)
 
     # --- the same rules, pinned harder ------------------------------------
 
@@ -658,6 +677,107 @@ class ImportAndExport(unittest.TestCase):
         names = config.import_profiles(config.migrate_config({}),
                                        json.loads(json.dumps(self.cfg)))
         self.assertEqual(len(names), len(self.cfg["profiles"]))
+
+
+class BackupExportAndRestore(unittest.TestCase):
+    """Export writes everything now, not one profile -- so it doubles as a
+    backup. Restore is the other half: replace, not merge, because going
+    back to a saved state is a different thing from safely trying out a
+    stranger's one profile."""
+
+    def setUp(self):
+        self.cfg = config.migrate_config({})
+
+    def test_a_backup_is_marked(self):
+        backup = config.export_backup(self.cfg)
+        self.assertIn(config.BACKUP_MARKER, backup)
+        self.assertEqual(backup[config.BACKUP_MARKER],
+                         config.BACKUP_FILE_VERSION)
+
+    def test_a_backup_contains_every_profile(self):
+        backup = config.export_backup(self.cfg)
+        self.assertEqual(set(backup["profiles"]), set(self.cfg["profiles"]))
+
+    def test_a_backup_contains_global_settings(self):
+        self.cfg["kbd_brightness"] = 3
+        self.cfg["charge_limit"] = 80
+        backup = config.export_backup(self.cfg)
+        self.assertEqual(backup["kbd_brightness"], 3)
+        self.assertEqual(backup["charge_limit"], 80)
+        self.assertEqual(backup["current_profile"], self.cfg["current_profile"])
+
+    def test_a_backup_is_a_copy_not_a_view(self):
+        backup = config.export_backup(self.cfg)
+        self.cfg["profiles"]["Quiet"]["cpu"]["stapm"] = 999
+        self.assertNotEqual(backup["profiles"]["Quiet"]["cpu"]["stapm"], 999)
+
+    def test_is_backup_file_recognises_its_own_export(self):
+        self.assertTrue(config.is_backup_file(config.export_backup(self.cfg)))
+
+    def test_is_backup_file_rejects_a_plain_profile_share(self):
+        self.assertFalse(config.is_backup_file(
+            {"profiles": {"Mine": {"cpu": {}}}}))
+        self.assertFalse(config.is_backup_file({}))
+        self.assertFalse(config.is_backup_file(None))
+        self.assertFalse(config.is_backup_file([]))
+
+    def test_parse_backup_rejects_junk(self):
+        for junk in (None, [], "profiles", 7,
+                    {},
+                    {config.BACKUP_MARKER: 1},
+                    {config.BACKUP_MARKER: 1, "profiles": None},
+                    {config.BACKUP_MARKER: 1, "profiles": {}},
+                    {config.BACKUP_MARKER: 1, "profiles": {"A": "junk"}},
+                    {config.BACKUP_MARKER: 1, "profiles": {"": {"cpu": {}}}}):
+            with self.assertRaises(ValueError, msg=repr(junk)):
+                config.parse_backup(junk)
+
+    def test_restore_replaces_profiles_rather_than_merging(self):
+        self.cfg["profiles"]["Extra"] = {"cpu": {}, "gpu": {}, "fans": {}}
+        backup = config.export_backup(config.migrate_config({}))
+        config.restore_backup(self.cfg, backup)
+        self.assertNotIn("Extra", self.cfg["profiles"])
+        self.assertEqual(set(self.cfg["profiles"]),
+                         set(backup["profiles"]))
+
+    def test_restore_brings_back_global_settings(self):
+        source = config.migrate_config({})
+        source["kbd_brightness"] = 3
+        source["charge_limit"] = 55
+        source["current_profile"] = "Quiet"
+        backup = config.export_backup(source)
+        target = config.migrate_config({})
+        config.restore_backup(target, backup)
+        self.assertEqual(target["kbd_brightness"], 3)
+        self.assertEqual(target["charge_limit"], 55)
+        self.assertEqual(target["current_profile"], "Quiet")
+
+    def test_restore_stamps_the_current_config_version(self):
+        backup = config.export_backup(self.cfg)
+        backup["config_version"] = -1  # pretend it came from an old build
+        config.restore_backup(self.cfg, backup)
+        self.assertEqual(self.cfg["config_version"], config.CONFIG_VERSION)
+
+    def test_a_bad_backup_changes_nothing(self):
+        before = json.loads(json.dumps(self.cfg))
+        for junk in ({}, {"profiles": {}}, {"profiles": {"A": 7}}):
+            with self.assertRaises(ValueError):
+                config.restore_backup(self.cfg, junk)
+            self.assertEqual(self.cfg, before, repr(junk))
+
+    def test_restore_does_not_alias_the_file_it_came_from(self):
+        backup = config.export_backup(self.cfg)
+        config.restore_backup(self.cfg, backup)
+        self.cfg["profiles"]["Quiet"]["fans"]["1"][0][1] = 99
+        self.assertNotEqual(backup["profiles"]["Quiet"]["fans"]["1"][0][1], 99)
+
+    def test_export_then_restore_round_trips(self):
+        backup = config.export_backup(self.cfg)
+        restored = config.migrate_config({})
+        config.restore_backup(restored, json.loads(json.dumps(backup)))
+        for key in ("profiles", "current_profile", "kbd_brightness",
+                    "charge_limit", "ac_profile", "battery_profile"):
+            self.assertEqual(restored[key], self.cfg[key], key)
 
 
 class FollowingTheFile(unittest.TestCase):

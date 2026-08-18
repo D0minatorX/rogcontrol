@@ -17,6 +17,7 @@ import glob
 import os
 import subprocess
 import sys
+import time
 
 from .profiles import PROFILE_TO_PPD_MODE
 
@@ -25,6 +26,35 @@ ASUS_WMI_DIR = "/sys/devices/platform/asus-nb-wmi"
 HWMON_DIR = "/sys/class/hwmon"
 POWER_SUPPLY_DIR = "/sys/class/power_supply"
 CPUFREQ_GLOB = "/sys/devices/system/cpu/cpufreq/policy*"
+
+LOG_PATH = os.path.expanduser("~/.local/share/rogcontrol/rogcontrol.log")
+LOG_MAX_BYTES = 256 * 1024
+_last_logged = {}
+
+
+def log(message, level="INFO", source="app", dedupe_key=None, dedupe_seconds=300):
+    """Append one line to the shared app log.
+
+    Shared by every caller of run_helper (enforcer, apply, cycle-profile) so
+    a failing helper call is never silent no matter which of them hit it.
+
+    dedupe_key suppresses an identical repeating message for a while. A
+    failing helper call repeats every cycle, and without this a single
+    broken sudoers rule would fill the log with the same line forever."""
+    if dedupe_key is not None:
+        now = time.monotonic()
+        if now - _last_logged.get(dedupe_key, -1e9) < dedupe_seconds:
+            return
+        _last_logged[dedupe_key] = now
+    try:
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX_BYTES:
+            os.replace(LOG_PATH, LOG_PATH + ".1")
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(LOG_PATH, "a") as f:
+            f.write(f"{stamp} [{level}] {source}: {message}\n")
+    except OSError:
+        pass
 
 # Curve Optimizer range the helper will accept. Mirrored here so the UI can
 # clamp a spin button to the same window rather than offering values that are
@@ -324,6 +354,48 @@ def asusd_uninstall_command(have=None):
 
 # -- CPU ---------------------------------------------------------------------
 
+PROC_CPUINFO = "/proc/cpuinfo"
+
+
+def read_cpu_name(root=None):
+    """The processor's marketing name, or None.
+
+    The GPU page has named the card since it was written -- the CPU page
+    said only "Processor", which is the one thing the user already knows.
+
+    First "model name" wins: /proc/cpuinfo repeats it once per logical core,
+    and this chip has 32 of them."""
+    try:
+        with open(_under(root, PROC_CPUINFO)) as f:
+            for line in f:
+                if line.startswith("model name"):
+                    _, _, value = line.partition(":")
+                    return value.strip() or None
+    except OSError:
+        return None
+    return None
+
+
+def start_tray():
+    """Start the tray service if it is not running. Best effort.
+
+    Called when the window is launched, which is what puts the icon back
+    after the tray's own Quit. Quit stops the service and deliberately
+    prevents systemd restarting it (see QUIT_EXIT_CODE in rogcontrol-tray),
+    so without this the only way back would be a systemctl command or a
+    reboot -- and "I quit the tray, then opened the app, and the icon never
+    came back" is exactly how that felt.
+
+    Failure is silent: a machine running this from a checkout has no unit
+    installed, and that is not a reason to fail to open the window."""
+    try:
+        subprocess.run(["systemctl", "--user", "start",
+                        "rogcontrol-tray.service"],
+                       capture_output=True, text=True, timeout=5)
+    except Exception:
+        pass
+
+
 def read_cpu_temp(root=None):
     """Package temperature in C, or None.
 
@@ -486,6 +558,13 @@ def cpu_apply_plan(values, caps=None):
     # a cap from a previous profile survives the switch.
     if "max_freq" in values and caps.get("cpu_clock"):
         plan.append(("clock", ("cpuclock", values["max_freq"] or "max")))
+    # No clock floor here. One was added and then removed: scaling_min_freq
+    # is a request to the governor, not a grant of power. Measured over ten
+    # minutes of 4K GPU plus all-core CPU load with a 2.4 GHz floor set and
+    # holding on every sample, cores still ran at 2.0 GHz -- the package was
+    # pinned at its 45 W STAPM limit and the SMU simply does not spend watts
+    # it has not got. The control could be set, saved and re-asserted
+    # perfectly and still change nothing, which is worse than not having it.
     return plan
 
 
@@ -575,6 +654,52 @@ def read_nvidia_stats(timeout=5):
     """(temp_c, power_w) for the NVIDIA card, either of which may be None."""
     return read_nvidia_query(("temperature.gpu", "power.draw"),
                              timeout=timeout)
+
+
+PCI_DEVICES_DIR = "/sys/bus/pci/devices"
+NVIDIA_PCI_VENDOR = "0x10de"
+
+
+def nvidia_pci_path(root=None):
+    """The sysfs directory of the NVIDIA card, or None.
+
+    Found by vendor id rather than a hardcoded 0000:01:00.0, which is this
+    laptop's address and nobody else's."""
+    for path in sorted(glob.glob(_under(root, PCI_DEVICES_DIR) + "/*")):
+        try:
+            with open(os.path.join(path, "vendor")) as f:
+                if f.read().strip().lower() != NVIDIA_PCI_VENDOR:
+                    continue
+        except OSError:
+            continue
+        if os.path.exists(os.path.join(path, "power", "runtime_status")):
+            return path
+    return None
+
+
+def dgpu_is_suspended(root=None):
+    """True when the NVIDIA card is runtime-suspended, False when awake.
+
+    None when it cannot be told -- no card, no runtime PM, unreadable.
+
+    This is read from sysfs rather than asked of nvidia-smi on purpose.
+    Running nvidia-smi *wakes the card to answer*, so a page that polls it
+    every two seconds holds the dGPU awake for as long as it is open and the
+    card is never seen idle -- which is both the wrong reading and a real
+    cost in battery on a hybrid machine."""
+    path = nvidia_pci_path(root)
+    if not path:
+        return None
+    try:
+        with open(os.path.join(path, "power", "runtime_status")) as f:
+            status = f.read().strip().lower()
+    except OSError:
+        return None
+    if status == "suspended":
+        return True
+    if status == "active":
+        return False
+    return None
 
 
 def read_vram(timeout=5):
@@ -860,6 +985,17 @@ def read_gpu_mode(timeout=5):
     return result.stdout.strip() or None
 
 
+def dgpu_available(timeout=5):
+    """False only when the mode is known and it is Integrated.
+
+    Integrated powers the card down, so nvidia-smi cannot reach it -- every
+    apply that touches the GPU logged an ERROR each enforcer cycle while
+    sitting in that mode. Unknown (no supergfxctl, or it did not answer)
+    returns True: a machine with no supergfxd is not one this ever guarded
+    against, so it keeps applying as it always did."""
+    return read_gpu_mode(timeout) != "Integrated"
+
+
 def read_supported_gpu_modes(timeout=5):
     """The modes this machine can actually be switched to, or []."""
     try:
@@ -870,6 +1006,126 @@ def read_supported_gpu_modes(timeout=5):
     if result.returncode != 0:
         return []
     return parse_supergfx_modes(result.stdout)
+
+
+# The one mode that lives on the far side of the hardware MUX. Switching
+# into or out of it is a firmware change; the other two are not.
+MUX_MODE = "AsusMuxDgpu"
+
+GPU_MUX_PATH = ASUS_WMI_DIR + "/gpu_mux_mode"
+
+
+def gpu_mux_is_dgpu(root=None):
+    """True when the MUX has the panel wired to the discrete card.
+
+    0 is discrete and 1 is Optimus in the asus-wmi ABI. None when the node
+    is absent -- a machine with no MUX at all.
+
+    Read from sysfs rather than taken from supergfxd's answer because the
+    two can disagree, and when they do this one is the truth. supergfxd
+    stores a mode in /etc/supergfxd.conf and re-applies it at every login;
+    it accepted Integrated while the MUX was still on the discrete card and
+    then spent every subsequent login trying to tear down the card driving
+    the screen."""
+    try:
+        with open(_under(root, GPU_MUX_PATH)) as f:
+            value = f.read().strip()
+    except OSError:
+        return None
+    if value == "0":
+        return True
+    if value == "1":
+        return False
+    return None
+
+
+def mode_change_needs_reboot(current, target, root=None):
+    """True when the switch crosses the hardware MUX.
+
+    The MUX is flipped by firmware at POST, so nothing a running system can
+    do finishes the change. Measured here: supergfxd wrote gpu_mux_mode and
+    reported success, the node went on reading the old value for the rest of
+    the session, and the machine only came up in Hybrid after a reboot --
+    which is why "log out to finish switching" was wrong advice for it.
+
+    Integrated <-> Hybrid does not cross the MUX. That pair only toggles
+    dgpu_disable, which takes effect without a restart, and G-Helper
+    switches the same pair live on this hardware.
+
+    ``current`` may be None -- supergfxd not answering yet, a switch made
+    before the first sample landed. The MUX node answers instead, and it is
+    the better source anyway: it is the thing being crossed."""
+    if current is not None and current == target:
+        return False
+    if target == MUX_MODE:
+        # Already on the discrete card is the one case that needs nothing.
+        return gpu_mux_is_dgpu(root) is not True
+    # Leaving the MUX mode. Trust the hardware over the daemon's name for it.
+    on_mux = gpu_mux_is_dgpu(root)
+    if on_mux is None:
+        return current == MUX_MODE
+    return on_mux
+
+
+def mode_needs_hybrid_first(current, target, root=None):
+    """True when this switch has to go through Hybrid to be safe.
+
+    Integrated means "power the discrete card down". With the MUX wired to
+    that card, the panel is on it, so carrying the request out kills the
+    display -- and supergfxd stores the mode and re-applies it at every
+    login, so the machine comes up, freezes, and does it again next time.
+    Measured here: two boots lasting 53 and 11 seconds before the machine
+    had to be forced off.
+
+    The MUX has to move to Optimus first, which is a reboot, and only then
+    can the card be switched off. So this pair is two steps and the app has
+    to say so rather than hand the daemon a request that bricks the
+    session."""
+    if target != "Integrated":
+        return False
+    return gpu_mux_is_dgpu(root) is True
+
+
+def _run_reboot(extra_args, timeout=10):
+    try:
+        result = subprocess.run(["systemctl", "reboot", *extra_args],
+                                capture_output=True, text=True,
+                                timeout=timeout)
+    except Exception as e:
+        return False, str(e)
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout or "unknown error").strip()
+    return True, ""
+
+
+def reboot_system(timeout=10):
+    """Reboot, returning ``(ok, message)``.
+
+    Through systemctl rather than the privileged helper: logind lets the
+    active local session reboot on its own, so this needs no sudoers rule
+    and no password. Only ever reached from a dialog the user pressed.
+
+    Asked politely first, then again ignoring inhibitors -- and only when
+    the first refusal was an inhibitor. GNOME holds a permanent
+    shutdown-block inhibitor for the session ("user session inhibited"),
+    which systemctl honours, so the polite call fails on every GNOME desktop
+    with:
+
+        Call to Reboot failed: Operation denied due to active block inhibitor
+
+    That is not a reason to leave the machine unrebooted: the user has
+    already pressed a button that said the machine will restart and watched
+    a countdown run out. GNOME's own restart button ends the session for the
+    same result. The retry is deliberately narrow -- any other failure
+    (permission, no logind) is reported rather than forced, so a genuine
+    refusal is never overridden."""
+    ok, message = _run_reboot([], timeout=timeout)
+    if ok:
+        return True, ""
+    if "inhibitor" not in message.lower():
+        return False, message
+    ok, forced_message = _run_reboot(["-i"], timeout=timeout)
+    return (True, "") if ok else (False, forced_message)
 
 
 def set_gpu_mode(mode, timeout=10):
@@ -959,8 +1215,8 @@ def set_power_mode(mode, timeout=5):
     it leaves the OS on the old mode, and the enforcer -- which treats an
     external mode change as the OS asking for a profile -- then switches the
     profile back within its 60 second cycle and re-pushes all three fan
-    curves to do it. The result is ~16 seconds of fan writes for the profile
-    the user chose, ~16 seconds for the one they did not, and the switch
+    curves to do it. The result is ~10 seconds of fan writes for the profile
+    the user chose, ~10 seconds for the one they did not, and the switch
     silently undone. Set the mode first, and there is nothing to disagree
     with.
 

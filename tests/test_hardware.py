@@ -510,6 +510,206 @@ class TestGpuModeChoices(unittest.TestCase):
             hardware.gpu_mode_choices(supported=["Integrated", "Vfio"]),
             ["Integrated", "Hybrid", "AsusMuxDgpu", "Vfio"])
 
+
+class TestDgpuSuspended(FakeSysfs):
+    """Reading the card's runtime PM state without waking it.
+
+    The GPU page used to learn "is there a temperature" by running
+    nvidia-smi every two seconds. That call wakes the card to answer it, so
+    on a hybrid machine the dGPU never got to stay suspended while the
+    window was open -- the page could not have shown it idle, because having
+    the page open was what kept it awake."""
+
+    def device(self, address, vendor, status=None):
+        path = os.path.join(self.root, "sys/bus/pci/devices", address)
+        write(os.path.join(path, "vendor"), vendor + "\n")
+        if status is not None:
+            write(os.path.join(path, "power/runtime_status"), status + "\n")
+        return path
+
+    def test_the_nvidia_card_is_found_by_vendor_not_by_address(self):
+        self.device("0000:00:08.1", "0x1022", "active")   # AMD
+        self.device("0000:65:00.0", "0x10de", "suspended")  # not 01:00.0
+        self.assertTrue(hardware.nvidia_pci_path(root=self.root)
+                        .endswith("0000:65:00.0"))
+
+    def test_suspended_and_active(self):
+        self.device("0000:01:00.0", "0x10de", "suspended")
+        self.assertIs(hardware.dgpu_is_suspended(root=self.root), True)
+
+    def test_active(self):
+        self.device("0000:01:00.0", "0x10de", "active")
+        self.assertIs(hardware.dgpu_is_suspended(root=self.root), False)
+
+    def test_no_nvidia_card_at_all(self):
+        self.device("0000:00:08.1", "0x1022", "active")
+        self.assertIsNone(hardware.nvidia_pci_path(root=self.root))
+        self.assertIsNone(hardware.dgpu_is_suspended(root=self.root))
+
+    def test_a_card_without_runtime_pm_is_not_a_reading(self):
+        self.device("0000:01:00.0", "0x10de")  # no power/runtime_status
+        self.assertIsNone(hardware.dgpu_is_suspended(root=self.root))
+
+    def test_an_unexpected_status_word_is_not_guessed_at(self):
+        # "suspending"/"resuming" are real transient values. Neither is
+        # idle and neither is awake, and reporting one as the other would
+        # flicker the readout.
+        self.device("0000:01:00.0", "0x10de", "suspending")
+        self.assertIsNone(hardware.dgpu_is_suspended(root=self.root))
+
+
+class TestModeChangeNeedsReboot(FakeSysfs):
+    """Which switches need a reboot and which finish by themselves.
+
+    Telling someone to log out after a hardware MUX change is wrong and
+    wastes their time: the flip is applied by firmware at POST, and logging
+    out does nothing at all. Measured on this machine -- supergfxd wrote
+    gpu_mux_mode, the node still read the old value, and only a reboot put
+    the machine in Hybrid.
+
+    Integrated <-> Hybrid is the pair that does NOT cross the MUX, and must
+    not be made to ask for a reboot it does not need."""
+
+    def mux(self, dgpu):
+        """Point the MUX node at the discrete card, or at Optimus."""
+        write(os.path.join(self.root,
+                           "sys/devices/platform/asus-nb-wmi/gpu_mux_mode"),
+              ("0" if dgpu else "1") + "\n")
+
+    def test_into_the_mux_mode_from_either_side(self):
+        self.mux(dgpu=False)
+        for current in ("Integrated", "Hybrid"):
+            self.assertTrue(
+                hardware.mode_change_needs_reboot(current, "AsusMuxDgpu",
+                                                  root=self.root),
+                current)
+
+    def test_out_of_the_mux_mode_to_either_side(self):
+        self.mux(dgpu=True)
+        for target in ("Integrated", "Hybrid"):
+            self.assertTrue(
+                hardware.mode_change_needs_reboot("AsusMuxDgpu", target,
+                                                  root=self.root),
+                target)
+
+    def test_integrated_and_hybrid_never_need_one(self):
+        self.mux(dgpu=False)
+        self.assertFalse(
+            hardware.mode_change_needs_reboot("Integrated", "Hybrid",
+                                              root=self.root))
+        self.assertFalse(
+            hardware.mode_change_needs_reboot("Hybrid", "Integrated",
+                                              root=self.root))
+
+    def test_switching_to_the_mode_already_in_force_is_not_a_change(self):
+        self.mux(dgpu=True)
+        for mode in ("Integrated", "Hybrid", "AsusMuxDgpu"):
+            self.assertFalse(
+                hardware.mode_change_needs_reboot(mode, mode, root=self.root),
+                mode)
+
+    def test_the_mux_node_decides_when_the_daemon_has_not_answered(self):
+        """current is None while supergfxd is starting, or before the first
+        sample. The node being crossed is the better authority anyway."""
+        self.mux(dgpu=True)
+        self.assertTrue(
+            hardware.mode_change_needs_reboot(None, "Hybrid", root=self.root))
+        self.mux(dgpu=False)
+        self.assertFalse(
+            hardware.mode_change_needs_reboot(None, "Hybrid", root=self.root))
+        self.assertTrue(
+            hardware.mode_change_needs_reboot(None, "AsusMuxDgpu",
+                                              root=self.root))
+
+
+class TestRebootSystem(unittest.TestCase):
+    """GNOME blocks shutdown permanently, so the polite call always fails.
+
+        Call to Reboot failed: Operation denied due to active block inhibitor
+
+    Measured on this machine: gnome-session holds a shutdown block inhibitor
+    ("user session inhibited") for the whole session. The user has already
+    pressed a button saying the machine will restart and watched a countdown
+    finish, so an inhibitor is retried past -- and nothing else is."""
+
+    INHIBITED = ("Call to Reboot failed: Operation denied due to active "
+                 "block inhibitor")
+
+    def calls(self, results):
+        seen = []
+
+        def fake(args, **kwargs):
+            seen.append(list(args))
+            return types.SimpleNamespace(
+                returncode=0 if results.pop(0) else 1,
+                stdout="", stderr="" if results else self.INHIBITED)
+        return seen, fake
+
+    def test_a_clean_reboot_is_not_retried(self):
+        seen, fake = self.calls([True])
+        with mock.patch.object(hardware.subprocess, "run", fake):
+            self.assertEqual(hardware.reboot_system(), (True, ""))
+        self.assertEqual(len(seen), 1)
+        self.assertNotIn("-i", seen[0])
+
+    def test_an_inhibitor_is_retried_with_ignore(self):
+        def fake(args, **kwargs):
+            forced = "-i" in args
+            return types.SimpleNamespace(
+                returncode=0 if forced else 1,
+                stdout="", stderr="" if forced else self.INHIBITED)
+        with mock.patch.object(hardware.subprocess, "run", fake):
+            self.assertEqual(hardware.reboot_system(), (True, ""))
+
+    def test_any_other_refusal_is_reported_not_forced(self):
+        """A permission failure must never be overridden."""
+        seen = []
+
+        def fake(args, **kwargs):
+            seen.append(list(args))
+            return types.SimpleNamespace(
+                returncode=1, stdout="", stderr="Access denied")
+        with mock.patch.object(hardware.subprocess, "run", fake):
+            ok, message = hardware.reboot_system()
+        self.assertFalse(ok)
+        self.assertEqual(message, "Access denied")
+        self.assertEqual(len(seen), 1, "a non-inhibitor failure was retried")
+
+
+class TestIntegratedNeedsHybridFirst(FakeSysfs):
+    """The switch that froze this machine at every login.
+
+    Integrated means "power the discrete card down". With the MUX wired to
+    that card the panel is on it, so supergfxd carried the request out and
+    killed the display -- then re-applied the stored mode at every
+    subsequent login. Two boots lasted 53 and 11 seconds."""
+
+    def mux(self, dgpu):
+        write(os.path.join(self.root,
+                           "sys/devices/platform/asus-nb-wmi/gpu_mux_mode"),
+              ("0" if dgpu else "1") + "\n")
+
+    def test_integrated_from_the_mux_mode_is_two_steps(self):
+        self.mux(dgpu=True)
+        self.assertTrue(hardware.mode_needs_hybrid_first(
+            "AsusMuxDgpu", "Integrated", root=self.root))
+
+    def test_integrated_from_hybrid_is_fine(self):
+        self.mux(dgpu=False)
+        self.assertFalse(hardware.mode_needs_hybrid_first(
+            "Hybrid", "Integrated", root=self.root))
+
+    def test_no_other_target_is_affected(self):
+        self.mux(dgpu=True)
+        for target in ("Hybrid", "AsusMuxDgpu", "Vfio"):
+            self.assertFalse(
+                hardware.mode_needs_hybrid_first("AsusMuxDgpu", target,
+                                                 root=self.root), target)
+
+    def test_a_machine_with_no_mux_node_is_never_blocked(self):
+        self.assertFalse(hardware.mode_needs_hybrid_first(
+            "Hybrid", "Integrated", root=self.root))
+
     def test_the_active_mode_is_always_selectable(self):
         # Otherwise the picker would show some other mode as current, which
         # reads as a mode change that never happened.
@@ -945,6 +1145,42 @@ class TestCapabilities(FakeSysfs):
             self.assertFalse(caps[key], key)
         self.assertIsNone(caps["cpu_clock"])
         self.assertEqual(caps["cpu_epp"], [])
+
+
+class TestDgpuAvailable(unittest.TestCase):
+    """Whether an apply may touch the card at all.
+
+    Integrated powers the dGPU off, so every nvidia-smi call in that mode
+    failed and logged an ERROR each enforcer cycle -- this is what apply
+    checks first to skip them silently instead."""
+
+    def supergfx(self, stdout, returncode=0):
+        fake = mock.Mock(return_value=mock.Mock(stdout=stdout,
+                                                 returncode=returncode))
+        return mock.patch.object(hardware.subprocess, "run", fake)
+
+    def test_integrated_is_unavailable(self):
+        with self.supergfx("Integrated\n"):
+            self.assertFalse(hardware.dgpu_available())
+
+    def test_hybrid_is_available(self):
+        with self.supergfx("Hybrid\n"):
+            self.assertTrue(hardware.dgpu_available())
+
+    def test_asus_mux_dgpu_is_available(self):
+        with self.supergfx("AsusMuxDgpu\n"):
+            self.assertTrue(hardware.dgpu_available())
+
+    def test_no_supergfxd_defaults_to_available(self):
+        # Unknown, not off -- a machine with no supergfxd was never guarded
+        # against and keeps applying exactly as it always did.
+        with mock.patch.object(hardware.subprocess, "run",
+                               side_effect=FileNotFoundError("supergfxctl")):
+            self.assertTrue(hardware.dgpu_available())
+
+    def test_daemon_error_defaults_to_available(self):
+        with self.supergfx("", returncode=1):
+            self.assertTrue(hardware.dgpu_available())
 
 
 if __name__ == "__main__":

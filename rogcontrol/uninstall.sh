@@ -10,6 +10,7 @@ step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 APP_CONFIG="$HOME/.config/rogcontrol.json"
 STATE_DIR="$HOME/.local/share/rogcontrol"
 SUDOERS=/etc/sudoers.d/rogcontrol
+SLEEP_HOOK=/usr/lib/systemd/system-sleep/rogcontrol-fan-sleep-hook
 
 echo "== ROG Control uninstaller =="
 echo
@@ -37,12 +38,13 @@ echo "  ~/.local/lib/rogcontrol/                (the application package)"
 echo "  ~/.local/bin/rogcontrol                 (launcher)"
 echo "  ~/.local/bin/rogcontrol-tray            (tray icon)"
 echo "  ~/.local/bin/rogcontrol*.py             (shortcut and service scripts)"
-echo "  ~/.config/systemd/user/rogcontrol-*     (background services)"
+echo "  ~/.config/systemd/user/rogcontrol-*     (background services, incl. tray)"
 echo "  ~/.local/share/applications/rogcontrol* (launchers)"
-echo "  ~/.config/autostart/rogcontrol-*        (autostart entry)"
+echo "  ~/.config/autostart/rogcontrol-*        (leftover from an older install)"
 echo "  the app icon"
 echo "  /usr/local/bin/rogcontrol-helper        (needs sudo)"
 echo "  $SUDOERS                                (needs sudo)"
+echo "  $SLEEP_HOOK  (needs sudo)"
 if [ "$PURGE" -eq 1 ]; then
     echo
     warn "--purge: settings, logs and install state will ALSO be deleted"
@@ -67,9 +69,12 @@ fi
 step "Stopping services"
 systemctl --user disable --now rogcontrol-enforcer.service >/dev/null 2>&1 || true
 systemctl --user disable --now rogcontrol-apply.service    >/dev/null 2>&1 || true
+systemctl --user disable --now rogcontrol-tray.service     >/dev/null 2>&1 || true
 # The window, the tray sidecar, and the GTK3 app if a pre-GTK4 install is
 # what is being removed. "python3 -m rogcontrol" is how the window shows up
-# in a process list, since the launcher execs into it.
+# in a process list, since the launcher execs into it. The pkill is also
+# what catches a tray still running the old, pre-service way (a plain
+# autostart entry, no systemd unit to disable).
 pkill -f "local/bin/rogcontrol-tray" 2>/dev/null || true
 pkill -f "local/bin/rogcontrol.py"   2>/dev/null || true
 pkill -f "python3 -m rogcontrol"     2>/dev/null || true
@@ -86,11 +91,13 @@ rm -f "$HOME"/.local/bin/rogcontrol \
       "$HOME"/.local/bin/rogcontrol-apply.py \
       "$HOME"/.local/bin/rogcontrol-cycle-profile.py \
       "$HOME"/.local/bin/rogcontrol-cycle-kbdlight.py \
-      "$HOME"/.local/bin/rogcontrol-adjust-kbdbrightness.py
+      "$HOME"/.local/bin/rogcontrol-adjust-kbdbrightness.py \
+      "$HOME"/.local/bin/rogcontrol-adjust-kbdspeed.py
 say "App and scripts removed"
 
 rm -f "$HOME"/.config/systemd/user/rogcontrol-apply.service \
-      "$HOME"/.config/systemd/user/rogcontrol-enforcer.service
+      "$HOME"/.config/systemd/user/rogcontrol-enforcer.service \
+      "$HOME"/.config/systemd/user/rogcontrol-tray.service
 systemctl --user daemon-reload
 say "Service units removed"
 
@@ -100,7 +107,9 @@ rm -f "$HOME"/.local/share/applications/org.rogcontrol.RogControl.desktop \
       "$HOME"/.config/autostart/rogcontrol-autostart.desktop
 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
 for size in 16x16 22x22 24x24 32x32 48x48 64x64 128x128 256x256 512x512; do
-    rm -f "$HOME/.local/share/icons/hicolor/$size/apps/rogcontrol.png"
+    rm -f "$HOME/.local/share/icons/hicolor/$size/apps/rogcontrol.png" \
+          "$HOME/.local/share/icons/hicolor/$size/apps/rogcontrol-quiet.png" \
+          "$HOME/.local/share/icons/hicolor/$size/apps/rogcontrol-balanced.png"
 done
 rm -f "$HOME/.local/share/icons/hicolor/scalable/apps/rogcontrol.svg"
 gtk-update-icon-cache -f "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
@@ -111,6 +120,14 @@ if [ -e /usr/local/bin/rogcontrol-helper ] || sudo test -e "$SUDOERS" 2>/dev/nul
     sudo rm -f /usr/local/bin/rogcontrol-helper
     sudo rm -f "$SUDOERS"
     say "Helper and sudoers rule removed"
+else
+    say "Nothing to remove (already gone)"
+fi
+
+step "Removing the suspend/resume fan hook"
+if sudo test -e "$SLEEP_HOOK" 2>/dev/null; then
+    sudo rm -f "$SLEEP_HOOK"
+    say "Sleep hook removed"
 else
     say "Nothing to remove (already gone)"
 fi

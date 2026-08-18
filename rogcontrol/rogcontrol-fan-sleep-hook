@@ -1,0 +1,42 @@
+#!/bin/bash
+# rogcontrol-fan-sleep-hook
+# Installed into /usr/lib/systemd/system-sleep/, where systemd-logind calls
+# every executable in the directory around every suspend/hibernate, with
+# ($1, $2) = (pre|post, suspend|hibernate|hybrid-sleep|suspend-then-hibernate).
+# Runs as root with no login session -- see rogcontrol-apply.py for why
+# CONFIG_PATH needs a real $HOME, which is why "post" goes through su -l
+# rather than calling the helper directly.
+#
+# Not fixing an observed bug: nothing here was found stuck loud across a
+# real suspend. This is a safety net so the fans can never be left at
+# whatever a profile's own curve floor is (Performance's is not 0) for the
+# whole time the machine is asleep, regardless of which profile was active
+# when it went down.
+set -u
+
+HELPER=/usr/local/bin/rogcontrol-helper
+INSTALL_USER="__ROGCONTROL_USER__"
+
+case "${1:-}" in
+pre)
+    # Push every channel to its hardware floor before the machine actually
+    # suspends. Root already, so no sudo needed -- HELPER is root-owned.
+    # 1s between channels: this app measured 0.5s-8s as equally reliable on
+    # this hardware (see pages/fans.py), so 1s is real margin over the
+    # tested floor while adding only ~2s to suspend, not ~10s.
+    for ch in 1 2 3; do
+        "$HELPER" fan "$ch" 50 0 60 0 70 0 80 0 86 0 90 0 93 0 96 0 || true
+        sleep 1
+    done
+    ;;
+post)
+    # Put the real profile's curve back. --profile-only so this touches
+    # only the profile (cpu/gpu/fans), not the keyboard -- same flag the
+    # tray uses for a live switch, see rogcontrol-apply.py's own docstring.
+    su -l "$INSTALL_USER" -c \
+        'python3 "$HOME/.local/bin/rogcontrol-apply.py" --profile-only' \
+        || true
+    ;;
+esac
+
+exit 0

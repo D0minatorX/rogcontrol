@@ -79,38 +79,56 @@ def ppd_modes_agree(profile_name, actual_mode):
 #
 # THE SHAPE OF THE FAN CURVES IS THE MEASURED RESULT, NOT A TASTE.
 #
-# Every one of them is flat from 50 C to 86 C and only ramps above 90 C, and
-# that looks wrong until you know what the embedded controller is reading.
-# On this chip Tctl bursts from ~57 C to 77-88 C in well under a second while
+# All four are flat from 50 C to 86 C and only ramp above that, and that
+# looks wrong until you know what the embedded controller is reading. On
+# this chip Tctl bursts from ~57 C to 77-88 C in well under a second while
 # the machine is idle: sampling k10temp twice a second misses it entirely,
 # 50 Hz sampling shows it, and the EC reacts to it in about one second. So a
 # curve with a steep 55-80 C section -- which is what the old rising curves
 # here had -- makes the fans surge at random while the visible temperature
 # sits at 57-59 C. Measured 2026-08-11: 2100-5400 rpm swings at idle with the
-# rising shape, 400-600 rpm with this one.
+# rising shape, 400-600 rpm with this one. THIS is the fix for the sudden
+# spikes -- every profile below carries it, including Performance, which
+# only differs in how few points it spends holding flat (three, not five)
+# and how many it spends on a graduated ramp instead (five, not three).
 #
 # The flat section costs nothing under load, because it is not where load
 # lives: an all-core load on Balanced only reaches 64-67 C. The 80 C+ numbers
 # the EC sees are single-core boost spikes, not sustained heat, and the real
-# ramp above 90 C is still there for when the chip genuinely is hot.
+# ramp is still there for when the chip genuinely is hot.
 #
-# Scaled per tier rather than shared: Quiet holds 8% (6% on the mid fan),
-# Balanced 10/8, Performance 16/14, and above 90 C Performance is the most
-# aggressive of the three (75% at 93 C against Quiet's 50%). Retuning one of
-# these is a hardware retune -- test it at idle for several minutes, not for
-# ten seconds.
+# These are the SHIPPED DEFAULTS, tuned for a stranger's machine rather than
+# any one person's ears -- do not fold personal retuning done on this
+# developer's own laptop back into this table. A user's live
+# ~/.config/rogcontrol.json is theirs to push louder, quieter, or steeper
+# than this; this table is what a fresh install hands them to start from.
+#
+# Tiers, low C temp / low-band hold / mid fan hold / top of ramp:
+#   Quiet                6 / 5 %,  ramps to 80  -- quietest even if it runs
+#                         warmer; the least aggressive top end on purpose.
+#   Balanced Power        9 / 7 %,  ramps to 95  -- quiet AND cool: a notch
+#                         above the floor, ramp reaches real cooling.
+#   Balanced Performance 11 / 9 %,  ramps to 100 -- a bit higher than
+#                         Balanced Power at every point, same shape.
+#   Performance          18 / 16 %, ramps to 100 starting at 89 C instead
+#                         of 90, through five points instead of three -- the
+#                         most aggressive tier, coolest running of the four,
+#                         and never one flat number end to end.
+#
+# Retuning one of these is a hardware retune -- test it at idle for several
+# minutes, not for ten seconds.
 DEFAULT_PROFILES = {
     "Quiet": {
         "cpu": {"stapm": 25000, "fast": 35000, "slow": 25000, "temp": 85, "coall": 0,
                 "epp": "power"},
         "gpu": {"watts": 65, "clock_offset": 0, "mem_clock_offset": 0},
         "fans": {
-            "1": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8], [90, 10],
-                  [93, 50], [96, 90]],
-            "2": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8], [90, 10],
-                  [93, 50], [96, 90]],
-            "3": [[50, 6], [60, 6], [70, 6], [80, 6], [86, 6], [90, 8],
-                  [93, 50], [96, 90]],
+            "1": [[50, 6], [60, 6], [70, 6], [80, 6], [86, 6], [90, 8],
+                  [93, 40], [96, 80]],
+            "2": [[50, 6], [60, 6], [70, 6], [80, 6], [86, 6], [90, 8],
+                  [93, 40], [96, 80]],
+            "3": [[50, 5], [60, 5], [70, 5], [80, 5], [86, 5], [90, 6],
+                  [93, 40], [96, 80]],
         },
     },
     "Balanced Power": {
@@ -118,12 +136,12 @@ DEFAULT_PROFILES = {
                 "epp": "balance_power"},
         "gpu": {"watts": 100, "clock_offset": 0, "mem_clock_offset": 0},
         "fans": {
-            "1": [[50, 10], [60, 10], [70, 10], [80, 10], [86, 10], [90, 12],
-                  [93, 60], [96, 100]],
-            "2": [[50, 10], [60, 10], [70, 10], [80, 10], [86, 10], [90, 12],
-                  [93, 60], [96, 100]],
-            "3": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8], [90, 10],
-                  [93, 60], [96, 100]],
+            "1": [[50, 9], [60, 9], [70, 9], [80, 9], [86, 9], [90, 12],
+                  [93, 55], [96, 95]],
+            "2": [[50, 9], [60, 9], [70, 9], [80, 9], [86, 9], [90, 12],
+                  [93, 55], [96, 95]],
+            "3": [[50, 7], [60, 7], [70, 7], [80, 7], [86, 7], [90, 10],
+                  [93, 55], [96, 95]],
         },
     },
     "Balanced Performance": {
@@ -131,12 +149,12 @@ DEFAULT_PROFILES = {
                 "epp": "balance_performance"},
         "gpu": {"watts": 100, "clock_offset": 0, "mem_clock_offset": 0},
         "fans": {
-            "1": [[50, 10], [60, 10], [70, 10], [80, 10], [86, 10], [90, 12],
-                  [93, 60], [96, 100]],
-            "2": [[50, 10], [60, 10], [70, 10], [80, 10], [86, 10], [90, 12],
-                  [93, 60], [96, 100]],
-            "3": [[50, 8], [60, 8], [70, 8], [80, 8], [86, 8], [90, 10],
-                  [93, 60], [96, 100]],
+            "1": [[50, 11], [60, 11], [70, 11], [80, 11], [86, 11], [90, 14],
+                  [93, 65], [96, 100]],
+            "2": [[50, 11], [60, 11], [70, 11], [80, 11], [86, 11], [90, 14],
+                  [93, 65], [96, 100]],
+            "3": [[50, 9], [60, 9], [70, 9], [80, 9], [86, 9], [90, 12],
+                  [93, 65], [96, 100]],
         },
     },
     "Performance": {
@@ -144,12 +162,12 @@ DEFAULT_PROFILES = {
                 "epp": "performance"},
         "gpu": {"watts": 140, "clock_offset": 0, "mem_clock_offset": 0},
         "fans": {
-            "1": [[50, 16], [60, 16], [70, 16], [80, 16], [86, 16], [90, 18],
-                  [93, 75], [96, 100]],
-            "2": [[50, 16], [60, 16], [70, 16], [80, 16], [86, 16], [90, 18],
-                  [93, 75], [96, 100]],
-            "3": [[50, 14], [60, 14], [70, 14], [80, 14], [86, 14], [90, 16],
-                  [93, 75], [96, 100]],
+            "1": [[50, 18], [70, 18], [86, 18], [89, 24], [92, 50],
+                  [94, 75], [97, 92], [100, 100]],
+            "2": [[50, 18], [70, 18], [86, 18], [89, 24], [92, 50],
+                  [94, 75], [97, 92], [100, 100]],
+            "3": [[50, 16], [70, 16], [86, 16], [89, 20], [92, 45],
+                  [94, 70], [97, 90], [100, 100]],
         },
     },
 }

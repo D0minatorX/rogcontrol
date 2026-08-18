@@ -51,65 +51,44 @@ for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
             sys.path.insert(0, _candidate)
         break
 
+from rogcontrol import fancurve  # noqa: E402
 from rogcontrol import hardware  # noqa: E402
+
+# The curve maths and the helper call are the package's, not this script's.
+# Both used to be copied in here verbatim -- interpolate_curve existed in
+# four files and run_helper in seven -- which is how the silent-failure bug
+# fixed in the enforcer survived here for another release.
+interpolate_curve = fancurve.interpolate_curve
+pct_to_pwm255 = fancurve.pct_to_pwm255
+
+
+def run_helper(*args):
+    """Run a privileged action and REPORT failure.
+
+    A thin wrapper over hardware.run_helper: the shared one knows how to run
+    the helper and how to read a failure out of it, and this adds only the
+    one thing that is specific to a headless script -- writing the failure
+    somewhere the user can find it afterwards."""
+    ok, message = hardware.run_helper(*args, timeout=30)
+    if not ok:
+        cmd = " ".join(str(a) for a in args)
+        hardware.log(f"{cmd} failed: {message}", "ERROR",
+                     source="apply", dedupe_key=f"fail:{args[0]}")
+    return ok
+
+# Every setting this machine has; the helper refuses anything it cannot
+# do, and this script has no capability probe of its own.
+ALL_CPU_CAPS = {"ryzenadj": True, "cpu_boost": True, "cpu_epp": True,
+                "cpu_clock": True}
 
 CONFIG_PATH = os.path.expanduser("~/.config/rogcontrol.json")
 RETRIES = 3
 DELAY_SECONDS = 10
 
+# See pages/fans.py: retested down to 0.5s with no failures, kept at 5s for
+# margin over the retested floor.
+CHANNEL_GAP_S = 5
 
-def run_helper(*args):
-    subprocess.run(
-        ["sudo", "-n", "/usr/local/bin/rogcontrol-helper", *[str(a) for a in args]],
-        capture_output=True, text=True,
-    )
-
-
-def interpolate_curve(points, n=8):
-    """Expand a user curve to exactly n points for the firmware.
-
-    The user's own points are preserved verbatim whenever they fit (the
-    hardware takes 8, and so does the editor -- older profiles carry six).
-    Extra slots are filled by bisecting the widest temperature gap, so the
-    added points sit on the straight line the user already drew between
-    their own points.
-
-    The previous version resampled by *index*, which silently moved every
-    interior point: a 6-point curve came back as 8 points at completely
-    different temperatures, so a point placed at 60C ended up as steps at
-    57C and 61C and the curve the firmware ran was not the one on screen.
-    That matters because the EC steps between points rather than
-    interpolating, so a moved point moves where the fan audibly changes.
-    """
-    pts = sorted({(int(t), int(p)) for t, p in points})
-    if len(pts) >= n:
-        return pts[:n]
-
-    while len(pts) < n:
-        # widest gap first, so added points are spread out evenly
-        gaps = [(pts[i + 1][0] - pts[i][0], i) for i in range(len(pts) - 1)]
-        gap, i = max(gaps) if gaps else (0, 0)
-        if gap >= 2:
-            t = (pts[i][0] + pts[i + 1][0]) // 2
-            p = round((pts[i][1] + pts[i + 1][1]) / 2)
-            pts.insert(i + 1, (t, p))
-            continue
-        # No gap left to split (points are adjacent degrees). Extend past
-        # the top point instead, holding its percentage, so temps stay
-        # strictly increasing -- the firmware needs 8 distinct entries.
-        last_t, last_p = pts[-1]
-        if last_t < 100:
-            pts.append((min(100, last_t + 1), last_p))
-        else:
-            first_t, first_p = pts[0]
-            if first_t <= 0:
-                break  # nowhere left to go; return what we have
-            pts.insert(0, (first_t - 1, first_p))
-    return pts[:n]
-
-
-def pct_to_pwm255(pct):
-    return round(max(0, min(100, pct)) / 100 * 255)
 
 
 def apply_gpu_clock_offsets(gpu):
@@ -155,32 +134,38 @@ def apply_once(config, profile_only=False):
     if profile:
         cpu = profile.get("cpu")
         if cpu:
-            run_helper("cpu", cpu["stapm"], cpu["fast"], cpu["slow"], cpu["temp"], cpu.get("coall", 0))
-            # Absent means the profile has no boost preference, so leave the
-            # cpufreq switch wherever the firmware left it.
-            if "boost" in cpu:
-                run_helper("cpuboost", 1 if cpu["boost"] else 0)
-            if "epp" in cpu:
-                run_helper("cpuepp", cpu["epp"])
-            # After boost: the boost write refreshes every cpufreq policy and
-            # takes the ceiling back to hardware max with it.
-            if "max_freq" in cpu:
-                run_helper("cpuclock", cpu["max_freq"] or "max")
-
+            # One definition of what a CPU apply writes and in what order,
+            # shared with the window and the enforcer. It used to be a chain
+            # of ifs here as well, and every setting added since has had to
+            # be added to each copy by hand -- the clock floor reached three
+            # of the four and was silently dropped by the fourth.
+            for _step, args in hardware.cpu_apply_plan(cpu, ALL_CPU_CAPS):
+                run_helper(*args)
         gpu = profile.get("gpu")
-        if gpu:
+        if gpu and hardware.dgpu_available():
             run_helper("gpu", gpu["watts"])
             apply_gpu_clock_offsets(gpu)
 
-        for i, (channel, points) in enumerate(profile.get("fans", {}).items()):
+        # Only the channels whose curve is not already the one the
+        # controller is running. Each write costs a CHANNEL_GAP_S gap before
+        # the next, so a switch back to a profile whose fans match costs
+        # nothing instead of ten seconds. Read from the driver rather than
+        # remembered: the EC drops curves behind this app's back on every
+        # power-mode change, and a channel it has thrown away has to be
+        # rewritten even though nothing in the config moved.
+        wanted = profile.get("fans", {})
+        held = {ch: hardware.read_fan_curve_points(ch) for ch in wanted}
+        enabled = hardware.read_fan_curve_enabled()
+        todo = [(ch, pts) for ch, pts in wanted.items()
+                if not (enabled.get(ch) is not False
+                        and held.get(ch) is not None
+                        and fancurve.curve_matches_hardware(pts, held[ch]))]
+        for i, (channel, points) in enumerate(todo):
             if i > 0:
-                # See rogcontrol-enforcer.py: the asus-wmi embedded
-                # controller silently drops fan-curve writes fired too
-                # close together for different channels. 0.5s measured NOT
-                # enough (channels stayed stuck); 8s measured reliable
-                # (all channels converged correctly, repeatedly, with
-                # distinct realistic targets and zero reversion).
-                time.sleep(8)
+                # See pages/fans.py module docstring: 0.5s was first found
+                # to leave channels stuck, but a later retest found 0.5s-8s
+                # all held. CHANNEL_GAP_S is kept above the retested floor.
+                time.sleep(CHANNEL_GAP_S)
             expanded = interpolate_curve(points, 8)
             flat = []
             for t, pct in expanded:
@@ -208,14 +193,24 @@ def main(argv=None):
     profile_only = "--profile-only" in argv
     if not os.path.exists(CONFIG_PATH):
         return
-    for attempt in range(RETRIES):
+    # The retries are for login, and only for login. At login nvidia and
+    # asus-wmi may not have finished coming up, so the whole apply is run
+    # three times ten seconds apart and the last one wins.
+    #
+    # A profile switch is the other caller, and there the retries were pure
+    # cost: the machine is already up, nothing is going to become ready, and
+    # the loop ran the entire apply -- sixteen seconds of fan writes included
+    # -- three times with two ten second sleeps in between. Measured at 69
+    # seconds for a switch that has 16 seconds of work in it.
+    attempts = 1 if profile_only else RETRIES
+    for attempt in range(attempts):
         try:
             with open(CONFIG_PATH) as f:
                 config = json.load(f)
             apply_once(config, profile_only=profile_only)
         except Exception:
             pass
-        if attempt < RETRIES - 1:
+        if attempt < attempts - 1:
             time.sleep(DELAY_SECONDS)
 
 

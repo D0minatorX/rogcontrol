@@ -699,3 +699,37 @@ class FailureIsTheExitCode(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EppGovernorOrder(unittest.TestCase):
+    """The governor is checked before the preference name is validated.
+
+    While the governor is "performance" the kernel shortens
+    ``energy_performance_available_preferences`` to that single word. With
+    the name validated first, every profile carrying any other preference
+    was rejected:
+
+        invalid EPP preference 'balance_power'; machine offers: performance
+
+    -- on every apply, logged by the enforcer once a cycle. The name was
+    never invalid; the list was temporarily one entry long. The governor
+    check has to come first so that case exits 0 quietly instead.
+    """
+
+    def cpuepp_block(self):
+        src = HELPER.read_text(encoding="utf-8")
+        start = src.index("\n    cpuepp)")
+        return src[start:src.index("\n        ;;", start)]
+
+    def test_the_governor_check_precedes_the_name_validation(self):
+        block = self.cpuepp_block()
+        self.assertLess(
+            block.index("scaling_governor"), block.index("MATCH=0"),
+            "the EPP name is validated before the governor is checked, which "
+            "rejects every valid preference while the governor is performance")
+
+    def test_a_performance_governor_exits_zero(self):
+        block = self.cpuepp_block()
+        gov = block.index("scaling_governor")
+        self.assertIn("exit 0", block[gov:gov + 600],
+                      "a performance governor must succeed quietly")

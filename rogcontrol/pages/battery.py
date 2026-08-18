@@ -82,7 +82,7 @@ class BatteryPage(Adw.PreferencesPage):
         self.charge_row.add_suffix(self.charge_value)
         status.add(self.charge_row)
 
-        limit = Adw.PreferencesGroup(title="Charging")
+        self.limit_group = limit = Adw.PreferencesGroup(title="Charging")
         self.add(limit)
         self.limit_row = SliderRow(
             title="Charge limit", subtitle="100% is no cap at all",
@@ -91,12 +91,8 @@ class BatteryPage(Adw.PreferencesPage):
         self.limit_row.connect("changed", self._on_limit_changed)
         limit.add(self.limit_row)
         if not self.caps.get("charge_limit"):
-            self.limit_row.set_sensitive(False)
-            # Ahead of what the setting does rather than instead of it: the
-            # tooltip is where this row is explained now.
-            self.limit_row.set_tooltip_text(
-                "Not available on this machine: this battery has no "
-                "charge_control_end_threshold.\n\n" + CHARGE_TOOLTIP)
+            # The only row "Charging" has -- nothing left in the group.
+            self.limit_group.set_visible(False)
 
         switching = Adw.PreferencesGroup(title="Automatic profile switching",
                                          description=AUTO_SWITCH_DESCRIPTION)
@@ -117,6 +113,7 @@ class BatteryPage(Adw.PreferencesPage):
                         source)
             switching.add(row)
             self.combos[source] = row
+
 
     # -- loading -------------------------------------------------------------
 

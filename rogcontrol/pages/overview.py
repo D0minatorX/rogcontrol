@@ -110,8 +110,10 @@ class OverviewPage(Adw.PreferencesPage):
             gpu, "Temperature")
         self.gpu_power_row, self.gpu_power_val = self._value_row(
             gpu, "Power draw")
+        self.vram_row, self.vram_val = self._value_row(
+            gpu, "VRAM", "The NVIDIA card's own memory")
         if not self.window.caps.get("nvidia"):
-            for row in (self.gpu_temp_row, self.gpu_power_row):
+            for row in (self.gpu_temp_row, self.gpu_power_row, self.vram_row):
                 row.set_subtitle("nvidia-smi not available on this machine")
 
         memory = Adw.PreferencesGroup(title="Memory")
@@ -120,11 +122,6 @@ class OverviewPage(Adw.PreferencesPage):
             memory, "RAM",
             "In use against installed — what is left is what a program can "
             "still have")
-        self.vram_row, self.vram_val = self._value_row(
-            memory, "VRAM", "The NVIDIA card's own memory")
-        if not self.window.caps.get("nvidia"):
-            self.vram_row.set_subtitle(
-                "nvidia-smi not available on this machine")
 
         fans = Adw.PreferencesGroup(
             title="Fans",
@@ -225,11 +222,11 @@ class OverviewPage(Adw.PreferencesPage):
         gpu_power = data.get("gpu_power")
         self.gpu_power_val.set_text(
             DASH if gpu_power is None else f"{gpu_power:.1f} W")
+        self.vram_val.set_text(
+            format_used_total(*(data.get("vram") or (None, None))))
 
         self.ram_val.set_text(
             format_used_total(*(data.get("ram") or (None, None))))
-        self.vram_val.set_text(
-            format_used_total(*(data.get("vram") or (None, None))))
 
         self._render_fans(data.get("fan_rpm") or {}, cpu_temp)
         self._render_battery(data)

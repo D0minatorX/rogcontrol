@@ -13,10 +13,10 @@ hunting for what keeps changing the keyboard.
 
 FAN CURVES ARE THE EXCEPTION: they are only re-pushed when the curve data
 actually changes, or when an external power-mode change is detected. Each
-fan channel needs an 8s gap from the next (asus-wmi EC limitation, see
-apply_full_profile), so re-pushing all 3 unconditionally every cycle --
-which is what this originally did -- could interrupt the fans before
-they'd finished settling on the values just written.
+fan channel needs a CHANNEL_GAP_S gap from the next (asus-wmi EC
+limitation, see apply_full_profile), so re-pushing all 3 unconditionally
+every cycle -- which is what this originally did -- could interrupt the
+fans before they'd finished settling on the values just written.
 
 POWER-PROFILES-DAEMON ENFORCEMENT: on this hardware, asus-wmi's
 throttle_thermal_policy (which is what changing GNOME's Power Mode
@@ -63,13 +63,22 @@ for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
         break
 
 from rogcontrol import config as config_mod  # noqa: E402
+from rogcontrol import fancurve  # noqa: E402
 from rogcontrol import hardware  # noqa: E402
+
+# One copy of the curve maths, in the package. See rogcontrol-apply.py.
+interpolate_curve = fancurve.interpolate_curve
+pct_to_pwm255 = fancurve.pct_to_pwm255
 
 CONFIG_PATH = os.path.expanduser("~/.config/rogcontrol.json")
 # Upkeep cadence. Only the CPU limits and the fan-curve safety
 # re-check run on this interval now, so it can be far slower than
 # the old 15s without losing anything.
 INTERVAL_SECONDS = 60
+
+# See pages/fans.py: retested down to 0.5s with no failures, kept at 5s for
+# margin over the retested floor.
+CHANNEL_GAP_S = 5
 
 # Sysfs knobs whose value changing means the EC has just silently thrown
 # away the custom fan curve (documented asus-wmi behavior). Cheap to read,
@@ -83,12 +92,12 @@ _last_thermal_state = None
 # A dropped channel is otherwise invisible -- pwm<N>_enable reads back the
 # driver's own cached flag, not what the EC actually accepted, so there is
 # no way to detect a silently-ignored channel by reading sysfs. Long enough
-# that the ~16s apply stays rare.
+# that the ~10s apply stays rare.
 FAN_REVERIFY_SECONDS = 300
 _last_fan_apply_time = 0.0
 
 # (profile_name, fan-curve-json) of the last fan curve actually pushed to
-# hardware. Each channel apply needs an 8s gap from the others (see
+# hardware. Each channel apply needs a CHANNEL_GAP_S gap from the others (see
 # apply_full_profile below), so blindly re-running all 3 channels on every
 # INTERVAL_SECONDS tick -- as this enforcer originally did -- meant a fresh
 # 3-channel push could interrupt the previous one's fans before they'd even
@@ -104,7 +113,7 @@ _last_applied_fans = None
 # full apply.
 #
 # Why: adopting a mode change switches profile, and a profile switch re-pushes
-# all three fan channels (~16s of writes) with a completely different curve.
+# all three fan channels (~10s of writes) with a completely different curve.
 # Measured on this machine, the power mode flipped balanced/performance five
 # times in seventeen minutes, so the fans were being handed a different curve
 # every ~90 seconds and never settled on either -- which is exactly the
@@ -300,38 +309,38 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
         # CPU limits are kept in the periodic pass: AMD firmware is known to
         # walk STAPM/PPT back on its own, so this one genuinely needs
         # re-asserting. It is cheap -- a single ryzenadj call.
+        # Built by hardware.cpu_apply_plan, not by a chain of ifs here.
+        # This code used to be a second, hand-maintained copy of the CPU
+        # apply, and it drifted every time a setting was added: the clock
+        # floor was added to the page and to the plan, and this pass -- which
+        # writes cpuboost every cycle, and a boost write refreshes every
+        # cpufreq policy and resets both the ceiling and the floor -- went on
+        # re-asserting the ceiling and silently dropping the floor. The user
+        # set a floor, the page saved it, and sixty seconds later it was gone
+        # again with nothing logged.
+        #
+        # The plan also fixes the ordering for free: boost first, then the
+        # ceiling, then the floor, which is the order the boost reset makes
+        # mandatory.
+        #
+        # CPU limits stay in the periodic pass rather than behind `full`: AMD
+        # firmware walks STAPM/PPT back on its own, and `full` is only true
+        # when the thermal state moved, so a service restart or a fresh boot
+        # would otherwise never assert any of this.
         cpu = profile.get("cpu")
         if cpu:
-            run_helper("cpu", cpu["stapm"], cpu["fast"], cpu["slow"],
-                       cpu["temp"], cpu.get("coall", 0))
-            # Kept in the periodic pass alongside the CPU limits, not behind
-            # `full`: `full` is only true when the thermal state moved, so a
-            # service restart or a fresh boot would otherwise never assert the
-            # profile's boost setting at all. One cheap sysfs write.
-            #
-            # A profile with no "boost" key means the user never expressed a
-            # preference, and nothing is written -- otherwise every existing
-            # profile would silently start forcing boost on.
-            if "boost" in cpu and boost_control_available():
-                run_helper("cpuboost", 1 if cpu["boost"] else 0)
-            # Same rule for EPP: only written when the profile actually names
-            # one. Cheap, and it belongs next to boost because both are
-            # cpufreq settings the firmware can reset across suspend.
-            if "epp" in cpu and epp_control_available():
-                run_helper("cpuepp", cpu["epp"])
-            # After boost on purpose: writing cpufreq's boost switch refreshes
-            # every policy and resets the ceiling to hardware max, so a cap
-            # written first would be wiped by the boost write above.
-            #
-            # 0 means "this profile wants no ceiling", which still has to be
-            # written -- otherwise a cap set by the previous profile would
-            # survive the switch. Only a missing key means "leave alone".
-            if "max_freq" in cpu and clock_limit_available():
-                run_helper("cpuclock", cpu["max_freq"] or "max")
+            caps = {
+                "ryzenadj": True,
+                "cpu_boost": boost_control_available(),
+                "cpu_epp": epp_control_available(),
+                "cpu_clock": clock_limit_available(),
+            }
+            for _step, args in hardware.cpu_apply_plan(cpu, caps):
+                run_helper(*args)
 
         if full:
             gpu = profile.get("gpu")
-            if gpu:
+            if gpu and hardware.dgpu_available():
                 run_helper("gpu", gpu["watts"])
                 apply_gpu_clock_offsets(gpu)
 
@@ -341,22 +350,24 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
         if force_fan_reapply or stale or fans_signature != _last_applied_fans:
             for i, (channel, points) in enumerate(fans.items()):
                 if i > 0:
-                    # The asus-wmi embedded controller silently drops fan-
-                    # curve writes fired too close together for different
-                    # channels. Measured directly on this hardware: applying
-                    # one channel in isolation reliably took effect (fan
-                    # smoothly ramped to the new target); a 0.5s gap between
-                    # channels was NOT enough (2 of 3 channels stayed stuck
-                    # on their old value indefinitely); an 8s gap was
-                    # sufficient for all 3 channels to converge correctly,
-                    # repeatedly, with zero reversion. This -- combined with
-                    # the unconditional re-push every INTERVAL_SECONDS this
-                    # function used to do regardless of whether anything had
-                    # changed, which could interrupt a channel before it
-                    # finished settling -- is why the curve looked like it
-                    # was being "ignored" even though this enforcer was
-                    # correctly re-pushing it the whole time.
-                    time.sleep(8)
+                    # The asus-wmi embedded controller can silently drop
+                    # fan-curve writes fired too close together for
+                    # different channels. First measured directly on this
+                    # hardware: applying one channel in isolation reliably
+                    # took effect, but a 0.5s gap between channels left 2 of
+                    # 3 stuck on their old value. A later, more careful
+                    # retest -- several rounds at each gap from 0.5s to 8s,
+                    # reading the curve back from the driver afterward --
+                    # found 0.5s through 8s all held; the original 0.5s
+                    # failure was not reproduced. CHANNEL_GAP_S is kept above
+                    # the retested floor rather than dropped to it. This --
+                    # combined with the unconditional re-push every
+                    # INTERVAL_SECONDS this function used to do regardless of
+                    # whether anything had changed, which could interrupt a
+                    # channel before it finished settling -- is why the curve
+                    # looked like it was being "ignored" even though this
+                    # enforcer was correctly re-pushing it the whole time.
+                    time.sleep(CHANNEL_GAP_S)
                 expanded = interpolate_curve(points, 8)
                 flat = []
                 for t, pct in expanded:
@@ -471,7 +482,7 @@ def adopt_external_ppd_mode(config, actual_mode, service_name):
 #
 # The power source used to be sampled once per cycle and nowhere else, so a
 # switch landed up to INTERVAL_SECONDS (60s) after the plug moved. That was
-# argued for on the grounds that the apply takes ~16 seconds anyway so a
+# argued for on the grounds that the apply takes ~10 seconds anyway so a
 # minute of granularity costs nothing -- which is wrong about the part that
 # matters. Sixteen seconds of fans ramping is feedback that something
 # happened; up to sixty seconds of *nothing* happening is indistinguishable
@@ -480,7 +491,7 @@ def adopt_external_ppd_mode(config, actual_mode, service_name):
 # the cycle is kept only as the fallback.
 #
 # Both paths go through check_ac_auto_switch, and _ac_lock serialises them:
-# a switch holds the lock for the whole ~16 second apply, so the watcher and
+# a switch holds the lock for the whole ~10 second apply, so the watcher and
 # the cycle can never be halfway through two different profiles at once.
 _ac_lock = threading.Lock()
 
@@ -596,7 +607,7 @@ def check_ac_auto_switch(config, service_name, trigger="poll"):
     Called from two places -- the udev watcher the moment the plug moves, and
     the periodic cycle as the fallback -- so it takes _ac_lock for its whole
     body, apply included. Without that, a udev event arriving while the cycle
-    was mid-apply would start a second ~16 second apply of a different profile
+    was mid-apply would start a second ~10 second apply of a different profile
     over the top of the first, and the fan channels would be interleaved.
     Blocking the cycle behind the watcher is the right way round: the watcher
     is reacting to something that actually happened.
@@ -662,7 +673,7 @@ def _check_ac_auto_switch(config, service_name, trigger):
     config["current_profile"] = target
     save_config(config, "auto-switched profile")
 
-    # Before the apply, not after: the apply takes ~16 seconds (the fan
+    # Before the apply, not after: the apply takes ~10 seconds (the fan
     # channels need 8 seconds between them), and a notification that arrives
     # a quarter of a minute after the fans have already changed pitch is
     # explaining something the user has finished wondering about.
@@ -913,51 +924,6 @@ def ppd_watcher_thread():
             time.sleep(5)  # busctl monitor died or errored; back off and retry
 
 
-def interpolate_curve(points, n=8):
-    """Expand a user curve to exactly n points for the firmware.
-
-    The user's own points are preserved verbatim whenever they fit (the
-    hardware takes 8, and so does the editor -- older profiles carry six).
-    Extra slots are filled by bisecting the widest temperature gap, so the
-    added points sit on the straight line the user already drew between
-    their own points.
-
-    The previous version resampled by *index*, which silently moved every
-    interior point: a 6-point curve came back as 8 points at completely
-    different temperatures, so a point placed at 60C ended up as steps at
-    57C and 61C and the curve the firmware ran was not the one on screen.
-    That matters because the EC steps between points rather than
-    interpolating, so a moved point moves where the fan audibly changes.
-    """
-    pts = sorted({(int(t), int(p)) for t, p in points})
-    if len(pts) >= n:
-        return pts[:n]
-
-    while len(pts) < n:
-        # widest gap first, so added points are spread out evenly
-        gaps = [(pts[i + 1][0] - pts[i][0], i) for i in range(len(pts) - 1)]
-        gap, i = max(gaps) if gaps else (0, 0)
-        if gap >= 2:
-            t = (pts[i][0] + pts[i + 1][0]) // 2
-            p = round((pts[i][1] + pts[i + 1][1]) / 2)
-            pts.insert(i + 1, (t, p))
-            continue
-        # No gap left to split (points are adjacent degrees). Extend past
-        # the top point instead, holding its percentage, so temps stay
-        # strictly increasing -- the firmware needs 8 distinct entries.
-        last_t, last_p = pts[-1]
-        if last_t < 100:
-            pts.append((min(100, last_t + 1), last_p))
-        else:
-            first_t, first_p = pts[0]
-            if first_t <= 0:
-                break  # nowhere left to go; return what we have
-            pts.insert(0, (first_t - 1, first_p))
-    return pts[:n]
-
-
-def pct_to_pwm255(pct):
-    return round(max(0, min(100, pct)) / 100 * 255)
 
 
 def read_thermal_state():

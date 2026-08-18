@@ -264,27 +264,37 @@ def rpm_to_pct(rpm, floor, slope):
 
 
 def fit_rpm_cal(samples):
-    """Least-squares (floor, slope) over measured ``(percent, rpm)`` pairs.
+    """(floor, slope) anchored exactly through the lowest- and
+    highest-percentage points measured, from ``(percent, rpm)`` pairs.
 
-    Returns None when the data cannot describe a fan: fewer than two usable
-    readings, every reading taken at the same percentage (no gradient to
+    This used to be a least-squares line across every sample, which is
+    only as good as the assumption that the fan's real response is a
+    straight line over the whole range -- and on at least one real
+    machine it was not: a mid fan measured 7800 rpm at a flat 100% curve,
+    and the least-squares fit reported 7400, because the regression
+    balanced that one high point against three lower ones instead of
+    matching it. Anchoring through the two extremes instead guarantees the
+    rpm shown for a curve point at or near either end is what was actually
+    measured there; only percentages strictly between two measured points
+    are still a straight-line approximation, which is a much smaller place
+    for a non-linear fan to be wrong than the whole range.
+
+    Returns None when the data cannot describe a fan: fewer than two
+    usable readings, both extremes at the same percentage (no gradient to
     fit), or a slope that is not positive -- which means the fan never
     responded, and saving that calibration would make every rpm figure in
     the app wrong in a way the user cannot see. Keeping the previous
     calibration is always better than adopting a bad one."""
-    pts = [(float(pct), float(rpm)) for pct, rpm in samples if rpm is not None]
+    pts = sorted((float(pct), float(rpm)) for pct, rpm in samples
+                if rpm is not None)
     if len(pts) < 2:
         return None
-    n = len(pts)
-    sx = sum(p for p, _ in pts)
-    sy = sum(r for _, r in pts)
-    sxy = sum(p * r for p, r in pts)
-    sxx = sum(p * p for p, _ in pts)
-    denom = n * sxx - sx * sx
-    if denom == 0:
+    low_pct, low_rpm = pts[0]
+    high_pct, high_rpm = pts[-1]
+    if high_pct == low_pct:
         return None
-    slope = (n * sxy - sx * sy) / denom
-    floor = (sy - slope * sx) / n
+    slope = (high_rpm - low_rpm) / (high_pct - low_pct)
+    floor = low_rpm - slope * low_pct
     if slope <= 0:
         return None
     return (round(floor, 1), round(slope, 2))

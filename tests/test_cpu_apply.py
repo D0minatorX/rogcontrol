@@ -51,7 +51,7 @@ def args_for(step, values, caps=ALL_CAPS):
 
 class ApplyOrder(unittest.TestCase):
 
-    def test_the_four_steps_come_out_in_the_hardware_order(self):
+    def test_the_steps_come_out_in_the_hardware_order(self):
         self.assertEqual(steps(FULL), ["limits", "boost", "epp", "clock"])
 
     def test_the_clock_cap_is_always_written_after_boost(self):
@@ -148,6 +148,44 @@ class ValuesTheCallerHasNoOpinionOn(unittest.TestCase):
         self.assertNotIn("clock", steps(values))
 
 
+class EveryStepIsSaved(unittest.TestCase):
+    """A step that reaches the hardware must also reach the profile.
+
+    The regression this exists for: "minclock" was added to
+    ``hardware.CPU_APPLY_STEPS`` and to the page's controls, but ``_save``
+    was an if/elif chain and nobody added a branch for it. The clock floor
+    was written to the chip on every Apply and never stored, so reloading
+    the page put it straight back to no floor.
+
+    The page is parsed rather than imported -- it pulls in GTK 4.
+    """
+
+    def tables(self):
+        tree = ast.parse(CPU_PAGE.read_text(encoding="utf-8"))
+        out = {}
+        for node in tree.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            name = node.targets[0]
+            if isinstance(name, ast.Name) and name.id in (
+                    "STEP_SAVES", "STEP_ROWS", "STEP_LABELS"):
+                out[name.id] = {k.value for k in node.value.keys}
+        return out
+
+    def test_every_apply_step_knows_what_to_save(self):
+        saves = self.tables()["STEP_SAVES"]
+        for step in hardware.CPU_APPLY_STEPS:
+            self.assertIn(step, saves,
+                          f"step '{step}' is applied but never saved")
+
+    def test_every_apply_step_has_rows_and_a_label(self):
+        tables = self.tables()
+        for table in ("STEP_ROWS", "STEP_LABELS"):
+            for step in hardware.CPU_APPLY_STEPS:
+                self.assertIn(step, tables[table],
+                              f"step '{step}' is missing from {table}")
+
+
 class NothingIsAppliedOnDrag(unittest.TestCase):
     """The pages are read, not imported: they pull in GTK 4."""
 
@@ -196,10 +234,125 @@ class NothingIsAppliedOnDrag(unittest.TestCase):
         text = path.read_text(encoding="utf-8")
         self.assertIn("_on_apply_clicked", text,
                       f"{path.name} has no Apply handler")
-        self.assertIn("Gtk.Button(label=\"Apply\")", text,
+        # The button itself is built by widgets/action_buttons.py now, so
+        # what is checked here is that the page still asks for one. The
+        # widget module is what guarantees it is a button labelled Apply --
+        # see TestActionButtons in test_hardware.py.
+        self.assertIn("apply_revert_buttons(", text,
                       f"{path.name} has no Apply button")
         self.assertIn("Adw.Banner()", text,
                       f"{path.name} has no unapplied-changes banner")
+
+    def test_the_graphics_mode_picker_lives_on_the_gpu_page(self):
+        """It moved off the System page, and must not drift back.
+
+        Which card the screen is plugged into is a fact about the graphics
+        card, and every control that depends on it -- power limit,
+        temperature target, Dynamic Boost -- is on the GPU page."""
+        gpu = GPU_PAGE.read_text(encoding="utf-8")
+        system = (GPU_PAGE.parent / "system.py").read_text(encoding="utf-8")
+        self.assertIn("_build_gpu_mode", gpu,
+                      "the GPU page has no graphics mode section")
+        self.assertNotIn("_build_gpu_mode", system,
+                         "the System page still builds a graphics mode picker")
+
+    def test_integrated_from_the_mux_mode_is_refused_not_attempted(self):
+        """The switch that froze this machine at every login.
+
+        supergfxd accepts Integrated while the MUX still has the panel on
+        the NVIDIA card, stores it, powers that card down -- and re-applies
+        the stored mode at every subsequent login. The page has to refuse
+        and offer Hybrid rather than pass the request on."""
+        gpu = GPU_PAGE.read_text(encoding="utf-8")
+        self.assertIn("mode_needs_hybrid_first", gpu)
+        self.assertIn("_offer_hybrid_first", gpu)
+        # Checked before the switch is started, not after.
+        handler = gpu.index("def _on_mode_changed")
+        started = gpu.index("_on_mode_response", handler)
+        self.assertLess(gpu.index("mode_needs_hybrid_first", handler), started,
+                        "the unsafe switch is checked too late")
+
+    def test_the_mux_switch_offers_a_reboot(self):
+        """A MUX change is applied at POST, so the page has to offer one."""
+        gpu = GPU_PAGE.read_text(encoding="utf-8")
+        self.assertIn("mode_change_needs_reboot", gpu)
+        self.assertIn("reboot_system", gpu)
+
+    def test_the_gpu_page_does_not_wake_the_card_to_poll_it(self):
+        """dgpu_is_suspended is checked before nvidia-smi runs.
+
+        Running nvidia-smi wakes the card to answer, so polling it every two
+        seconds held the dGPU awake for as long as the page was open."""
+        gpu = GPU_PAGE.read_text(encoding="utf-8")
+        self.assertLess(gpu.index("dgpu_is_suspended"),
+                        gpu.index("read_nvidia_stats"),
+                        "nvidia-smi is called before the suspend check")
+
+    def test_the_action_buttons_live_in_the_header_not_on_the_page(self):
+        """Apply/Revert are handed to the window, not added to the page.
+
+        They have moved twice: bottom of the page (off screen exactly when a
+        control had just been moved), then top of the page (a full-width
+        card of empty space above every page), and now the header bar. A
+        page that adds its own action box back to its PreferencesPage would
+        put that empty card back."""
+        fans = (CPU_PAGE.parent / "fans.py").read_text(encoding="utf-8")
+        for path, text in ((CPU_PAGE, CPU_PAGE.read_text(encoding="utf-8")),
+                           (GPU_PAGE, GPU_PAGE.read_text(encoding="utf-8")),
+                           (CPU_PAGE.parent / "fans.py", fans)):
+            self.assertIn("self.action_box", text,
+                          f"{path.name} exposes no action_box for the header")
+            self.assertNotIn("page.add(self._build_actions_group())", text,
+                             f"{path.name} still adds its buttons to the page")
+
+    def test_the_two_live_readings_share_one_row(self):
+        """Temperature and its fan sit side by side, not stacked.
+
+        They were a full ActionRow each -- two rows, plus a two-line
+        subtitle on the CPU page -- for two four-character numbers, above
+        the controls the page exists for."""
+        for path in (CPU_PAGE, GPU_PAGE):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("build_stat_row(", text,
+                          f"{path.name} does not pair its live readings")
+            self.assertNotIn("self._live_row(", text,
+                             f"{path.name} still stacks a reading per row")
+
+    def test_opening_the_window_brings_the_tray_back(self):
+        """Quit stops the tray for good, so launching has to restore it.
+
+        The tray's Quit exits with a code systemd is told never to restart
+        (QUIT_EXIT_CODE), which is what makes Quit actually quit. Without a
+        counterpart on the launch side, the icon could only be brought back
+        with a systemctl command or a reboot."""
+        app = CPU_PAGE.parent.parent / "app.py"
+        text = app.read_text(encoding="utf-8")
+        self.assertIn("hardware.start_tray()", text)
+        # In _ensure_window, not do_activate: --show and --toggle open a
+        # window without going through activate.
+        before = text.index("def _ensure_window")
+        after = text.index("def ", before + 10)
+        self.assertIn("start_tray", text[before:after],
+                      "start_tray is not on the path every launch takes")
+
+    def test_the_system_page_reports_the_graphics_daemon(self):
+        """Absent and silent are different problems with different fixes.
+
+        The picker moved to the GPU page; when supergfxd is not answering
+        that picker is greyed out, and the reason has to be somewhere a
+        user hunting "why can I not switch" will actually find it."""
+        system = (CPU_PAGE.parent / "system.py").read_text(encoding="utf-8")
+        self.assertIn("_render_supergfx", system)
+        for token in ("SUPERGFX_ABSENT", "SUPERGFX_SILENT", "SUPERGFX_OK"):
+            self.assertIn(token, system,
+                          f"system.py cannot report {token}")
+
+    def test_the_window_packs_every_page_s_action_box(self):
+        app = CPU_PAGE.parent.parent / "app.py"
+        text = app.read_text(encoding="utf-8")
+        self.assertIn("header.pack_start(self.page_actions)", text)
+        self.assertIn("_show_page_actions", text,
+                      "nothing swaps the header buttons when the page changes")
 
     def test_the_cpu_page_has_an_apply_button_and_a_banner(self):
         self.assert_has_apply_button(CPU_PAGE)

@@ -153,6 +153,8 @@ DEPS=(
   "nvidia-utils (nvidia-smi)|command -v nvidia-smi|nvidia-utils|nvidia-driver|nvidia-utils"
   "nvidia-settings|command -v nvidia-settings|nvidia-settings|nvidia-settings|nvidia-settings"
   "supergfxctl|command -v supergfxctl|supergfxctl|supergfxctl|"
+  "python-cairo (fan curve graphs)|python3 -c 'import cairo'|python-cairo|python3-cairo|python3-cairo"
+  "power-profiles-daemon (OS power-mode sync)|command -v powerprofilesctl|power-profiles-daemon|power-profiles-daemon|power-profiles-daemon"
 )
 
 missing_pkgs=(); missing_names=()
@@ -271,6 +273,19 @@ else
     rm -f "$tmp"
 fi
 
+# ------------------------------------------------------------- sleep hook ---
+step "Installing suspend/resume fan hook"
+# /usr/lib/systemd/system-sleep/ is polled automatically by systemd-logind
+# around every suspend -- no separate unit file, enable, or daemon-reload.
+# The username is baked in at install time: this file runs as root with no
+# login session, so it cannot resolve ~ on its own for the "post" step.
+SLEEP_HOOK=/usr/lib/systemd/system-sleep/rogcontrol-fan-sleep-hook
+tmp="$(mktemp)"
+sed "s/__ROGCONTROL_USER__/$USER/" "$SCRIPT_DIR/rogcontrol-fan-sleep-hook" > "$tmp"
+sudo install -o root -g root -m 755 "$tmp" "$SLEEP_HOOK"
+rm -f "$tmp"
+say "Fans will drop to idle before suspend and restore the active profile on resume"
+
 # ------------------------------------------------------------------ app -----
 step "Installing application"
 mkdir -p "$HOME/.local/bin"
@@ -297,6 +312,13 @@ if systemctl --user is-active --quiet rogcontrol-enforcer.service 2>/dev/null; t
     ENFORCER_WAS_RUNNING=1
     systemctl --user stop rogcontrol-enforcer.service >/dev/null 2>&1 || true
     say "Stopped the enforcer while the library is replaced"
+fi
+# Same reasoning as the enforcer above: now that the tray is Restart=on-
+# failure too, an ImportError from a half-replaced library would otherwise
+# crash-loop it for as long as the directory is missing.
+if systemctl --user is-active --quiet rogcontrol-tray.service 2>/dev/null; then
+    systemctl --user stop rogcontrol-tray.service >/dev/null 2>&1 || true
+    say "Stopped the tray while the library is replaced"
 fi
 
 LIBDIR="$HOME/.local/lib/rogcontrol"
@@ -328,7 +350,8 @@ chmod 755 "$HOME/.local/bin/rogcontrol"
 say "Launcher installed: ~/.local/bin/rogcontrol"
 
 for s in rogcontrol-tray rogcontrol-cycle-profile.py rogcontrol-cycle-kbdlight.py \
-         rogcontrol-adjust-kbdbrightness.py rogcontrol-apply.py rogcontrol-enforcer.py; do
+         rogcontrol-adjust-kbdbrightness.py rogcontrol-adjust-kbdspeed.py \
+         rogcontrol-apply.py rogcontrol-enforcer.py; do
     install -m 755 "$SCRIPT_DIR/$s" "$HOME/.local/bin/$s"
 done
 say "Tray and shortcut scripts installed to ~/.local/bin"
@@ -350,6 +373,13 @@ fi
 mkdir -p "$HOME/.local/share/icons/hicolor/256x256/apps"
 install -m 644 "$SCRIPT_DIR/rogcontrol.png" \
     "$HOME/.local/share/icons/hicolor/256x256/apps/rogcontrol.png"
+# The tray's per-profile-colour icons -- red is rogcontrol.png itself
+# (Performance and any custom profile), these two cover Quiet and the two
+# Balanced profiles. See rogcontrol-tray's PROFILE_ICON_PATH.
+install -m 644 "$SCRIPT_DIR/rogcontrol-quiet.png" \
+    "$HOME/.local/share/icons/hicolor/256x256/apps/rogcontrol-quiet.png"
+install -m 644 "$SCRIPT_DIR/rogcontrol-balanced.png" \
+    "$HOME/.local/share/icons/hicolor/256x256/apps/rogcontrol-balanced.png"
 rm -f "$HOME/.local/share/icons/hicolor/scalable/apps/rogcontrol.svg"
 for size in 16x16 22x22 24x24 32x32 48x48 64x64 128x128 512x512; do
     rm -f "$HOME/.local/share/icons/hicolor/$size/apps/rogcontrol.png"
@@ -357,21 +387,20 @@ done
 gtk-update-icon-cache -f "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 say "Icon installed (stale sizes removed, cache refreshed)"
 
-mkdir -p "$HOME/.local/share/applications" "$HOME/.config/autostart"
+mkdir -p "$HOME/.local/share/applications"
 sed "s|/home/YOUR_USERNAME|$HOME|g" "$SCRIPT_DIR/org.rogcontrol.RogControl.desktop" \
     > "$HOME/.local/share/applications/org.rogcontrol.RogControl.desktop"
 sed "s|/home/YOUR_USERNAME|$HOME|g" "$SCRIPT_DIR/rogcontrol-cycle-profile.desktop" \
     > "$HOME/.local/share/applications/rogcontrol-cycle-profile.desktop"
-sed "s|%h|$HOME|g" "$SCRIPT_DIR/rogcontrol-autostart.desktop" \
-    > "$HOME/.config/autostart/rogcontrol-autostart.desktop"
 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
-say "App-grid entry installed; the tray now starts at login"
+say "App-grid entry installed; the tray starts at login via its own service"
 
 # -------------------------------------------------------------- services ----
 step "Installing services"
 mkdir -p "$HOME/.config/systemd/user"
 install -m 644 "$SCRIPT_DIR/rogcontrol-apply.service" \
-               "$SCRIPT_DIR/rogcontrol-enforcer.service" "$HOME/.config/systemd/user/"
+               "$SCRIPT_DIR/rogcontrol-enforcer.service" \
+               "$SCRIPT_DIR/rogcontrol-tray.service" "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
 systemctl --user enable --now rogcontrol-apply.service    >/dev/null 2>&1 || true
 # This is also what brings the enforcer back up after it was stopped for the
@@ -379,6 +408,21 @@ systemctl --user enable --now rogcontrol-apply.service    >/dev/null 2>&1 || tru
 systemctl --user restart      rogcontrol-enforcer.service >/dev/null 2>&1 || true
 systemctl --user enable       rogcontrol-enforcer.service >/dev/null 2>&1 || true
 say "Boot-reapply and enforcer services enabled"
+
+# The tray used to be a plain XDG autostart entry, which only ever runs once
+# at login: a crash (a D-Bus hiccup, the AppIndicator extension not ready
+# yet) killed it for the rest of the session with nothing to bring it back.
+# A user unit gets the same Restart=on-failure the enforcer already has. Any
+# leftover autostart entry from an older install is removed so login never
+# starts two trays fighting over the config. Likewise, an update running
+# over a tray that was started the old way (nohup, or that autostart entry)
+# is not a unit systemd knows about, so "restart" below would not touch it
+# and would leave it running alongside the new service-managed one -- killed
+# by hand first so there is exactly one tray either way.
+rm -f "$HOME/.config/autostart/rogcontrol-autostart.desktop"
+pkill -f 'python3? .*/rogcontrol-tray$' 2>/dev/null || true
+systemctl --user restart rogcontrol-tray.service >/dev/null 2>&1 || true
+systemctl --user enable  rogcontrol-tray.service  >/dev/null 2>&1 || true
 
 # Checked rather than assumed, because this install stopped it on purpose:
 # an enforcer that fails to come back is the one failure mode that is
@@ -410,13 +454,20 @@ else
     warn "Check $SUDOERS."
 fi
 
-# That the package is importable from where it was just put. Deliberately not
-# a --self-test: that builds every page and needs a display, which an install
-# run from a TTY does not have. This only proves the layout is right.
-if PYTHONPATH="$HOME/.local/lib" python3 -c "import rogcontrol" >/dev/null 2>&1; then
+# That the package is importable from where it was just put -- and
+# specifically the app module, not just the empty top-level package: app.py
+# pulls in every page, and pages/fans.py pulls in widgets/curve_editor.py's
+# `import cairo` with it, so this is what actually catches a dependency the
+# DEPS list above missed (pycairo has done exactly this once already).
+# Deliberately not a --self-test: that builds every page and needs a
+# display, which an install run from a TTY does not have, and a plain
+# `import rogcontrol.app` needs none either -- GTK/Adw classes are defined
+# at import time, not realized against a display until something is shown.
+if PYTHONPATH="$HOME/.local/lib" python3 -c "import rogcontrol.app" >/dev/null 2>&1; then
     say "Application package imports from ~/.local/lib"
 else
     warn "The installed package does not import - the window will not start."
+    warn "Run this to see why: PYTHONPATH=~/.local/lib python3 -c 'import rogcontrol.app'"
 fi
 
 # Exec=rogcontrol in the .desktop file resolves through PATH, and the launcher
@@ -507,7 +558,11 @@ fi
 # load_config() writes the defaults out when the file is absent, and leaves an
 # existing file untouched, so this is safe to run unconditionally.
 if [ ! -f "$APP_CONFIG" ]; then
-    if PYTHONPATH="$HOME/.local/lib" python3 -c "from rogcontrol import config; config.save_config(config.load_config())" 2>/dev/null
+    if PYTHONPATH="$HOME/.local/lib" python3 -c "
+from rogcontrol import config, hardware
+limits = hardware.detect_gpu_limits()
+config.save_config(config.load_config(gpu_min_w=limits['min_w'], gpu_max_w=limits['max_w']))
+" 2>/dev/null
     then
         say "Default settings written to $(basename "$APP_CONFIG")"
         # Applying takes about 20 seconds, most of it the mandatory 8-second
@@ -534,37 +589,20 @@ say "Install state recorded (next run will detect this as an update)"
 install -m 755 "$SCRIPT_DIR/uninstall.sh" "$HOME/.local/bin/rogcontrol-uninstall.sh" 2>/dev/null \
     && say "Uninstaller available: ~/.local/bin/rogcontrol-uninstall.sh"
 
-# --- start the tray ---------------------------------------------------------
-# The autostart entry only fires at login, so without this a fresh install
-# ends with the installer saying "the window opens from the tray icon" and no
-# tray icon anywhere until the user logs out and back in.
-#
-# Last, and only on a run that got this far: everything above has to have
-# succeeded (set -e) before a process is left behind. Skipped when there is
-# no session to put an icon in -- an install from a TTY or over SSH -- and
-# when a tray is already running, since two of them would fight over the
-# config and show two icons.
+# --- confirm the tray ---------------------------------------------------------
+# rogcontrol-tray.service was already started and enabled in the services
+# step above. Checked here rather than assumed, same reasoning as the
+# enforcer check: a tray that fails to launch (no AppIndicator support in
+# the session, e.g. a desktop with no such extension) is silent everywhere
+# except a status check like this one.
 if [ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
     say "No graphical session here - the tray starts at your next login"
-elif pgrep -f 'python3? .*/rogcontrol-tray$' >/dev/null 2>&1; then
-    say "Tray already running - restart it (or log back in) to pick up this version"
+elif systemctl --user is-active --quiet rogcontrol-tray.service 2>/dev/null; then
+    say "Tray running - look for the icon in your status area"
 else
-    # nohup + & rather than systemd-run: the tray is a session-lifetime
-    # sidecar started by an autostart entry, and giving it a unit here would
-    # make this install the odd one out.
-    #
-    # The pattern is anchored on the interpreter and the end of the command
-    # line so that it matches the tray itself and not, say, an editor open on
-    # the same file or the shell that ran this installer -- a bare
-    # "rogcontrol-tray" matches any command line containing those letters.
-    nohup "$HOME/.local/bin/rogcontrol-tray" >/dev/null 2>&1 &
-    sleep 1
-    if pgrep -f 'python3? .*/rogcontrol-tray$' >/dev/null 2>&1; then
-        say "Tray started - look for the icon in your status area"
-    else
-        warn "The tray did not stay running. Try it by hand to see why:"
-        warn "  ~/.local/bin/rogcontrol-tray"
-    fi
+    warn "The tray did not stay running. Try it by hand to see why:"
+    warn "  ~/.local/bin/rogcontrol-tray"
+    warn "Or check:  systemctl --user status rogcontrol-tray.service"
 fi
 
 echo
@@ -573,8 +611,12 @@ echo "  Launch from the app grid ('ROG Control'), or just: rogcontrol"
 echo "  The tray icon is running now (see above) and starts at every login;"
 echo "  the window opens from it."
 echo "  Services:  systemctl --user status rogcontrol-enforcer.service"
+echo "             systemctl --user status rogcontrol-tray.service"
 echo
 echo "  Optional keyboard shortcuts (bind in your desktop settings):"
 echo "    ~/.local/bin/rogcontrol-cycle-profile.py"
 echo "    ~/.local/bin/rogcontrol-cycle-kbdlight.py"
 echo "    ~/.local/bin/rogcontrol-adjust-kbdbrightness.py up|down"
+echo "    ~/.local/bin/rogcontrol-adjust-kbdspeed.py up|down"
+echo "    rogcontrol --show   (bring the window up)"
+echo "    rogcontrol --hide   (put it away without quitting)"

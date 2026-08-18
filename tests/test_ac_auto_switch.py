@@ -1,6 +1,6 @@
 """The enforcer's AC/battery auto-switch.
 
-This is decision logic with a plug on one end and a ~16 second hardware
+This is decision logic with a plug on one end and a ~10 second hardware
 apply on the other, and it can only be exercised for real by unplugging the
 machine and waiting a minute. So the decision itself is a pure function of
 (previous power state, current power state, config), and this pins it --
@@ -23,6 +23,7 @@ import threading
 import time
 import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from rogcontrol import profiles
@@ -342,7 +343,7 @@ class Cycle(unittest.TestCase):
         self.assertEqual(self.notifications, [])
 
     def test_the_notification_comes_before_the_slow_apply(self):
-        # ~16 seconds of fan writes follow. A notification after them is
+        # ~10 seconds of fan writes follow. A notification after them is
         # explaining something the user has finished wondering about.
         config = make_config()
         order = []
@@ -649,7 +650,7 @@ class Watcher(unittest.TestCase):
 
     def test_a_burst_of_events_produces_one_switch(self):
         """A plug change emits an event for the mains supply and one for the
-        battery. Two switches would mean two ~16 second fan applies."""
+        battery. Two switches would mean two ~10 second fan applies."""
         config = make_config()
         self.write_config(config)
         self.enforcer.check_ac_auto_switch(dict(config), None)
@@ -836,3 +837,45 @@ class Cadence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnforcerNamesResolve(unittest.TestCase):
+    """No undefined name may reach the enforcer's cycle.
+
+    A branch once called a function that lives in rogcontrol.profiles and
+    was never imported here. The NameError escaped its caller and took the
+    whole 60-second pass with it -- no CPU limits re-asserted, no fan
+    curves, nothing, with a single "cycle failed" line in the log. The chip
+    then ran at its firmware defaults, roughly twice the configured power
+    limit.
+    """
+
+    def test_every_name_the_enforcer_uses_at_module_level_resolves(self):
+        """A cheap guard against the same shape of typo anywhere else."""
+        import ast
+        import builtins
+        with open(ENFORCER_PATH, encoding="utf-8") as f:
+            src = f.read()
+        tree = ast.parse(src)
+        defined = {"__name__", "__file__"}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.ClassDef)):
+                defined.add(node.name)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                defined.add(node.id)
+            elif isinstance(node, ast.Import):
+                for a in node.names:
+                    defined.add((a.asname or a.name).split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                for a in node.names:
+                    defined.add(a.asname or a.name)
+            elif isinstance(node, ast.arg):
+                defined.add(node.arg)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                defined.add(node.name)
+        missing = sorted({
+            (n.id, n.lineno) for n in ast.walk(tree)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+            and n.id not in defined and not hasattr(builtins, n.id)})
+        self.assertEqual(missing, [], f"undefined names: {missing}")

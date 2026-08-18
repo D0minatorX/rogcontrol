@@ -1,0 +1,22 @@
+[Unit]
+Description=ROG Control tray icon
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/rogcontrol-tray
+Restart=always
+RestartSec=3
+# 42 is the tray's "the user chose Quit" code -- see QUIT_EXIT_CODE in
+# rogcontrol-tray. Restart=always is deliberate and covers the bug this unit
+# was written for: the tray was seen exiting 0 with no crash and, under
+# Restart=on-failure, staying dead with the icon gone for the rest of the
+# session. Everything except a deliberate quit is therefore restarted.
+RestartPreventExitStatus=42
+# ...and 42 is a normal way to stop, not a crash. Without this the unit sits
+# in "failed" after every Quit, which is what someone debugging a genuinely
+# broken tray would find first and be misled by.
+SuccessExitStatus=42
+
+[Install]
+WantedBy=graphical-session.target
