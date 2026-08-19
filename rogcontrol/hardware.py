@@ -15,6 +15,7 @@ the mock rather than the path.
 
 import glob
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -22,6 +23,8 @@ import time
 from .profiles import PROFILE_TO_PPD_MODE
 
 HELPER = "/usr/local/bin/rogcontrol-helper"
+HOST_EXEC = "distrobox-host-exec"
+CONTAINERENV = "/run/.containerenv"
 ASUS_WMI_DIR = "/sys/devices/platform/asus-nb-wmi"
 HWMON_DIR = "/sys/class/hwmon"
 POWER_SUPPLY_DIR = "/sys/class/power_supply"
@@ -170,6 +173,38 @@ def helper_error_message(result):
     return (NO_ERROR_TEXT if had_noise else "unknown error") + suffix
 
 
+def in_container(root=None):
+    """True when this process is running inside a container.
+
+    Podman writes ``/run/.containerenv`` into every container it starts, and
+    a distrobox is a podman container, so this is the same check whether the
+    box was made by distrobox or toolbox. A file rather than the ``container``
+    environment variable: the tray and the enforcer inherit their environment
+    from ``systemd --user``, not from a login shell, so the variable is not
+    reliably there even when the file always is."""
+    return os.path.exists(_under(root, CONTAINERENV))
+
+
+def helper_command(args, root=None):
+    """The argv that reaches the helper from wherever this process is running.
+
+    On the host that is a plain ``sudo -n``, which is every install except
+    one. On an atomic system (Bazzite and the rest of Fedora Atomic) the
+    window can be running inside a distrobox instead, because that is where
+    GTK4/libadwaita had to be installed -- and a container has its own /usr,
+    so the helper at /usr/local/bin, the sudoers rule that makes it
+    passwordless, and the hardware it writes to are all on the other side of
+    the boundary. ``distrobox-host-exec`` runs the call on the host, where
+    all three exist.
+
+    Without this the failure is silent rather than loud: sliders move, the
+    window reports success, and nothing reaches the hardware."""
+    argv = ["sudo", "-n", HELPER, *[str(a) for a in args]]
+    if in_container(root) and shutil.which(HOST_EXEC):
+        return [HOST_EXEC, *argv]
+    return argv
+
+
 def run_helper(*args, timeout=10):
     """Run one privileged action, returning ``(ok, message)``.
 
@@ -185,7 +220,7 @@ def run_helper(*args, timeout=10):
     cmd = " ".join(str(a) for a in args)
     try:
         result = subprocess.run(
-            ["sudo", "-n", HELPER, *[str(a) for a in args]],
+            helper_command(args),
             capture_output=True, text=True, timeout=timeout,
         )
     except Exception as e:

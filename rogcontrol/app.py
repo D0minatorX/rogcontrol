@@ -102,11 +102,17 @@ class MainWindow(Adw.ApplicationWindow):
         saved = config.get("window_size")
         if isinstance(saved, (list, tuple)) and len(saved) == 2:
             try:
-                # Floor the saved size: the GTK3 window could be narrower than
-                # this layout's natural width, and restoring that would open
-                # with the sidebar already collapsed for no reason.
-                width = max(880, int(saved[0]))
-                height = max(600, int(saved[1]))
+                # Floored at the layout's real minimum (MIN_WIDTH/MIN_HEIGHT,
+                # enforced again just below by set_size_request either way),
+                # not some larger number picked to avoid restoring the
+                # occasional narrow size a GTK3 config could have. That
+                # second floor did not distinguish "an old GTK3 leftover"
+                # from "the user deliberately narrowed this GTK4 window and
+                # saved it" -- it silently discarded both back up to the same
+                # fixed width, which looked exactly like the size never
+                # having saved at all.
+                width = max(MIN_WIDTH, int(saved[0]))
+                height = max(MIN_HEIGHT, int(saved[1]))
             except (TypeError, ValueError):
                 pass
         self.set_default_size(width, height)
@@ -895,18 +901,24 @@ class MainWindow(Adw.ApplicationWindow):
             GLib.source_remove(self._config_watch)
             self._config_watch = None
 
-    def _on_close_request(self, _widget):
+    def save_window_size(self):
         """Remember the window's size for next launch.
 
-        "close-request" rather than "destroy": the widget is still fully
-        realized here, so get_width()/get_height() report the size on
-        screen. By the time "destroy" runs that is no longer guaranteed.
-        Returning False lets the close proceed -- this only ever observes
-        it, never blocks it."""
+        Called from two places: closing the window with its own X
+        ("close-request", while the widget is still fully realized, so
+        get_width()/get_height() report the size on screen), and the tray's
+        Quit item, which tears the application down through do_shutdown()
+        instead -- close-request is never emitted on that path, so a resize
+        followed by "Quit" from the tray used to be silently lost."""
         width, height = self.get_width(), self.get_height()
         if width > 0 and height > 0:
             self.config["window_size"] = [width, height]
             config_mod.save_config(self.config)
+
+    def _on_close_request(self, _widget):
+        # Returning False lets the close proceed -- this only ever observes
+        # it, never blocks it.
+        self.save_window_size()
         return False
 
     # -- Ambient -----------------------------------------------------------
@@ -1069,8 +1081,16 @@ class RogControlApp(Adw.Application):
         # Ambient holds a screen-capture session and a sampling thread open,
         # so it has to be closed deliberately -- nothing else here outlives
         # the process.
+        #
+        # save_window_size() runs here too: the tray's Quit item calls
+        # self.quit(), which reaches do_shutdown() directly without ever
+        # emitting the window's "close-request" -- the only other place size
+        # is saved. Safe to call with the window already hidden or never
+        # shown (--minimized): get_width()/get_height() still report the
+        # last realized size, and the >0 guard inside skips it if not.
         if self.win is not None:
             self.win.stop_ambient()
+            self.win.save_window_size()
         Adw.Application.do_shutdown(self)
 
     def do_activate(self):

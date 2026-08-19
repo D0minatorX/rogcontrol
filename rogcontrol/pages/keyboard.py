@@ -278,7 +278,16 @@ class KeyboardPage(Adw.PreferencesPage):
             level = int(level)
         except (TypeError, ValueError):
             level = kbdcolor.KBD_MIN
-        return max(kbdcolor.KBD_MIN, min(kbdcolor.KBD_MAX, level))
+        level = max(kbdcolor.KBD_MIN, min(kbdcolor.KBD_MAX, level))
+        # Keep the config honest with whatever the LED is actually holding.
+        # Without this, a Fn-key change is only ever shown on screen -- the
+        # saved kbd_brightness stays at its old value, and the login-time
+        # apply service reasserts that stale value and undoes the Fn-key
+        # change the next time the user logs in.
+        if level != self.window.config.get("kbd_brightness"):
+            self.window.config["kbd_brightness"] = level
+            config_mod.save_config(self.window.config)
+        return level
 
     def _select_mode(self, name):
         """Select a mode by name, falling back to the first entry.

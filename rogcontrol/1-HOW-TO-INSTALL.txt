@@ -34,6 +34,73 @@ Unzip it, then from inside the folder:
 
     ./install.sh
 
+One command everywhere. The installer reads /etc/os-release and works by
+distro family rather than by name, so CachyOS is handled as Arch and Bazzite
+as Fedora, and it reads your session to tell GNOME from KDE Plasma.
+
+
+BAZZITE AND OTHER ATOMIC SYSTEMS
+--------------------------------
+
+Fedora Atomic images -- Bazzite, Silverblue, Kinoite, the GNOME and the KDE
+Plasma spins alike -- have a read-only /usr and no dnf, so GTK4 and
+libadwaita cannot simply be installed the way they are elsewhere. The
+installer notices and asks you once, and only once:
+
+    1) Distrobox   A Fedora container holds the GTK libraries and the app
+                   runs out of it, in your menu like any other app. No
+                   reboot, nothing added to the base image. This is the
+                   default, and what Bazzite's own documentation recommends.
+
+    2) rpm-ostree  Layers the libraries onto the system as real packages.
+                   Needs one reboot before the app can run, and layered
+                   packages make OS updates slower and can occasionally
+                   break them.
+
+Everything else installs onto the real system identically either way: the
+privileged helper, the sudoers rule, the background services, the suspend
+hook, the menu entry and your settings. Hardware control works the same in
+both -- the window reaches the helper on the host from inside the container
+too. The choice only decides where the window's GTK libraries live.
+
+If you pick 2, the installer layers the packages, does everything else it
+normally would, and stops with:
+
+    1. Reboot
+    2. Run ./install.sh again from this same folder
+
+The second run keeps every setting, skips what is already done, and asks
+nothing. Your profiles are applied and the background services are running
+in the meantime either way, so the hardware is under control while you wait.
+
+Uninstalling removes the container too, after asking -- a container can have
+had other things put in it, so that one is never assumed.
+
+
+CACHYOS AND OTHER ARCH SYSTEMS
+------------------------------
+
+Nothing special. ./install.sh takes the normal pacman path and builds
+ryzenadj and rogauracore from the AUR. CachyOS's default Plasma desktop
+shows tray icons natively, so nothing extra is needed for the tray there.
+
+
+THE TRAY ICON ON GNOME
+----------------------
+
+GNOME Shell has no tray-icon support of its own and needs an extension on
+top of the libayatana-appindicator library:
+
+    "AppIndicator and KStatusNotifierItem Support"
+
+Without it the tray process starts, stays running, and shows nothing, which
+looks exactly like the app being broken. The installer checks and tells you
+if it is missing. On Bazzite it ships with the image -- turn it on in the
+Extensions app. Elsewhere it is extensions.gnome.org, or your distro's
+gnome-shell-extension-appindicator package, then log back in.
+
+KDE Plasma implements this in the panel itself and needs nothing extra.
+
 Do NOT run it as root. It asks for your password twice, and only for the two
 things that genuinely need it:
 
@@ -116,9 +183,16 @@ On GNOME:
        --show" (rogcontrol is already on your PATH, no leading path needed).
 
 GNOME's custom-shortcut dialog needs the full path for the scripts under
-~/.local/bin, not "~" — use your actual home directory. Other desktops (KDE
-System Settings > Shortcuts > Custom Shortcuts, etc.) bind a command to a
-key the same way; point it at the same commands.
+~/.local/bin, not "~" — use your actual home directory.
+
+On KDE Plasma:
+
+    1. System Settings > Keyboard > Shortcuts
+    2. "Add Command" (Plasma calls these Command/URL shortcuts)
+    3. Command: /home/YOUR_USERNAME/.local/bin/rogcontrol-cycle-profile.py
+    4. Set the key combination on the same page once the command is in
+    5. Repeat for each shortcut above. As on GNOME, the "up"/"down" scripts
+       need two separate entries each, and the full path rather than "~".
 
 If you reinstall clean later, these bindings are NOT part of the app —
 they live in your desktop's own settings (GNOME stores them under

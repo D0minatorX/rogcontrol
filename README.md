@@ -110,6 +110,31 @@ cd rogcontrol/rogcontrol
 ./install.sh
 ```
 
+One command on every supported distro. The installer reads `/etc/os-release`, so derivatives are handled by family rather than by name — CachyOS is treated as Arch, Bazzite as Fedora — and it detects your desktop (GNOME or KDE Plasma) to tell you whether the tray needs anything extra.
+
+### On Bazzite and other atomic systems
+
+Fedora Atomic images (Bazzite, Silverblue, Kinoite — GNOME and KDE Plasma spins alike) have a read-only `/usr` and no `dnf`, so the GTK4 libraries can't simply be installed. The installer detects this and asks you once which way you'd rather have them:
+
+| | **Distrobox** (default) | **rpm-ostree** |
+|---|---|---|
+| GTK libraries live | in a Fedora container | on the system itself |
+| Reboot needed | no | yes, one |
+| Base image changed | no | yes, layered packages |
+| OS updates | unaffected | slower; can occasionally break |
+
+Everything else — the privileged helper, the sudoers rule, the background services, the suspend hook and your settings — installs onto the real system identically either way, and hardware control works the same in both. The choice only decides where the window's GTK libraries come from.
+
+Distrobox is the default because it's what [Bazzite's own documentation](https://docs.bazzite.gg/Installing_and_Managing_Software/) recommends, and because it needs no reboot. If you pick rpm-ostree, the installer layers the packages, does everything else it normally would, and tells you to reboot and run `./install.sh` once more — the second run finishes automatically and asks nothing.
+
+### On CachyOS and other Arch systems
+
+Nothing special: `./install.sh` follows the normal pacman path, and builds `ryzenadj` and `rogauracore` from the AUR. CachyOS's default Plasma desktop shows tray icons natively, so there's no extra step for the tray there.
+
+### The tray icon on GNOME
+
+GNOME Shell has no built-in support for tray icons and needs the **AppIndicator and KStatusNotifierItem Support** extension on top of the `libayatana-appindicator` library — without it the tray runs but shows nothing. The installer checks for it and tells you if it's missing. KDE Plasma needs nothing extra.
+
 Do **not** run it as root. It asks for your password twice, and only for the two things that genuinely need it:
 
 - installing the privileged helper to `/usr/local/bin/rogcontrol-helper`
@@ -157,7 +182,9 @@ The brightness and speed scripts take one argument, so each needs its own bindin
 
 `--show`/`--hide` are two ends of one thing, not a toggle: `--show` always brings the window up, `--hide` always puts it away without quitting — the window stays alive, invisible, so the next `--show` is instant. `--toggle` is what the tray's own "Show window" item uses if you'd rather have one key do either.
 
-**On GNOME:** Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts → **+**. Point the command at the full path, e.g. `/home/YOUR_USERNAME/.local/bin/rogcontrol-cycle-profile.py` (GNOME needs the full path, not `~`). For `--show`/`--hide`/`--toggle`, the command is just `rogcontrol --show` — it's already on your PATH. Other desktops (KDE System Settings → Shortcuts → Custom Shortcuts, etc.) bind a command to a key the same way.
+**On GNOME:** Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts → **+**. Point the command at the full path, e.g. `/home/YOUR_USERNAME/.local/bin/rogcontrol-cycle-profile.py` (GNOME needs the full path, not `~`). For `--show`/`--hide`/`--toggle`, the command is just `rogcontrol --show` — it's already on your PATH.
+
+**On KDE Plasma:** System Settings → Keyboard → Shortcuts → **Add Command**. Same commands, same need for a full path rather than `~`. Plasma calls the entry a "Command/URL" shortcut; the trigger key is set on the same page once the command is in.
 
 These bindings live in your desktop's own settings (GNOME stores them under dconf), not in the app — uninstalling or wiping `~/.config/rogcontrol.json` doesn't remove them, and a fresh install doesn't restore them either. Re-add them once after any clean install.
 
