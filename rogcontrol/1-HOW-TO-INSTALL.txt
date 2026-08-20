@@ -145,7 +145,7 @@ the developer's laptop.
 
 KEYBOARD SHORTCUTS
 
-The installer does not bind these for you — a hotkey is a personal choice,
+For ordinary key combinations, the installer does not bind these for you — a hotkey is a personal choice,
 and every desktop binds them a different way. These are installed to
 ~/.local/bin (or, for the window itself, already on your PATH) ready to
 bind to any key you like:

@@ -11,12 +11,17 @@ APP_CONFIG="$HOME/.config/rogcontrol.json"
 STATE_DIR="$HOME/.local/share/rogcontrol"
 STATE_FILE="$STATE_DIR/install-state"
 SUDOERS=/etc/sudoers.d/rogcontrol
-# Both are removed: /etc is where the installer puts it now, /usr/lib is
-# where versions before 1.0.0.1 put it, and an uninstall that knew about
-# only one of them would leave a hook behind that still runs at every
-# suspend after the helper it calls is gone.
-SLEEP_HOOK=/etc/systemd/system-sleep/rogcontrol-fan-sleep-hook
+# The hook is a script in /usr/local/bin driven by a unit in
+# /etc/systemd/system. Both of the drop-in locations it used to be installed
+# to are removed as well: /usr/lib is where versions before 1.0.0.1 put it and
+# it does still run there, /etc/systemd/system-sleep is where 1.0.0.1 and
+# 1.0.0.2 put it and is read by nothing. An uninstall that knew about only the
+# current location would leave a hook behind that runs at every suspend after
+# the helper it calls is gone.
+SLEEP_HOOK=/usr/local/bin/rogcontrol-fan-sleep-hook
+SLEEP_UNIT=/etc/systemd/system/rogcontrol-fan-sleep.service
 OLD_SLEEP_HOOK=/usr/lib/systemd/system-sleep/rogcontrol-fan-sleep-hook
+OLD_ETC_SLEEP_HOOK=/etc/systemd/system-sleep/rogcontrol-fan-sleep-hook
 
 # Reads one key out of the state file the installer wrote.
 prev_get() {
@@ -64,6 +69,7 @@ echo "  the app icon"
 echo "  /usr/local/bin/rogcontrol-helper        (needs sudo)"
 echo "  $SUDOERS                                (needs sudo)"
 echo "  $SLEEP_HOOK  (needs sudo)"
+echo "  $SLEEP_UNIT  (needs sudo)"
 if [ "$DBOX_USED" = 1 ]; then
     echo "  the '$DBOX_NAME' distrobox container    (created by the installer)"
 fi
@@ -147,8 +153,17 @@ else
 fi
 
 step "Removing the suspend/resume fan hook"
-if sudo test -e "$SLEEP_HOOK" 2>/dev/null || sudo test -e "$OLD_SLEEP_HOOK" 2>/dev/null; then
-    sudo rm -f "$SLEEP_HOOK" "$OLD_SLEEP_HOOK"
+# Disabled before the unit file goes, or the sleep.target.wants symlink that
+# `systemctl enable` made is left dangling and systemd complains about it at
+# every boot from then on.
+if sudo test -e "$SLEEP_UNIT" 2>/dev/null; then
+    sudo systemctl disable rogcontrol-fan-sleep.service >/dev/null 2>&1 || true
+fi
+if sudo test -e "$SLEEP_HOOK" 2>/dev/null || sudo test -e "$SLEEP_UNIT" 2>/dev/null \
+   || sudo test -e "$OLD_SLEEP_HOOK" 2>/dev/null \
+   || sudo test -e "$OLD_ETC_SLEEP_HOOK" 2>/dev/null; then
+    sudo rm -f "$SLEEP_HOOK" "$SLEEP_UNIT" "$OLD_SLEEP_HOOK" "$OLD_ETC_SLEEP_HOOK"
+    sudo systemctl daemon-reload
     say "Sleep hook removed"
 else
     say "Nothing to remove (already gone)"

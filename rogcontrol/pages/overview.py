@@ -28,6 +28,22 @@ DASH = "—"
 # One MiB in GiB, since both memory readers answer in MiB.
 MIB_PER_GIB = 1024
 
+POWER_SOURCE_LABELS = {"mains": "AC (barrel charger)", "usb": "AC (USB-C)"}
+
+
+def format_power_source(connected, kind):
+    """The Overview row's text for hardware.read_power_source()'s result.
+
+    No wattage: the barrel supply on this hardware exposes no
+    voltage/current attributes at all, only online/type, so there is
+    nothing to compute a figure from for that source -- and showing it only
+    for USB-C would read as a bug rather than a platform limit."""
+    if connected is None:
+        return DASH
+    if not connected:
+        return "On battery"
+    return POWER_SOURCE_LABELS.get(kind, "AC")
+
 
 def format_used_total(used_mib, total_mib):
     """``"7.1 / 30.5 GiB"``, or a dash if either half is missing.
@@ -102,7 +118,7 @@ class OverviewPage(Adw.PreferencesPage):
         self.cpu_clock_row, self.cpu_clock_val = self._value_row(
             cpu, "Peak core clock", "Highest core, averaged by the hardware")
         self.cpu_power_row, self.cpu_power_val = self._value_row(
-            cpu, "Package power", "Whole-package draw, what the limits cap")
+            cpu, "Package power", "RAPL, averaged since the last reading")
 
         gpu = Adw.PreferencesGroup(title="GPU")
         self.add(gpu)
@@ -141,6 +157,8 @@ class OverviewPage(Adw.PreferencesPage):
         self.battery_row, self.battery_val = self._value_row(battery, "Charge")
         self.limit_row, self.limit_val = self._value_row(
             battery, "Charge limit", "Threshold the firmware is holding")
+        self.power_row, self.power_val = self._value_row(
+            battery, "Power source")
 
         status = Adw.PreferencesGroup(
             title="Status",
@@ -186,7 +204,7 @@ class OverviewPage(Adw.PreferencesPage):
         return {
             "cpu_temp": hardware.read_cpu_temp(),
             "cpu_clock": hardware.read_peak_core_clock_mhz(),
-            "pkg_power": hardware.read_package_power_w(),
+            "pkg_power": hardware.read_cpu_power_w(),
             "gpu_temp": gpu_temp,
             "gpu_power": gpu_power,
             "ram": hardware.read_memory(),
@@ -195,6 +213,7 @@ class OverviewPage(Adw.PreferencesPage):
             "curve_enabled": hardware.read_fan_curve_enabled(),
             "battery": (percent, charging),
             "charge_limit": hardware.read_charge_limit(),
+            "power_source": hardware.read_power_source(),
         }
 
     def _on_sample(self, data, error):
@@ -264,6 +283,8 @@ class OverviewPage(Adw.PreferencesPage):
                 "charging" if charging else "on battery or held at limit")
         limit = data.get("charge_limit")
         self.limit_val.set_text(DASH if limit is None else f"{limit}%")
+        connected, kind = data.get("power_source") or (None, None)
+        self.power_val.set_text(format_power_source(connected, kind))
 
     def _render_curve_state(self, state):
         known = {ch: val for ch, val in state.items() if val is not None}

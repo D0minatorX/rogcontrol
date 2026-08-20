@@ -18,7 +18,8 @@ import sys
 import tempfile
 import time
 
-from .profiles import DEFAULT_PROFILES, tailored_default_profiles
+from .profiles import (DEFAULT_PROFILES, default_kbd_color,
+                       tailored_default_profiles)
 
 CONFIG_PATH = os.path.expanduser("~/.config/rogcontrol.json")
 
@@ -42,6 +43,18 @@ DEFAULT_CONFIG = {
     # a backup) must never be re-prompted just because fan_rpm_cal happens
     # to still be missing.
     "fan_calibration_prompted": False,
+    # The charger-connect flash: opt-in, and its colour. Top-level rather
+    # than inside the kbd_rgb block because that block is rebuilt from the
+    # keyboard page's widgets on every save (see kbdcolor.merge_kbd_rgb) and
+    # only carries the handful of keys listed in CARRIED_KEYS across; these
+    # two are a feature toggle in the same shape as boot_sound and panel_od,
+    # and they are read by the enforcer, which never touches kbd_rgb at all.
+    #
+    # False, so an existing config does not start blinking after an update.
+    # The colour is materialised even while the flash is off, so the page has
+    # a concrete swatch to put in front of the user before they enable it.
+    "charger_flash": False,
+    "charger_flash_color": [0, 255, 255],
 }
 
 
@@ -510,6 +523,20 @@ def migrate_config(cfg, gpu_min_w=1, gpu_max_w=140):
             for section in ("cpu", "gpu", "fans"):
                 if section not in prof:
                     prof[section] = json.loads(json.dumps(base[section]))
+
+    # Every profile gets the keyboard colour Profile Color paints it in, if
+    # it has not got one already. Outside the two branches above rather than
+    # inside either, because both need it: a fresh install has just been
+    # handed the stock profiles, and an existing config has profiles that
+    # predate the key entirely. Nothing here overwrites a colour the user has
+    # set -- setdefault, like every other line in this function.
+    #
+    # Materialising it (rather than leaving kbdcolor to fall back on read)
+    # is what puts a concrete swatch in front of the user to change. The
+    # fallback stays anyway, for a profile imported after this ran.
+    for _name, _prof in cfg["profiles"].items():
+        if isinstance(_prof, dict):
+            _prof.setdefault("kbd_color", default_kbd_color(_name))
 
     # current_profile must name a profile that exists
     if cfg.get("current_profile") not in cfg["profiles"]:

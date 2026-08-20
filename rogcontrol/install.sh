@@ -8,7 +8,7 @@ warn() { printf '%s %s\n' "$WARN" "$*"; }
 die()  { printf '%s %s\n' "$ERR" "$*" >&2; exit 1; }
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
-VERSION=1.0.0.1
+VERSION=1.0.0.2
 STATE_DIR="$HOME/.local/share/rogcontrol"
 STATE_FILE="$STATE_DIR/install-state"
 APP_CONFIG="$HOME/.config/rogcontrol.json"
@@ -288,7 +288,7 @@ from rogcontrol import config
 # profiles is a dict keyed by name, not a list -- so the names are its keys.
 before = set(config.load_config('$BACKUP')['profiles'].keys())
 
-config.save_config(config.load_config('$APP_CONFIG'))
+config.save_config(config.load_config('$APP_CONFIG'), '$APP_CONFIG')
 
 after = set(config.load_config('$APP_CONFIG')['profiles'].keys())
 
@@ -541,33 +541,57 @@ fi
 
 # ------------------------------------------------------------- sleep hook ---
 step "Installing suspend/resume fan hook"
-# systemd-logind polls this directory automatically around every suspend --
-# no separate unit file, enable, or daemon-reload. The username is baked in
-# at install time: this file runs as root with no login session, so it
-# cannot resolve ~ on its own for the "post" step.
+# The hook is a plain script driven by a systemd unit, NOT a drop-in in a
+# system-sleep directory. Both of the earlier attempts at the drop-in were
+# broken, in opposite directions:
 #
-# /etc rather than /usr/lib, though logind reads both: on an atomic system
-# /usr is read-only and this install step is simply impossible there, while
-# /etc is writable and persistent on every distro including those. Same
-# directory as far as logind is concerned, so this costs nothing anywhere
-# else -- and /etc is the correct half of the split for a file generated per
-# machine at install time in any case.
-SLEEP_HOOK=/etc/systemd/system-sleep/rogcontrol-fan-sleep-hook
+#   /usr/lib/systemd/system-sleep  is the only directory systemd-sleep ever
+#       executes -- and /usr is read-only on an atomic system, so writing it
+#       there killed the install partway through on Bazzite.
+#   /etc/systemd/system-sleep      is writable everywhere, and is read by
+#       nothing. systemd-sleep has exactly one hard-coded directory and there
+#       is no /etc counterpart to it, unlike almost every other systemd path.
+#       So the hook installed cleanly, looked installed, and never ran once.
+#
+# A unit wanted by sleep.target has neither problem: /etc/systemd/system is
+# writable on every distro including the atomic ones and is where systemd
+# looks for units. See rogcontrol-fan-sleep.service for how one oneshot unit
+# covers both the "pre" and the "post" half.
+#
+# The script goes to /usr/local/bin beside the helper it calls -- the same
+# root-owned, mode-755, writable-even-on-ostree location, already proven by
+# the helper install above. The username is baked in at install time: this
+# file runs as root with no login session, so it cannot resolve ~ on its own
+# for the "post" step.
+SLEEP_HOOK=/usr/local/bin/rogcontrol-fan-sleep-hook
+SLEEP_UNIT=/etc/systemd/system/rogcontrol-fan-sleep.service
 tmp="$(mktemp)"
 sed "s/__ROGCONTROL_USER__/$USER/" "$SCRIPT_DIR/rogcontrol-fan-sleep-hook" > "$tmp"
-# -D: /etc/systemd/system-sleep does not exist by default on most distros,
-# and install will not create the parent on its own.
 sudo install -D -o root -g root -m 755 "$tmp" "$SLEEP_HOOK"
 rm -f "$tmp"
-# Earlier versions put this in /usr/lib. logind runs everything in both
-# directories, so leaving it there would run the hook twice per suspend --
-# and the "pre" half spends a second per fan channel, so the cost is
-# visible. Removed on upgrade; absent on an atomic system, where it could
-# never have been written in the first place.
-OLD_SLEEP_HOOK=/usr/lib/systemd/system-sleep/rogcontrol-fan-sleep-hook
-if sudo test -e "$OLD_SLEEP_HOOK" 2>/dev/null; then
-    sudo rm -f "$OLD_SLEEP_HOOK" && say "Removed the old copy from /usr/lib"
+sudo install -D -o root -g root -m 644 "$SCRIPT_DIR/rogcontrol-fan-sleep.service" "$SLEEP_UNIT"
+sudo systemctl daemon-reload
+# Not --now: starting it would run the "pre" half and park the fans at their
+# floor on a machine that is wide awake. sleep.target pulls it in by itself
+# at the next suspend, which is the only time it should ever run.
+if sudo systemctl enable rogcontrol-fan-sleep.service >/dev/null 2>&1; then
+    say "Suspend hook enabled (rogcontrol-fan-sleep.service)"
+else
+    warn "Could not enable rogcontrol-fan-sleep.service - fans will keep the"
+    warn "active profile's curve while the machine is asleep."
 fi
+# Copies from both of the earlier drop-in locations. The /usr/lib one runs on
+# top of the unit and would do the whole thing twice per suspend -- and the
+# "pre" half spends a second per fan channel, so the cost is visible. The /etc
+# one never ran at all, but it calls a helper that an uninstall removes, so
+# leaving it behind is a stale file pointed at a binary that may be gone.
+for OLD_SLEEP_HOOK in /usr/lib/systemd/system-sleep/rogcontrol-fan-sleep-hook \
+                      /etc/systemd/system-sleep/rogcontrol-fan-sleep-hook; do
+    if sudo test -e "$OLD_SLEEP_HOOK" 2>/dev/null; then
+        sudo rm -f "$OLD_SLEEP_HOOK" \
+            && say "Removed the old drop-in copy from $(dirname "$OLD_SLEEP_HOOK")"
+    fi
+done
 say "Fans will drop to idle before suspend and restore the active profile on resume"
 
 # ------------------------------------------------------------------ app -----
@@ -870,6 +894,8 @@ cap "Keyboard RGB colours/modes" $f rogauracore "rogauracore missing"
 cap "Keyboard backlight brightness" $f kbd_backlight "no asus::kbd_backlight LED"
 f=0; for b in /sys/class/power_supply/*/charge_control_end_threshold; do [ -e "$b" ] && f=1; done
 cap "Battery charge limit" $f charge_limit "battery has no charge threshold"
+[ -e "$ASUS_DIR/panel_od" ] && f=1 || f=0
+cap "Panel overdrive" $f panel_od "asus-wmi does not expose it"
 
 # --- fan calibration status -------------------------------------------------
 # The calibration lives in the app's own config and is never touched by the

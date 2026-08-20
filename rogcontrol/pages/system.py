@@ -37,6 +37,13 @@ before any operating system is running, and switching profile must not change
 it. So it is written straight to the hardware, kept at the top level of the
 config rather than inside a profile, and re-asserted at login by the
 boot-apply service in case a firmware reset has brought the chime back.
+
+Panel overdrive sits beside it on all four of those counts, which is why it
+is here and not on the GPU page. The GPU page is about the discrete card --
+what it is allowed to draw, how hot it may get, which card the screen is
+plugged into -- and overdrive is none of those: it is the panel's own
+response-time setting, written to the same asus-wmi platform device as the
+chime, held in firmware, and no more part of a profile than the chime is.
 """
 
 import gi
@@ -157,6 +164,24 @@ BOOT_SOUND_TOOLTIP = (
     "put it back if a firmware reset loses it."
 )
 
+# Overdrive is the same shape of control as the chime above it, so it is
+# written the same way: what it costs on the row, the paragraph on hover.
+PANEL_OD_SUBTITLE = "Faster pixel response, at the cost of some overshoot"
+
+PANEL_OD_TOOLTIP = (
+    "Panel overdrive drives each pixel transition past its target and lets "
+    "it settle back, so the display changes state faster and fast motion "
+    "smears less. It is a trade, not a free improvement: pushing a "
+    "transition too far shows up as overshoot — a pale ghost leading a "
+    "moving edge — and how visible that is depends on the panel. Leave it "
+    "on if motion looks cleaner to you and off if the ghosting does not. "
+    "Like the boot sound this is the firmware's own setting, so it is not "
+    "part of a profile and does not change when you switch one. Writing it "
+    "needs root, so it goes through this app's privileged helper, and it is "
+    "remembered so the boot-apply service can put it back if a firmware "
+    "reset loses it."
+)
+
 SYNC_DESCRIPTION = (
     "This app and the OS both hold an opinion about the power mode. "
     "Selecting a profile here sets the OS mode to match. Changing it the "
@@ -182,6 +207,11 @@ class SystemPage(Adw.PreferencesPage):
         # to change it, so a sample that lands mid-write cannot put the
         # switch back to the value the firmware has not been given yet.
         self._boot_sound_busy = False
+        # And again for overdrive. Two flags rather than one shared "a
+        # firmware write is in flight": the two rows are independent, and a
+        # single flag would freeze the chime switch while overdrive was
+        # being written for no reason the user could see.
+        self._panel_od_busy = False
         self.asusd_state = {}
         # What is in the picker, and separately the last non-empty answer
         # supergfxctl -s gave. The two are deliberately not the same list.
@@ -297,9 +327,23 @@ class SystemPage(Adw.PreferencesPage):
         self.boot_sound_row.set_tooltip_text(BOOT_SOUND_TOOLTIP)
         self.boot_sound_row.connect("notify::active", self._on_boot_sound)
         group.add(self.boot_sound_row)
-        if not self.caps.get("boot_sound"):
-            # The only row "Firmware" has -- nothing left in the group.
+
+        self.panel_od_row = Adw.SwitchRow(title="Panel overdrive",
+                                          subtitle=PANEL_OD_SUBTITLE)
+        self.panel_od_row.set_tooltip_text(PANEL_OD_TOOLTIP)
+        self.panel_od_row.connect("notify::active", self._on_panel_od)
+        group.add(self.panel_od_row)
+
+        # Per row now that there are two of them, and the group only goes
+        # when neither is there: plenty of machines have the chime and no
+        # panel_od, and a group hidden on the first missing capability would
+        # take a working control away with it.
+        self.boot_sound_row.set_visible(bool(self.caps.get("boot_sound")))
+        self.panel_od_row.set_visible(bool(self.caps.get("panel_od")))
+        if not (self.caps.get("boot_sound") or self.caps.get("panel_od")):
+            # Nothing left in "Firmware" to show a heading for.
             self.firmware_group.set_visible(False)
+
 
     def _build_log(self):
         group = Adw.PreferencesGroup(
@@ -420,6 +464,7 @@ class SystemPage(Adw.PreferencesPage):
             ("Dynamic Boost", caps.get("nv_dynamic_boost")),
             ("GPU temp target", caps.get("nv_temp_target")),
             ("charge limit", caps.get("charge_limit")),
+            ("panel overdrive", caps.get("panel_od")),
             ("keyboard backlight", caps.get("kbd_backlight")),
         ) if ok]
         lines.append("Available: " + (", ".join(present) if present
@@ -465,6 +510,11 @@ class SystemPage(Adw.PreferencesPage):
             # read once would show a stale position all session.
             "boot_sound": (hardware.read_boot_sound()
                            if self.caps.get("boot_sound") else None),
+            # One more sysfs read, sampled for the same reason: the firmware
+            # setup screen writes this too, and so does anything else on the
+            # machine that talks to asus-wmi.
+            "panel_od": (hardware.read_panel_od()
+                         if self.caps.get("panel_od") else None),
         }
 
     def _on_sample(self, data, error):
@@ -477,6 +527,7 @@ class SystemPage(Adw.PreferencesPage):
         self._render_asusd(data.get("asusd") or {})
         self._render_sync(data.get("power_mode"))
         self._render_boot_sound(data.get("boot_sound"))
+        self._render_panel_od(data.get("panel_od"))
 
     def _render_supergfx(self, mode, error):
         """Three states, said apart: absent, present but silent, working.
@@ -587,6 +638,56 @@ class SystemPage(Adw.PreferencesPage):
         else:
             self.window.toast(f"Boot sound change failed: {message}")
         # Ask the firmware rather than assuming the switch worked; a refused
+        # write puts the switch straight back.
+        self._refresh_now()
+
+    # -- panel overdrive -----------------------------------------------------
+
+    def _render_panel_od(self, value):
+        """Put the switch where the panel actually is.
+
+        Same ``_loading`` guard as the chime, for the same reason: a set
+        that looks like the user moving the switch would have every sample
+        fire a helper call writing back the value it has just read."""
+        if value is None or self._panel_od_busy:
+            return
+        was_loading = self._loading
+        self._loading = True
+        try:
+            self.panel_od_row.set_active(bool(value))
+        finally:
+            self._loading = was_loading
+
+    def _on_panel_od(self, row, _param):
+        if self._loading or self._panel_od_busy:
+            return
+        wanted = 1 if row.get_active() else 0
+        self._panel_od_busy = True
+        row.set_sensitive(False)
+        self.window.apply_async(
+            lambda: hardware.run_helper("panelod", wanted),
+            lambda result, error: self._on_panel_od_set(
+                wanted, result, error))
+
+    def _on_panel_od_set(self, wanted, result, error):
+        self._panel_od_busy = False
+        self.panel_od_row.set_sensitive(True)
+        ok, message = (False, str(error)) if error is not None else result
+        if ok:
+            # Top level rather than inside the profile, for the reason the
+            # chime is: this describes the screen, not how hard the machine
+            # is being driven, so it must survive a profile switch. The
+            # boot-apply service re-asserts it from here.
+            self.window.config["panel_od"] = wanted
+            config_mod.save_config(self.window.config)
+            self.window.toast("Panel overdrive on — faster pixel response, "
+                              "watch for ghosting on moving edges."
+                              if wanted else
+                              "Panel overdrive off — the panel runs at its "
+                              "own response time.")
+        else:
+            self.window.toast(f"Panel overdrive change failed: {message}")
+        # Ask the hardware rather than assuming the switch worked; a refused
         # write puts the switch straight back.
         self._refresh_now()
 

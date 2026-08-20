@@ -32,6 +32,14 @@ MODE_ORDER = [
 # Deliberately not in the rotation: Ambient needs a live screen-capture
 # session, so it only exists while the main window is running. Cycling into
 # it from a hotkey would set a mode nothing is driving.
+#
+# Profile Colour is out of the rotation too, for the opposite reason. It is
+# not a keyboard effect the user picks between -- it is the keyboard being
+# handed over to the profile switcher, which then owns it until the user
+# takes it back on the Keyboard page. Cycling INTO it from here would paint
+# one colour and look like Static; cycling OUT of it is exactly what should
+# happen, and does: the saved name is not in this list, so the next press
+# lands on Static and the profile switcher stops painting.
 
 # Kept in step with the same lists in the main app. Multi-zone effects need a
 # four-zone Aura controller; on anything else they light zone 1 and drop the

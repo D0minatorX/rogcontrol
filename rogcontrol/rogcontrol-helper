@@ -29,7 +29,7 @@ find_hwmon_by_name() {
 }
 
 usage() {
-    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|bootsound|asusd_status|asusd_disable|asusd_enable> ..." >&2
+    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|bootsound|panelod|asusd_status|asusd_disable|asusd_enable> ..." >&2
     exit 1
 }
 
@@ -609,6 +609,29 @@ case "$1" in
         [ -e "$BOOT_SOUND" ] || {
             echo "no boot_sound control on this machine" >&2; exit 1; }
         echo "$VAL" > "$BOOT_SOUND"
+        ;;
+
+    panelod)
+        # Panel overdrive: the display's pixel-response boost, one more
+        # asus-wmi file holding one digit. Only some models have it -- the
+        # driver creates panel_od when the firmware claims the feature -- so
+        # the missing-file case is normal here and gets its own sentence
+        # rather than a shell redirection error.
+        #
+        # Two fixed values and nothing else, on the same grounds as
+        # bootsound above: a root-owned write to a firmware knob, refused by
+        # the driver with -EINVAL for anything outside 0/1, so passing the
+        # caller's string through would turn a typo into an unexplained
+        # failure and would widen this helper into the unbounded privileged
+        # write it exists not to have.
+        shift
+        VAL="$1"
+        [ "$VAL" = "0" ] || [ "$VAL" = "1" ] || {
+            echo "panelod takes 0 (off) or 1 (on), got: $VAL" >&2; exit 1; }
+        PANEL_OD=/sys/devices/platform/asus-nb-wmi/panel_od
+        [ -e "$PANEL_OD" ] || {
+            echo "no panel_od control on this machine" >&2; exit 1; }
+        echo "$VAL" > "$PANEL_OD"
         ;;
 
     asusd_status)

@@ -12,13 +12,26 @@ yet enumerated. A control greyed out on a bad guess stays greyed out for the
 whole session with no way to retry, which is worse than a control that tries
 and reports what went wrong.
 
-The second is that one mode, Ambient, needs a live process behind it. Every
-other effect is a single write the firmware then animates by itself, so it
-survives the app exiting. Ambient is a screen-capture session and a sampling
-thread, which means it has to be started when chosen, stopped when another
-mode is chosen or the window goes away, and started again at launch when it
-is what was saved -- see ``start_ambient`` / ``stop_ambient`` and the
-application's shutdown hook.
+The second is that two modes, Ambient and Profile Color, are not a single
+write the firmware then animates by itself.
+
+Ambient is a screen-capture session and a sampling thread, which means it has
+to be started when chosen, stopped when another mode is chosen or the window
+goes away, and started again at launch when it is what was saved -- see
+``start_ambient`` / ``stop_ambient`` and the application's shutdown hook.
+
+Profile Color is the opposite: it needs nothing running here at all. The
+keyboard is repainted by whichever process makes a profile current -- this
+window, the tray's apply, the hotkey cycler, the enforcer -- through
+``hardware.set_profile_kbd_color``, so the colour follows the profile with
+this app closed, which is when most profile switches happen. What this page
+owns is the *choice* of mode and the per-profile colours behind it.
+
+The two are exclusive because there is one saved ``mode`` and it holds one of
+them: choosing Profile Color stops the sampler on its way past, and every
+non-GUI painter asks ``kbdcolor.profile_color_enabled`` before it writes, so
+a user on Ambient never has a profile switch painted over their screen
+colours.
 
 All the colour arithmetic lives in ``kbdcolor``, which has no GTK in it and
 is unit-tested. This file decides *when* a colour is sent, never what it is.
@@ -78,6 +91,47 @@ COLOUR2_TOOLTIP = (
 
 SPEED_TOOLTIP = "How fast the chosen animation runs."
 
+PROFILE_COLOUR_TITLE = "Profile colours"
+
+PROFILE_COLOUR_DESCRIPTION = (
+    "One colour per power profile, used by the Profile Color effect. The "
+    "keys are repainted whenever the profile changes — from this window, the "
+    "tray, the shortcut key, or automatically on the charger."
+)
+
+PROFILE_COLOUR_TOOLTIP = (
+    "The colour the keyboard is painted while this profile is active."
+)
+
+CHARGER_FLASH_TITLE = "Charger flash"
+
+CHARGER_FLASH_DESCRIPTION = (
+    "Blink the keys once when the charger is plugged in or unplugged, then "
+    "go straight back to the effect above. Handled by the background "
+    "service, so it works with this window closed."
+)
+
+CHARGER_FLASH_TOOLTIP = (
+    "Both directions: a blink on plug in and a blink on unplug. Unplugging "
+    "is the half worth noticing — a cable knocked out of the socket is "
+    "otherwise invisible until the battery is low."
+)
+
+CHARGER_FLASH_COLOUR_TOOLTIP = (
+    "The colour of the blink. It is only ever on the keys for about half a "
+    "second, so a bright, saturated colour reads better than a subtle one."
+)
+
+# Shown under the switch while the chosen effect is one the flash cannot be
+# undone from. Said out loud rather than hiding the switch: a control that
+# vanishes when the picker above it moves is harder to understand than one
+# that explains itself, and the setting is still worth keeping for when the
+# effect changes back.
+CHARGER_FLASH_UNRESTORABLE_HINT = (
+    "Not used with this effect — its colour is not something the service "
+    "can put back afterwards, so the keys are left alone."
+)
+
 # What each effect actually does, shown under the picker. Modes whose colour
 # is not the one in the button below need saying out loud -- otherwise a
 # picker showing pink while the keys glow green reads as a bug.
@@ -99,6 +153,8 @@ MODE_HINTS = {
                      "while it charges.",
     "Ambient": "Follows what is on the screen. Needs screen-sharing "
                "permission, and stops when this app closes.",
+    "Profile Color": "One colour per power profile, repainted on every "
+                     "switch — including with this app closed.",
 }
 
 NO_BACKLIGHT_HINT = (
@@ -151,6 +207,12 @@ class KeyboardPage(Adw.PreferencesPage):
         # skip the USB write when the reading maps to the same colour again.
         self._last_live_color = None
         self._ambient = None
+        # One colour row per profile, keyed by name so reload can tell an
+        # added/renamed/deleted profile from an unchanged one.
+        self._profile_rows = {}
+        # None on a machine with no controllable keyboard colour, where the
+        # whole group is withheld rather than built. See _build.
+        self.flash_group = None
 
         self.modes = kbdcolor.supported_modes(self.caps)
         self._build()
@@ -197,6 +259,17 @@ class KeyboardPage(Adw.PreferencesPage):
             settle_ms=DEBOUNCE_MS)
         self.speed_row.connect("changed", lambda _row, _v: self._on_edited())
         lighting.add(self.speed_row)
+
+        # Its own group rather than more rows in Lighting: there is one row
+        # per profile, so this is the only part of the page whose length is
+        # the user's to decide, and it is hidden outright for every other
+        # effect.
+        self.profile_group = Adw.PreferencesGroup(
+            title=PROFILE_COLOUR_TITLE,
+            description=PROFILE_COLOUR_DESCRIPTION)
+        self.add(self.profile_group)
+
+        self._build_charger_flash()
 
         # Keyboard controls are deliberately NEVER disabled by capability
         # detection, unlike the other pages. Detection runs once at startup,
@@ -250,6 +323,8 @@ class KeyboardPage(Adw.PreferencesPage):
                              kbdcolor.saved_color(
                                  saved, "2", kbdcolor.DEFAULT_COLOR2))
             self.speed_row.set_value(kbdcolor.clamp_speed(saved.get("speed")))
+            self._rebuild_profile_rows()
+            self._reload_charger_flash()
             self._sync_visibility()
         finally:
             self._loading = was_loading
@@ -329,7 +404,13 @@ class KeyboardPage(Adw.PreferencesPage):
         self.color_row.set_visible(mode in kbdcolor.COLOUR_MODES)
         self.color2_row.set_visible(mode in kbdcolor.SECOND_COLOUR_MODES)
         self.speed_row.set_visible(mode in kbdcolor.SPEED_MODES)
+        self.profile_group.set_visible(mode == kbdcolor.PROFILE_COLOR_MODE)
         self.mode_row.set_subtitle(MODE_HINTS.get(mode, ""))
+        if self.flash_group is not None:
+            # Shown, not hidden: see the note above _build_charger_flash.
+            self.flash_row.set_subtitle(
+                CHARGER_FLASH_UNRESTORABLE_HINT
+                if mode in kbdcolor.FLASH_UNRESTORABLE_MODES else "")
 
     # -- brightness ----------------------------------------------------------
 
@@ -423,7 +504,14 @@ class KeyboardPage(Adw.PreferencesPage):
         """Worker thread: work out the arguments and make the one call."""
         args = kbdcolor.helper_args(mode, color1, color2, speed)
         color = None
-        if args is None:
+        if args is None and mode == kbdcolor.PROFILE_COLOR_MODE:
+            # Not a live reading: the colour is whatever the active profile
+            # is wearing, and it only moves when the profile does. Resolved
+            # through the same kbdcolor call every non-GUI painter uses, so
+            # the window and the enforcer cannot disagree about the colour.
+            args = kbdcolor.static_args(
+                kbdcolor.profile_color(self.window.config))
+        elif args is None:
             # A mode whose colour comes from a live reading rather than from
             # a picker. Ambient never reaches here -- it returned above.
             color, reason = self._live_color(mode)
@@ -471,6 +559,129 @@ class KeyboardPage(Adw.PreferencesPage):
         self.window.config["kbd_rgb"] = kbdcolor.merge_kbd_rgb(
             self.window.config.get("kbd_rgb"), mode, color1, color2, speed)
         config_mod.save_config(self.window.config)
+
+    # -- charger flash -------------------------------------------------------
+    #
+    # The one control on this page that is withheld by capability detection,
+    # and the exception is the same one supported_modes already makes for
+    # Profile Color: what this switch turns on is read and acted on by the
+    # enforcer, which has no window to report a failure into. Everything else
+    # here stays enabled on the doctrine at the top of the file -- try it and
+    # say what went wrong -- because there is somebody watching when it does.
+    # A switch that silently arms a blink on a machine with no Aura
+    # controller has nobody watching, and no way to find out.
+    #
+    # Nothing here writes to the keyboard. The colour button sets what a
+    # future plug event will blink, not what the keys are doing now, and
+    # previewing it would mean two USB round trips every time the picker was
+    # nudged -- on top of fighting whatever effect is currently running.
+
+    def _build_charger_flash(self):
+        if not self.caps.get("kbd_rgb", True):
+            return
+        group = Adw.PreferencesGroup(title=CHARGER_FLASH_TITLE,
+                                     description=CHARGER_FLASH_DESCRIPTION)
+        group.set_tooltip_text(CHARGER_FLASH_TOOLTIP)
+        self.add(group)
+        self.flash_group = group
+
+        self.flash_row = Adw.SwitchRow(title="Flash on charger change")
+        self.flash_row.set_tooltip_text(CHARGER_FLASH_TOOLTIP)
+        self.flash_row.connect("notify::active", self._on_charger_flash_toggled)
+        group.add(self.flash_row)
+
+        row = Adw.ActionRow(title="Flash colour")
+        row.set_tooltip_text(CHARGER_FLASH_COLOUR_TOOLTIP)
+        self.flash_color_button = ColorButton(title="Flash colour")
+        self.flash_color_button.set_valign(Gtk.Align.CENTER)
+        # Its own handler rather than _on_color_changed: that one debounces
+        # into _apply, which would push the *effect* to the keyboard every
+        # time this swatch moved.
+        self.flash_color_button.connect("color-set",
+                                        self._on_flash_color_changed)
+        row.add_suffix(self.flash_color_button)
+        row.set_activatable_widget(self.flash_color_button)
+        group.add(row)
+
+    def _reload_charger_flash(self):
+        if self.flash_group is None:
+            return
+        self.flash_row.set_active(
+            kbdcolor.charger_flash_enabled(self.window.config))
+        self._set_button(self.flash_color_button,
+                         kbdcolor.charger_flash_color(self.window.config))
+
+    def _on_charger_flash_toggled(self, row, _param):
+        if self._loading:
+            return
+        self.window.config[kbdcolor.CHARGER_FLASH_KEY] = row.get_active()
+        config_mod.save_config(self.window.config)
+
+    def _on_flash_color_changed(self, button):
+        if self._loading:
+            return
+        self.window.config[kbdcolor.CHARGER_FLASH_COLOR_KEY] = list(
+            self._button_color(button))
+        config_mod.save_config(self.window.config)
+
+    # -- Profile Color mode --------------------------------------------------
+    #
+    # The page owns the colours and the choice of mode, and nothing else.
+    # The repaint on a profile switch is deliberately NOT here: see
+    # hardware.set_profile_kbd_color for why it lives on the switch path
+    # instead, where the tray, the hotkey cycler and the enforcer can reach
+    # it with this window closed.
+
+    def _rebuild_profile_rows(self):
+        """One colour row per profile, rebuilt from the config.
+
+        Rebuilt rather than updated in place because profiles are created,
+        renamed, deleted and imported while this page exists, and the window
+        also follows the config file being written by the enforcer. Matching
+        rows to names by hand is the kind of bookkeeping that ends up showing
+        a swatch for a profile that was deleted ten minutes ago."""
+        for row in self._profile_rows.values():
+            self.profile_group.remove(row)
+        self._profile_rows = {}
+        for name in (self.window.config.get("profiles") or {}):
+            row = Adw.ActionRow(title=name)
+            row.set_tooltip_text(PROFILE_COLOUR_TOOLTIP)
+            button = ColorButton(title=name)
+            button.set_valign(Gtk.Align.CENTER)
+            # Through kbdcolor rather than straight out of the profile, so a
+            # profile that has never been given a colour -- imported, or
+            # written before the key existed -- shows the one it would
+            # actually be painted in rather than black.
+            self._set_button(
+                button, kbdcolor.profile_color(self.window.config, name))
+            # set_rgba above does not emit, so nothing here looks like the
+            # user picking a colour. See widgets/color_picker.py.
+            button.connect("color-set", self._on_profile_color_changed, name)
+            row.add_suffix(button)
+            row.set_activatable_widget(button)
+            self.profile_group.add(row)
+            self._profile_rows[name] = row
+
+    def _on_profile_color_changed(self, button, name):
+        """Store one profile's colour, and repaint only if it is on show.
+
+        Editing the colour of a profile that is not active changes nothing on
+        the keyboard, which is correct and is why the row is titled with the
+        profile's name: the swatch is what that profile will look like, not
+        what the keys look like now."""
+        if self._loading:
+            return
+        profile = (self.window.config.get("profiles") or {}).get(name)
+        if not isinstance(profile, dict):
+            return
+        profile[kbdcolor.PROFILE_COLOR_KEY] = list(self._button_color(button))
+        config_mod.save_config(self.window.config)
+        if (name == self.window.config.get("current_profile")
+                and self.current_mode() == kbdcolor.PROFILE_COLOR_MODE):
+            # Through the same debounce as the other colour buttons: a
+            # keyboard write is a ~270 ms USB round trip, and the picker can
+            # be reopened twice in a second.
+            self._on_edited()
 
     # -- Ambient mode --------------------------------------------------------
 

@@ -2,8 +2,8 @@
 """
 rogcontrol-apply.py
 Reapplies your last-saved ROG Control profile plus independent settings
-(keyboard brightness, charge limit, boot sound, GPU clock offsets)
-at login. Retries several times with delays, since some services
+(keyboard brightness, charge limit, boot sound, panel overdrive, GPU
+clock offsets) at login. Retries several times with delays, since some services
 (nvidia, asus-wmi) may not be fully ready right at login.
 
 --profile-only applies the profile and leaves the keyboard alone.
@@ -32,6 +32,11 @@ The boot sound is global on the same terms, and applied on the same terms:
 nothing else on the machine writes it, the write is idempotent, and a chime
 that has come back because a BIOS update reset the firmware is only heard at
 the next power-on -- by which time nobody is looking at this app.
+
+Panel overdrive is the third of these globals and is here for the same
+reasons, with one of its own: the setting is a property of the screen, so
+losing it is something the user sees all day and has no way to connect back
+to the BIOS update that caused it.
 """
 
 import json
@@ -131,6 +136,15 @@ def apply_once(config, profile_only=False):
     # A profile that maps to no OS mode returns None and changes nothing.
     hardware.set_power_mode_for_profile(profile_name)
 
+    # And the keyboard colour, if the user has put the keyboard on the
+    # profile. Unlike kbd_brightness below this is NOT skipped for
+    # --profile-only, and the difference is the whole point: the brightness
+    # is global, so re-asserting it on a switch overwrites whatever the Fn
+    # keys last did. The colour belongs TO the profile, so a switch that did
+    # not write it would leave the keys wearing the profile the user has
+    # just left. Returns None, writing nothing, on any other lighting mode.
+    hardware.set_profile_kbd_color(config, profile_name)
+
     if profile:
         cpu = profile.get("cpu")
         if cpu:
@@ -186,6 +200,14 @@ def apply_once(config, profile_only=False):
     # returns it to the ASUS default) does not silently bring the chime back.
     if "boot_sound" in config:
         run_helper("bootsound", 1 if config["boot_sound"] else 0)
+    # Panel overdrive is global on the same terms and re-asserted on the
+    # same terms. It matters slightly more than the chime does: a firmware
+    # reset that loses the chime is heard once at the next power-on, while a
+    # firmware reset that loses overdrive leaves the user staring at a
+    # smearier screen with nothing to tell them why. Absent from the config
+    # still means "never set", and the firmware's own value is left alone.
+    if "panel_od" in config:
+        run_helper("panelod", 1 if config["panel_od"] else 0)
 
 
 def main(argv=None):

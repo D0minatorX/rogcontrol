@@ -129,7 +129,12 @@
             80
           ]
         ]
-      }
+      },
+      "kbd_color": [
+        0,
+        120,
+        255
+      ]
     },
     "Balanced Power": {
       "cpu": {
@@ -253,7 +258,12 @@
             95
           ]
         ]
-      }
+      },
+      "kbd_color": [
+        0,
+        200,
+        160
+      ]
     },
     "Balanced Performance": {
       "cpu": {
@@ -377,7 +387,12 @@
             100
           ]
         ]
-      }
+      },
+      "kbd_color": [
+        255,
+        170,
+        0
+      ]
     },
     "Performance": {
       "cpu": {
@@ -501,7 +516,12 @@
             100
           ]
         ]
-      }
+      },
+      "kbd_color": [
+        255,
+        0,
+        0
+      ]
     },
     "Test": {
       "cpu": {
@@ -625,11 +645,23 @@
             100
           ]
         ]
-      }
+      },
+      "kbd_color": [
+        255,
+        255,
+        255
+      ]
     }
   },
   "config_version": 1,
+  "charger_flash": false,
+  "charger_flash_color": [
+    0,
+    255,
+    255
+  ],
   "boot_sound": 1,
+  "panel_od": 1,
   "kbd_rgb": {
     "mode": "Static",
     "r": 255,

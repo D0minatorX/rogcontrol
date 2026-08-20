@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 
+from . import kbdcolor
 from .profiles import PROFILE_TO_PPD_MODE
 
 HELPER = "/usr/local/bin/rogcontrol-helper"
@@ -29,6 +30,13 @@ ASUS_WMI_DIR = "/sys/devices/platform/asus-nb-wmi"
 HWMON_DIR = "/sys/class/hwmon"
 POWER_SUPPLY_DIR = "/sys/class/power_supply"
 CPUFREQ_GLOB = "/sys/devices/system/cpu/cpufreq/policy*"
+POWERCAP_DIR = "/sys/class/powercap"
+
+# Previous (energy_uj, monotonic timestamp) per RAPL package path, so
+# read_cpu_power_w() can turn the running energy counter into a power
+# figure. Keyed by path rather than a single slot so tests using a fake
+# root never collide with a real reading taken in the same process.
+_rapl_energy_history = {}
 
 LOG_PATH = os.path.expanduser("~/.local/share/rogcontrol/rogcontrol.log")
 LOG_MAX_BYTES = 256 * 1024
@@ -483,12 +491,79 @@ def read_package_power_w(root=None):
     This comes off the *amdgpu* hwmon rather than a CPU one, which looks
     wrong and is not: on this APU-plus-dGPU design the amdgpu node exposes
     ``power1_input`` for the SoC package, and it is the PPT figure the power
-    limits below actually cap. There is no equivalent under k10temp."""
+    limits below actually cap. There is no equivalent under k10temp.
+
+    Kept as the fallback for read_cpu_power_w() below, for machines with no
+    RAPL powercap zone."""
     hw = find_hwmon_by_name("amdgpu", root=root)
     if not hw:
         return None
     micro = read_int(os.path.join(hw, "power1_input"))
     return None if micro is None else micro / 1e6
+
+
+def find_rapl_package(root=None):
+    """Path of the RAPL powercap zone named "package-*", or None.
+
+    ``/sys/class/powercap`` holds one top-level ``intel-rapl:N`` per package
+    plus subzones such as ``intel-rapl:N:0`` ("core", "uncore" ...) nested
+    under it -- the colon count tells them apart, since a subzone always has
+    one more than its parent. Only the top-level package zone is what
+    "CPU package power" means; a subzone would silently under-report.
+
+    Despite the ``intel-rapl`` name this driver also covers AMD Zen 2 and
+    later, which expose RAPL-compatible MSRs -- this machine included."""
+    base = _under(root, POWERCAP_DIR)
+    try:
+        for entry in sorted(os.listdir(base)):
+            if not entry.startswith("intel-rapl:") or entry.count(":") != 1:
+                continue
+            path = os.path.join(base, entry)
+            name = read_file(os.path.join(path, "name"))
+            if name and name.startswith("package"):
+                return path
+    except OSError:
+        pass
+    return None
+
+
+def read_cpu_power_w(root=None):
+    """True CPU package power in watts, averaged since the previous call.
+
+    RAPL exposes a running energy counter (microjoules), not a power
+    sensor, so this is the standard way every tool -- powertop, btop,
+    turbostat -- turns it into watts: divide the energy consumed between
+    two reads by the wall time between them. That means the first call
+    after startup has no baseline yet and returns None; every call after
+    that returns the real average draw over the interval since the last one,
+    which for a caller polling on a fixed timer is the current figure.
+
+    Falls back to read_package_power_w() -- the amdgpu SoC/PPT reading --
+    on a machine with no RAPL powercap zone."""
+    path = find_rapl_package(root=root)
+    if not path:
+        return read_package_power_w(root=root)
+    energy = read_int(os.path.join(path, "energy_uj"))
+    if energy is None:
+        return read_package_power_w(root=root)
+    now = time.monotonic()
+    previous = _rapl_energy_history.get(path)
+    _rapl_energy_history[path] = (energy, now)
+    if previous is None:
+        return None
+    prev_energy, prev_time = previous
+    elapsed = now - prev_time
+    if elapsed <= 0:
+        return None
+    delta = energy - prev_energy
+    if delta < 0:
+        # The counter wrapped between reads. max_energy_range_uj is the
+        # width it wrapped at, so adding it back recovers the true delta.
+        max_range = read_int(os.path.join(path, "max_energy_range_uj"))
+        if max_range is None:
+            return None
+        delta += max_range
+    return delta / 1e6 / elapsed
 
 
 def read_cpu_clock_range(root=None):
@@ -968,6 +1043,34 @@ def read_boot_sound(root=None):
     return val if val in (0, 1) else None
 
 
+# Panel overdrive, on the same platform device and here for the same reason
+# the chime is. It shortens the display's pixel response by driving each
+# transition past its target voltage and letting it settle back, so fast
+# motion smears less. That is a fact about the screen and not about how hard
+# the machine is being driven, so it must not change when a profile does --
+# and it is a trade rather than an improvement: less smearing costs some
+# overshoot, which on the panels that show it looks like a pale ghost
+# leading a moving edge. Whether that trade is worth taking is the user's
+# call, which is why this is a switch they own rather than something a
+# profile decides for them.
+PANEL_OD_PATH = f"{ASUS_WMI_DIR}/panel_od"
+
+
+def read_panel_od(root=None):
+    """1 if the panel is being overdriven, 0 if it is not, None if this
+    machine has no such control.
+
+    Three answers and no guessing, exactly as the chime above. The driver
+    creates panel_od only on models whose firmware claims the feature, so
+    its absence is common and is emphatically not "off": answering 0 there
+    would leave a switch sitting in the off position, which reads as "this
+    was tried and it is disabled" rather than "this machine cannot do it".
+    Anything in the file that is not 0 or 1 is unavailable on the same
+    terms -- a two-position switch has nowhere honest to put it."""
+    val = read_int(_under(root, PANEL_OD_PATH))
+    return val if val in (0, 1) else None
+
+
 # -- Graphics mode (supergfxctl) ---------------------------------------------
 
 # The three modes this app offers, always, in the order a user thinks about
@@ -1289,6 +1392,35 @@ def set_power_mode_for_profile(profile_name, timeout=5):
     return set_power_mode(mode, timeout=timeout)
 
 
+
+def set_profile_kbd_color(cfg, profile_name=None, caps=None, timeout=10):
+    """Take the keyboard colour along with a profile switch.
+
+    Returns ``(ok, message)``, or None when this switch has no keyboard
+    colour to write -- the user is on another lighting mode, or the machine
+    has no controllable one. None is the same "does not apply, and that is
+    not a failure" that set_power_mode_for_profile returns, and callers
+    treat it the same way.
+
+    THIS SITS BESIDE set_power_mode_for_profile ON PURPOSE. A profile
+    becoming current is not one event in one process: it happens in the
+    window, in the tray's login/switch apply, in the hotkey cycler, and
+    inside the enforcer when the OS power mode moves or the charger comes
+    out. Only the first of those has a window open, and a keyboard that
+    only changed colour while the app happened to be running would be a
+    feature the user could not trust. So the repaint is a shared call made
+    from every path that already sets the OS power mode, rather than a
+    fifth hand-maintained copy of the same three lines -- which is exactly
+    how the CPU apply came to silently drop the clock floor in three places
+    out of four.
+
+    The colour itself is decided in kbdcolor, which has no hardware in it;
+    this is only the write."""
+    args = kbdcolor.profile_color_args(cfg, profile_name, caps)
+    if args is None:
+        return None
+    return run_helper(*args, timeout=timeout)
+
 # -- Log ---------------------------------------------------------------------
 
 # Written by the GTK3 app, the boot-apply service and the enforcer, all of
@@ -1438,20 +1570,169 @@ def read_charge_limit(root=None):
     return None
 
 
-def is_ac_connected(root=None):
-    """True on mains, False on battery, None if there is no Mains supply."""
+# -- Battery health ----------------------------------------------------------
+
+# The two families the power_supply class offers, in the order they are tried.
+# A driver exposes one or the other and never both: charge_* is a coulomb
+# count in µAh, energy_* is watt-hours in µWh. Which one a machine gets is a
+# property of the driver rather than of the cell -- the same battery reads
+# charge_* under one platform driver and energy_* under plain ACPI, and this
+# machine's BAT0 is energy_* -- so both have to be handled and neither can be
+# assumed present.
+#
+# The divisor turns the kernel's micro-units into the unit batteries are
+# actually quoted in: µAh -> mAh, µWh -> Wh. Wh deliberately, not mWh: a
+# laptop battery is "90 Wh" on its own label and on every spec sheet, and
+# "90001 mWh" beside it would have to be read twice.
+BATTERY_HEALTH_FAMILIES = (
+    ("charge_full_design", "charge_full", 1000.0, "mAh"),
+    ("energy_full_design", "energy_full", 1000000.0, "Wh"),
+)
+
+
+def battery_health(design, full):
+    """``full`` as a percentage of ``design``, or None if it cannot be said.
+
+    Split out from the file reading so the arithmetic -- which is where the
+    divide-by-zero lives -- can be tested without a battery, the same way
+    the fan-curve and meminfo maths are.
+
+    A design capacity of zero is the case that matters. Firmware that has
+    lost its battery-info block reports design 0 rather than dropping the
+    file, and dividing by it would take a whole page refresh down. Zero is
+    "unknown", so the answer is None, not 0% and not infinity.
+
+    NOT clamped to 100. A cell that has not yet been through a full cycle
+    routinely reports full above design -- 101-104% is ordinary on a new
+    machine, and it is the firmware's own learned figure, not an error.
+    Clamping would silently rewrite a true reading into a suspiciously
+    round one, and a user comparing this against the same numbers from
+    upower or the vendor tool would think the app was broken. The page
+    shows whatever comes out; see the note it puts on the row above 100.
+
+    A negative or missing half is refused outright: there is no reading a
+    negative capacity could be a rounding artefact of."""
+    if design is None or full is None:
+        return None
+    if design <= 0 or full < 0:
+        return None
+    return full / design * 100.0
+
+
+def read_battery_health(root=None):
+    """Wear figures for the first battery that reports them, or None.
+
+    ``{"percent": 92.3, "full": 83.0, "design": 90.0, "unit": "Wh",
+    "cycles": None}`` -- percent from battery_health, full and design
+    converted out of the kernel's micro-units, and cycles only when the
+    firmware genuinely counts them.
+
+    None for the whole thing rather than a dict of Nones: a battery with
+    neither family present -- and a desktop with no battery at all -- has
+    nothing to say here, and the caller's job is then to hide the row
+    rather than draw one full of dashes that looks like a failed read.
+
+    The families are tried per battery rather than globally, and the first
+    battery holding a complete pair wins. A machine with two packs can have
+    the second be the only one whose driver fills these in (an empty or
+    absent bay still gets a power_supply node), so stopping at the first
+    battery entry the way read_battery does would report no health at all
+    on hardware that has it. Skipping to the next entry costs nothing and
+    is the only behaviour that is right on both one-battery and two-battery
+    machines.
+
+    ``cycle_count`` is reported as None when it reads 0. The ACPI spec has
+    firmware write 0 for "this battery does not track cycles", which is by
+    far the common case -- BAT0 on this machine says 0 with hundreds of
+    cycles on it -- and a battery that really is on cycle zero has nothing
+    worth showing either. Either way "0 cycles" would be a claim the
+    hardware is not making, so it is treated as no answer at all."""
     base = _under(root, POWER_SUPPLY_DIR)
+    try:
+        entries = sorted(os.listdir(base))
+    except OSError:
+        return None
+    for entry in entries:
+        path = os.path.join(base, entry)
+        if read_file(os.path.join(path, "type")) != "Battery":
+            continue
+        for design_file, full_file, divisor, unit in BATTERY_HEALTH_FAMILIES:
+            design = read_int(os.path.join(path, design_file))
+            full = read_int(os.path.join(path, full_file))
+            percent = battery_health(design, full)
+            if percent is None:
+                continue
+            cycles = read_int(os.path.join(path, "cycle_count"))
+            return {
+                "percent": percent,
+                "full": full / divisor,
+                "design": design / divisor,
+                "unit": unit,
+                "cycles": cycles if cycles and cycles > 0 else None,
+            }
+    return None
+
+
+def is_ac_connected(root=None):
+    """True on external power, False on battery, None if no supply is found.
+
+    A thin wrapper over read_power_source -- kept because most callers only
+    ever want the bool and the two-value tuple would just be unpacked and
+    the kind discarded at every one of those call sites."""
+    return read_power_source(root)[0]
+
+
+def read_power_source(root=None):
+    """(connected, kind) for the charger, or (None, None) if no supply is
+    found at all.
+
+    ``connected`` is True on external power, False on battery -- same
+    semantics as the old is_ac_connected. ``kind`` is "mains" for the
+    barrel-jack supply or "usb" for a USB-C PD charger, kernel-exposed as
+    type "USB"; it is None whenever connected is not True, since there is
+    nothing meaningful to name once nothing is delivering power.
+
+    Covers both types in one pass because a laptop plugged into a type-C
+    charger has no "Mains" entry online at all -- checking only Mains would
+    read a USB-C-only charge as running on battery.
+
+    More than one entry can read online=1 at once. Confirmed live on this
+    hardware: the barrel jack's ADP0 stuck at online=1 with the barrel cable
+    genuinely unplugged -- and ADP0 exposes no status/current file at all,
+    on this machine or apparently ever, so there is nothing on its side to
+    tell a stuck flag from a real one. A USB-C entry reporting
+    status="Charging" is corroborated by telemetry ADP0 simply does not
+    have, so it wins over a bare, uncorroborated online flag. Only used as
+    a tiebreak: with one online entry, or with no USB entry actually
+    claiming to charge, first-found order is unchanged from before."""
+    base = _under(root, POWER_SUPPLY_DIR)
+    found = False
+    online_supplies = []
     try:
         for entry in sorted(os.listdir(base)):
             path = os.path.join(base, entry)
-            if read_file(os.path.join(path, "type")) != "Mains":
+            supply_type = read_file(os.path.join(path, "type"))
+            if supply_type not in ("Mains", "USB"):
                 continue
             val = read_file(os.path.join(path, "online"))
-            if val is not None:
-                return val == "1"
+            if val is None:
+                continue
+            found = True
+            if val == "1":
+                online_supplies.append((supply_type, path))
     except OSError:
         pass
-    return None
+
+    if not online_supplies:
+        return (False, None) if found else (None, None)
+
+    for supply_type, path in online_supplies:
+        if (supply_type == "USB"
+                and read_file(os.path.join(path, "status")) == "Charging"):
+            return True, "usb"
+
+    supply_type, _path = online_supplies[0]
+    return True, "mains" if supply_type == "Mains" else "usb"
 
 
 # -- Keyboard ----------------------------------------------------------------
@@ -1535,13 +1816,18 @@ def detect_capabilities(root=None):
     caps["fan_curve"] = find_hwmon_by_name("asus_custom_fan_curve", root=root) is not None
     caps["fan_rpm"] = find_hwmon_by_name("asus", root=root) is not None
     caps["cpu_temp"] = find_hwmon_by_name("k10temp", root=root) is not None
-    caps["pkg_power"] = find_hwmon_by_name("amdgpu", root=root) is not None
+    caps["pkg_power"] = (find_rapl_package(root=root) is not None
+                          or find_hwmon_by_name("amdgpu", root=root) is not None)
     caps["nv_temp_target"] = os.path.exists(_under(root, f"{ASUS_WMI_DIR}/nv_temp_target"))
     caps["nv_dynamic_boost"] = os.path.exists(_under(root, f"{ASUS_WMI_DIR}/nv_dynamic_boost"))
     # Presence, not the value: a machine whose firmware has the chime turned
     # off still has the control, and gating on the reading would make the
     # switch disappear the moment it was switched off.
     caps["boot_sound"] = os.path.exists(_under(root, BOOT_SOUND_PATH))
+    # Presence again, and for the same reason: a panel whose overdrive is
+    # currently off still has the control, so gating on the value would take
+    # the switch away the moment it was used to switch overdrive off.
+    caps["panel_od"] = os.path.exists(_under(root, PANEL_OD_PATH))
     caps["nvidia"] = have_cmd("nvidia-smi")
     # A separate question from nvidia-smi: the two clock offsets go through
     # nvidia-settings, which is its own package and is missing on plenty of

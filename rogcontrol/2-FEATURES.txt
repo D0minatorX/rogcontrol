@@ -93,13 +93,28 @@ state in sysfs rather than waking it with nvidia-smi to ask.
 
 KEYBOARD
 
-Brightness, and ten lighting modes: Static, Breathing, Pulse, Colour Cycle,
-Rainbow, Gradient Static, GPU Temp Colour, CPU Temp Colour, Battery Level, and
-Ambient.
+Brightness, and eleven lighting modes: Static, Breathing, Pulse, Colour Cycle,
+Rainbow, Gradient Static, GPU Temp Colour, CPU Temp Colour, Battery Level,
+Ambient, and Profile Colour.
 
 Ambient follows what is on screen: the display is split into four vertical
 bands, each lighting the zone beneath it. It uses the desktop's screen-sharing
 portal, so permission is asked once and remembered.
+
+Profile Colour gives each power profile its own colour, set on the Keyboard
+page, and repaints the keys whenever the profile changes -- from the window,
+the tray, the shortcut key, the OS power menu, or the AC/battery auto-switch.
+It works with the app closed.
+
+Charger flash is off until you switch it on: the keys blink one colour twice
+when the charger is plugged in or unplugged and then go straight back to the
+effect they were on. It runs in the background service, so it works with the
+window closed, and it lands about a second after the plug moves. GPU Temp,
+CPU Temp and Battery Level restore to a fresh sensor reading rather than a
+stale one. If the keyboard has gone idle enough that its own firmware cut
+backlight power, the flash wakes it first and puts the brightness back to
+exactly what it was after. Ambient is left alone -- its colour is not in
+the config at all, so there would be nothing to put back afterwards.
 
 Modes your hardware cannot perform are not offered rather than failing
 silently.
@@ -126,6 +141,12 @@ speakers at power-on. It is a setting of the machine rather than of a profile,
 so it does not change when you switch one, and it is remembered so the
 boot-apply service can put it back if a BIOS update resets the firmware.
 
+A switch for panel overdrive, on machines whose firmware offers it. It pushes
+each pixel transition past its target so the screen changes state faster and
+fast motion smears less. It is a trade rather than a free improvement — too
+much of it shows as a pale ghost leading a moving edge — so it is a switch
+you own. Like the boot sound it belongs to the machine and not to a profile,
+and it is remembered and re-asserted at login.
 
 ALSO
 

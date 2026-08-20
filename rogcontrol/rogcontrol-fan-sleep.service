@@ -1,0 +1,59 @@
+# rogcontrol-fan-sleep.service
+# Installed to /etc/systemd/system/ and enabled by install.sh. This is what
+# actually runs rogcontrol-fan-sleep-hook around every suspend.
+#
+# WHY A UNIT AND NOT A DROP-IN IN system-sleep/
+#
+# systemd-sleep executes exactly ONE directory and nothing else:
+# /usr/lib/systemd/system-sleep. There is no /etc counterpart. That is easy to
+# get wrong -- nearly every other systemd directory is a /usr + /etc pair with
+# /etc winning, and systemd-sleep(8) is the one place that pattern does not
+# hold. `strings /usr/lib/systemd/systemd-sleep | grep system-sleep` prints the
+# /usr path and only the /usr path, on systemd 261 as on every version before
+# it. A hook dropped into /etc/systemd/system-sleep is never looked at, never
+# runs, and -- because a script that is never executed cannot fail -- logs
+# nothing at all to say so.
+#
+# And /usr/lib is exactly where this app cannot write: /usr is read-only on an
+# atomic system (Bazzite and the rest of Fedora Atomic), which is what made the
+# installer die partway through there and what the move to /etc was trying to
+# fix. So the one directory systemd reads is the one directory that is not
+# always writable, and the drop-in mechanism has no version that works
+# everywhere.
+#
+# A unit does. /etc/systemd/system is writable and read for units on every
+# distro including the atomic ones, and sleep.target is the documented hook
+# point that systemd-sleep(8) itself points applications at instead of the
+# "considered hacks" drop-in directory.
+#
+# HOW THE TWO HALVES COME OUT OF ONE UNIT
+#
+# Before=sleep.target plus WantedBy=sleep.target makes ExecStart the last thing
+# that runs before the machine goes down -- systemd-suspend.service is
+# After=sleep.target, so ordering before the target is ordering before the
+# suspend itself. sleep.target is StopWhenUnneeded=yes, so it is torn down as
+# soon as the machine is back, and systemd stops units in the reverse of the
+# order it started them: this unit stops after sleep.target does, which is what
+# turns ExecStop into the resume half without needing a second unit for it.
+# RemainAfterExit=yes is what leaves the unit "active" across the suspend so
+# that there is still something for systemd to stop on the way out.
+
+[Unit]
+Description=ROG Control fan curve around suspend
+Documentation=man:systemd.special(7)
+Before=sleep.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The same argument pair the system-sleep directory would have passed, so the
+# hook script does not have to know which of the two mechanisms invoked it and
+# an older copy of it still behaves. The second argument is the sleep action;
+# the hook ignores it and does the same thing for suspend and hibernate alike,
+# and this unit is pulled in by sleep.target for both.
+ExecStart=/usr/local/bin/rogcontrol-fan-sleep-hook pre suspend
+ExecStop=/usr/local/bin/rogcontrol-fan-sleep-hook post suspend
+
+[Install]
+WantedBy=sleep.target

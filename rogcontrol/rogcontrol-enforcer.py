@@ -40,6 +40,12 @@ the plug moved -- long enough to read as "auto-switching does not work".
 It now has its own udev watcher for the plug moving, plus the 60s cycle as
 the fallback, plus a remembered power source that survives a restart. See
 the section further down.
+
+CHARGER-CONNECT FLASH: opt-in, and hung off the same transition the
+auto-switch reads, so the keys blink an acknowledgement about 0.8s after the
+plug moves and then go back to exactly the lighting they were on. It refuses
+to run at all for the modes whose previous state cannot be reconstructed
+from the config -- see kbdcolor.FLASH_UNRESTORABLE_MODES.
 """
 
 import glob
@@ -65,6 +71,7 @@ for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
 from rogcontrol import config as config_mod  # noqa: E402
 from rogcontrol import fancurve  # noqa: E402
 from rogcontrol import hardware  # noqa: E402
+from rogcontrol import kbdcolor  # noqa: E402
 
 # One copy of the curve maths, in the package. See rogcontrol-apply.py.
 interpolate_curve = fancurve.interpolate_curve
@@ -124,6 +131,18 @@ _last_applied_fans = None
 ADOPT_DEBOUNCE_SECONDS = 10
 SELF_APPLY_QUIET_SECONDS = 30
 _last_self_apply_time = 0.0
+
+# The keyboard colour this service last wrote, so a full apply that changes
+# nothing about the profile does not cost a ~270 ms USB round trip through
+# rogauracore. apply_full_profile(full=True) is reached on a profile switch
+# (which is what this is for) but also at service start and on every
+# platform_profile change, and repainting the keys the colour they are
+# already showing is pure noise on the USB bus.
+#
+# Deliberately not persisted: after a restart the first full apply repaints
+# once, which is exactly right -- the keys may well have been left on
+# another profile's colour by whatever happened while this service was down.
+_last_kbd_color_args = None
 
 # Our profile name -> power-profiles-daemon's fixed mode names. PPD only
 # ever has exactly these three modes; anything else is invalid to set. More
@@ -304,7 +323,28 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
     force_fan_reapply should be True from callers reacting to a detected
     external PPD mode change -- that's exactly when the EC is known to have
     just silently disabled the curve, so the cache must be bypassed."""
-    global _last_applied_fans, _last_fan_apply_time
+    global _last_applied_fans, _last_fan_apply_time, _last_kbd_color_args
+
+    # The keyboard's colour follows the active profile, when the user has
+    # asked for that. This is the enforcer's share of a repaint that is made
+    # from four places -- the window, the tray's apply, the hotkey cycler and
+    # here -- because a profile switch is not one event in one process. This
+    # is the copy that covers the ones nobody is watching: the OS power menu
+    # being used while the app is closed (adopt_external_ppd_mode), and the
+    # charger coming out (check_ac_auto_switch). Both funnel through here
+    # with full=True, which is why the hook is on this function rather than
+    # on each of them.
+    #
+    # full=False is the 60s upkeep pass and is deliberately excluded, on the
+    # same grounds as the keyboard brightness below it: this service does not
+    # re-assert keyboard state on a timer, because doing so fights the user.
+    # Only an actual switch repaints.
+    if full:
+        args = kbdcolor.profile_color_args(config)
+        if args is not None and args != _last_kbd_color_args:
+            _last_kbd_color_args = args
+            run_helper(*args)
+
     if profile:
         # CPU limits are kept in the periodic pass: AMD firmware is known to
         # walk STAPM/PPT back on its own, so this one genuinely needs
@@ -522,6 +562,76 @@ _last_ac_state = None
 AC_STATE_PATH = os.path.expanduser(
     "~/.local/share/rogcontrol/last-power-source")
 
+# CHARGER-KIND NOTIFICATION: separate from the AC/battery auto-switch above
+# on purpose. The switch only fires when ac_profile/battery_profile is
+# configured and names a real change of profile -- someone with neither set
+# would never hear anything when the plug moves. This tells you which
+# charger you just connected (or disconnected) regardless of that config,
+# same persist-across-restart shape as _last_ac_state so a service restart
+# is never read as a charger swap.
+_last_charger_kind = None
+CHARGER_KIND_PATH = os.path.expanduser(
+    "~/.local/share/rogcontrol/last-charger-kind")
+
+CHARGER_KIND_LABELS = {"mains": "AC charger", "usb": "USB-C charger"}
+
+
+def load_last_charger_kind():
+    """The charger kind this service saw last time it ran, or None (first
+    run, unusable file, or it was on battery)."""
+    try:
+        with open(CHARGER_KIND_PATH) as f:
+            value = f.read().strip()
+    except OSError:
+        return None
+    return value if value in CHARGER_KIND_LABELS else None
+
+
+def store_last_charger_kind(kind):
+    """Remember the charger kind for the next start. Best effort, temp file
+    plus rename for the same reason store_last_ac_state uses it -- a start
+    racing a write must read the old value or the new one, never a
+    truncated one."""
+    try:
+        os.makedirs(os.path.dirname(CHARGER_KIND_PATH), exist_ok=True)
+        tmp = CHARGER_KIND_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(kind or "")
+        os.replace(tmp, CHARGER_KIND_PATH)
+    except OSError as e:
+        log(f"could not remember charger kind: {e}", "WARN",
+            dedupe_key="chargerkind")
+
+
+def charger_kind_notify_message(previous_kind, current_kind):
+    """The (title, body) to announce for a charger-kind change, or None for
+    "nothing worth saying".
+
+    Pure, like ac_switch_target -- same reasons: testable without I/O, and
+    the rules here are all about when NOT to speak.
+
+    * Unchanged kind is the common case every cycle and every udev event --
+      say nothing.
+    * previous_kind None with current_kind None is the first-ever sample on
+      battery, or a restart on battery: nothing changed, nothing to say.
+    * previous_kind None with current_kind set IS spoken, unlike
+      ac_switch_target's first-sample rule -- there is no risk of
+      re-applying a stale profile here, only of staying silent about a
+      charger that is plugged in right now.
+    * current_kind set and different from previous: a connect, worded for
+      the kind that just showed up.
+    * current_kind None and previous_kind set: a disconnect, worded for the
+      kind that just left -- current_kind carries nothing to name."""
+    if current_kind == previous_kind:
+        return None
+    if current_kind is not None:
+        return ("ROG Control", f"{CHARGER_KIND_LABELS[current_kind]} connected")
+    if previous_kind is not None:
+        return ("ROG Control",
+                f"{CHARGER_KIND_LABELS[previous_kind]} disconnected — "
+                "on battery power")
+    return None
+
 
 def load_last_ac_state():
     """The power source this service saw last time it ran, or None if there
@@ -601,6 +711,210 @@ def ac_switch_target(previous_ac, current_ac, config):
     return target
 
 
+# -- the charger-connect flash ------------------------------------------------
+#
+# WHY IT LIVES HERE. The acknowledgement has to arrive whether or not the
+# window is open, and the plug mostly moves with it closed -- which is the
+# same argument that moved the AC/battery auto-switch into this service in
+# the first place. This is also the only process that already knows a
+# transition happened: _check_ac_auto_switch has both the previous and the
+# current power source in hand, from the udev watcher within about half a
+# second of the plug moving and from the 60s cycle as the fallback. Hanging
+# the flash off that costs no new watcher, no new state file and no new
+# process, and it inherits _ac_lock, so a flash can never interleave with a
+# profile apply's own keyboard write.
+#
+# LATENCY the user actually sees, on the udev path: the uevent arrives
+# essentially with the driver's own update to `online`, then
+# POWER_SUPPLY_SETTLE_SECONDS (0.5s) to let the burst settle and avoid
+# reading mid-update, then one ~270 ms helper round trip -- so the keys are
+# lit roughly 0.8s after the plug moves. That reads as an acknowledgement.
+# On a machine where the udev watcher could not start it degrades to the
+# 60s poll, at which point the flash is meaningless as feedback; it is left
+# on rather than disabled there because a late blink is not harmful and the
+# alternative is a feature that silently does nothing on those machines.
+#
+# The flash goes BEFORE the auto-switch decision below, not after: the
+# switch's own apply takes ~10 seconds, and an acknowledgement that lands
+# after the fans have already changed pitch is answering a question the user
+# has finished asking. It also fires regardless of whether ac_profile /
+# battery_profile are configured, for the same reason the charger-kind
+# notification does -- somebody with neither set would otherwise never see
+# it.
+
+# When the last flash STARTED, on the monotonic clock, or None for "not this
+# run". Deliberately not persisted, unlike _last_ac_state: this only exists
+# to collapse a burst of contact bounce that is seconds wide, and a service
+# restart is already far longer than the debounce window.
+_last_charger_flash_at = None
+
+
+def charger_flash_event(previous_ac, current_ac):
+    """"connected", "disconnected", or None for "nothing happened".
+
+    Pure, and the same transition rule as ac_switch_target for the same
+    reasons -- but returning the direction rather than a profile, because a
+    flash fires on both edges while a switch only fires when a profile is
+    configured for the side being moved to.
+
+    Both edges are answered on purpose. Unplugging is the half people
+    actually get wrong: a cable knocked out of a barrel jack, or a dock that
+    quietly stopped delivering, is invisible until the battery is low, and
+    the blink is the cheapest possible way to notice. Flashing only on
+    connect would answer the question nobody was asking.
+
+    * ``current_ac`` None means no power supply could be read at all -- a
+      desktop, or a kernel that exposes none. Nothing can be inferred.
+    * ``previous_ac`` None is the genuinely-first-ever run, before anything
+      was recorded. Nothing to compare against, so nothing to acknowledge.
+      Note this is rare rather than once-per-restart, because the previous
+      state is loaded back from disk in main().
+    * Unchanged is the overwhelmingly common case: this runs on every cycle
+      and on every uevent, and the plug moves maybe twice a day.
+
+    A restart therefore does not flash (same source before and after), while
+    a plug that genuinely moved while this service was down does -- which is
+    the right answer to "is the power source different from the last one you
+    were told about?"
+    """
+    if current_ac is None or previous_ac is None:
+        return None
+    if current_ac == previous_ac:
+        return None
+    return "connected" if current_ac else "disconnected"
+
+
+def charger_flash_due(last_flash_at, now, gap=None):
+    """True when enough time has passed since the last flash to allow another.
+
+    Pure, so the debounce can be pinned without a test that waits five real
+    seconds. Measured from the START of the previous flash rather than its
+    end, so the ~720 ms the flash itself occupies is inside the window rather
+    than added to it.
+
+    ``last_flash_at`` None means nothing has flashed yet this run, which is
+    always allowed. See kbdcolor.FLASH_DEBOUNCE_SECONDS for why a refused
+    flash is dropped rather than queued."""
+    if gap is None:
+        gap = kbdcolor.FLASH_DEBOUNCE_SECONDS
+    if last_flash_at is None:
+        return True
+    return (now - last_flash_at) >= gap
+
+
+def charger_flash(config, event):
+    """Blink the keys twice and put them back. Returns True if it flashed.
+
+    The I/O half, and the only part of this feature that sleeps or writes:
+    every rule about *whether* to flash is in charger_flash_event,
+    charger_flash_due and kbdcolor.charger_flash_plan, all of which are pure.
+
+    The restore call is worked out BEFORE the flash colour is written, and
+    the whole thing is abandoned if it cannot be. There is deliberately no
+    path that puts the flash colour on the keys while still hoping to find
+    out what to put back -- that path is how a "brief" flash becomes
+    permanent.
+
+    A failed FINAL restore is the one outcome that is worse than not
+    flashing at all, so it is retried once and logged as an error either
+    way. One retry rather than a loop: a second failure means the helper or
+    the controller is gone, and the user has a bigger problem than the
+    colour of their keyboard. The backlight brightness -- woken for the
+    blink on every flash, see kbdcolor.brightness_wake_args -- gets the same
+    treatment for the same reason: a keyboard stuck lit because the charger
+    moved is exactly the kind of surprise this feature exists not to cause.
+    """
+    global _last_charger_flash_at, _last_kbd_color_args
+    # Asked first, and again inside charger_flash_plan. Opted out is the
+    # default and so the overwhelmingly common case, and there is no reason
+    # to take any reading below for a feature nobody switched on.
+    if not kbdcolor.charger_flash_enabled(config):
+        return False
+    # The one sensor read charger_flash_plan cannot take itself, because it
+    # is pure. Looking at the saved mode costs nothing (a dict lookup, no
+    # I/O) and picks at most one of these -- a GPU query in particular is a
+    # subprocess call, not worth making for a Battery Level user.
+    saved_mode = (config.get("kbd_rgb") or {}).get("mode")
+    if saved_mode == "Battery Level":
+        live_reading = hardware.read_battery()
+    elif saved_mode == "CPU Temp Color":
+        live_reading = hardware.read_cpu_temp()
+    elif saved_mode == "GPU Temp Color":
+        live_reading = hardware.read_nvidia_stats()[0]
+    else:
+        live_reading = None
+    plan = kbdcolor.charger_flash_plan(
+        config, brightness=hardware.read_kbd_brightness(),
+        live_reading=live_reading)
+    if plan is None:
+        return False
+    if not charger_flash_due(_last_charger_flash_at, time.monotonic()):
+        log(f"charger {event} -- flash skipped, one was shown less than "
+            f"{kbdcolor.FLASH_DEBOUNCE_SECONDS:g}s ago", "INFO",
+            dedupe_key="flashdebounce", dedupe_seconds=60)
+        return False
+    flash_args, restore_args, brightness_wake, brightness_restore = plan
+    _last_charger_flash_at = time.monotonic()
+    # The wake pulse: the keyboard's EC cuts backlight power on its own idle
+    # timer, independent of the LED class value, and a colour write alone
+    # cannot revive it once that has happened -- confirmed on real hardware.
+    # One or two writes, always run, always before the colour: there is no
+    # way to read back whether the EC has already cut power, so this cannot
+    # be made conditional on the current brightness reading. Best-effort --
+    # a failed wake write does not abort the flash, since the colour writes
+    # below are harmless (if pointless) on a backlight that stayed dark.
+    for args in brightness_wake:
+        if not run_helper(*args):
+            log("charger flash: a brightness wake write failed, continuing",
+                "ERROR", dedupe_key="flashwake")
+    if not run_helper(*flash_args):
+        # The colour write failed, but the wake pulse above may not have --
+        # put the brightness back before giving up, or the one write that
+        # DID land is exactly the stuck-lit keyboard this all exists to
+        # prevent.
+        run_helper(*brightness_restore)
+        return False
+    time.sleep(kbdcolor.FLASH_HOLD_SECONDS)
+    # The middle blinks are best-effort: their own restore write is what
+    # makes them read as a blink rather than one long flash, so a failure
+    # here is logged and the sequence carries on into the next flash rather
+    # than aborting -- the keys are not left on the flash colour either way,
+    # since the very next write is another flash. Only the FINAL restore,
+    # below, gets the retry-and-give-up treatment, because that is the one
+    # failure that can strand the keyboard.
+    for _ in range(kbdcolor.FLASH_BLINK_COUNT - 1):
+        if not run_helper(*restore_args):
+            log("charger flash: a mid-sequence restore failed, continuing",
+                "ERROR", dedupe_key="flashrestore")
+        if not run_helper(*flash_args):
+            if not run_helper(*brightness_restore):
+                log("charger flash could not lower the backlight back off",
+                    "ERROR", dedupe_key="flashbrightness")
+            return True
+        time.sleep(kbdcolor.FLASH_HOLD_SECONDS)
+    if not run_helper(*restore_args):
+        log("charger flash could not restore the lighting -- retrying once",
+            "ERROR", dedupe_key="flashrestore")
+        if not run_helper(*restore_args):
+            log("charger flash left the keyboard on the flash colour: the "
+                f"restore call {' '.join(str(a) for a in restore_args)} "
+                "failed twice", "ERROR", dedupe_key="flashrestore2")
+            # The keys are now showing something this service did not intend,
+            # so the "already painted, skip the write" cache is a lie. Cleared
+            # so the next full apply repaints instead of skipping -- which is
+            # the only chance Profile Color has of recovering without the
+            # user opening the window.
+            _last_kbd_color_args = None
+    if not run_helper(*brightness_restore):
+        log("charger flash could not lower the backlight back off -- "
+            "retrying once", "ERROR", dedupe_key="flashbrightness")
+        if not run_helper(*brightness_restore):
+            log("charger flash left the backlight at the wrong level: the "
+                f"restore call {' '.join(str(a) for a in brightness_restore)} "
+                "failed twice", "ERROR", dedupe_key="flashbrightness2")
+    return True
+
+
 def check_ac_auto_switch(config, service_name, trigger="poll"):
     """Sample the power source and switch profile if it has just changed.
 
@@ -622,14 +936,36 @@ def check_ac_auto_switch(config, service_name, trigger="poll"):
 
 
 def _check_ac_auto_switch(config, service_name, trigger):
-    global _last_ac_state
-    current_ac = hardware.is_ac_connected()
+    global _last_ac_state, _last_charger_kind
+    current_ac, current_kind = hardware.read_power_source()
+
+    previous_kind = _last_charger_kind
+    if current_kind != previous_kind:
+        message = charger_kind_notify_message(previous_kind, current_kind)
+        _last_charger_kind = current_kind
+        store_last_charger_kind(current_kind)
+        if message is not None:
+            notify(*message)
+
     previous_ac = _last_ac_state
     if current_ac is not None and current_ac != _last_ac_state:
         _last_ac_state = current_ac
         # Only on a change: this runs every cycle and on every udev event,
         # and the answer is the same almost every time.
         store_last_ac_state(current_ac)
+
+    # Before the switch decision, so the acknowledgement is not stuck behind
+    # the ~10 second apply a switch triggers. It is also independent of it:
+    # the flash answers "the power source changed", which is true whether or
+    # not a profile was configured to change with it.
+    event = charger_flash_event(previous_ac, current_ac)
+    if event is not None:
+        try:
+            charger_flash(config, event)
+        except Exception as e:
+            # A flash is cosmetic. It must never be the reason an auto-switch
+            # did not happen.
+            log(f"charger flash failed: {e}", "WARN", dedupe_key="flash")
 
     target = ac_switch_target(previous_ac, current_ac, config)
     if target is None:
@@ -987,8 +1323,9 @@ def main():
     # tell "the service restarted" (same source: do nothing, leave the user's
     # profile alone) from "the plug moved while the service was down or the
     # machine was off" (different source: switch, it really did change).
-    global _last_ac_state
+    global _last_ac_state, _last_charger_kind
     _last_ac_state = load_last_ac_state()
+    _last_charger_kind = load_last_charger_kind()
 
     # And react to the plug the moment it moves, rather than up to
     # INTERVAL_SECONDS later. Falls back to the cycle below if it cannot run.

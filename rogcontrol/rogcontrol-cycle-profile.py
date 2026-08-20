@@ -154,6 +154,13 @@ def main():
     # user's own that maps to no OS mode.
     hardware.set_power_mode_for_profile(next_name)
 
+    # The keys go with it. This shortcut is the one profile switch that
+    # happens with nothing else on screen -- no window, no tray menu, no
+    # notification yet -- so the keyboard changing colour is often the only
+    # confirmation the user gets before the notify-send lands. Returns None
+    # and writes nothing unless the saved lighting mode is Profile Color.
+    hardware.set_profile_kbd_color(config, next_name)
+
     apply_profile(config["profiles"][next_name])
     notify("ROG Control", f"Profile switched to {next_name}")
 

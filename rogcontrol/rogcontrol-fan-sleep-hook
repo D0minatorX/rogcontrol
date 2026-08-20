@@ -1,8 +1,18 @@
 #!/bin/bash
 # rogcontrol-fan-sleep-hook
-# Installed into /usr/lib/systemd/system-sleep/, where systemd-logind calls
-# every executable in the directory around every suspend/hibernate, with
-# ($1, $2) = (pre|post, suspend|hibernate|hybrid-sleep|suspend-then-hibernate).
+# Installed to /usr/local/bin/ and called by rogcontrol-fan-sleep.service with
+# ($1, $2) = (pre|post, suspend), once on the way down and once on the way
+# back. That unit exists because the system-sleep drop-in directory this used
+# to live in cannot work on every distro: systemd-sleep executes only
+# /usr/lib/systemd/system-sleep, which is read-only on an atomic system, and
+# there is no /etc counterpart to it -- a hook dropped in /etc/systemd/
+# system-sleep is silently never run. See the unit file for the full account.
+#
+# The argument shape is deliberately still the drop-in's, so a copy of this
+# script left behind in a system-sleep directory by an older install behaves
+# identically rather than half-running. $2 is accepted and ignored: the same
+# thing is wanted for suspend and hibernate alike.
+#
 # Runs as root with no login session -- see rogcontrol-apply.py for why
 # CONFIG_PATH needs a real $HOME, which is why "post" goes through su -l
 # rather than calling the helper directly.

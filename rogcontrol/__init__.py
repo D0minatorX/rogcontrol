@@ -9,4 +9,4 @@ on purpose.
 # Shown on the System page's About row. Matches the version the GTK3 app
 # reports, because the two are the same product from the user's side: this
 # is a new window on the same config, helper and profiles, not a new app.
-APP_VERSION = "1.0.0.1"
+APP_VERSION = "1.0.0.2"

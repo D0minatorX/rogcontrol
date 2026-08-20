@@ -728,6 +728,20 @@ class MainWindow(Adw.ApplicationWindow):
         if result is not None and not result[0]:
             failures.append(f"OS power mode: {result[1]}")
 
+        # Beside the power mode, and for the same reason: both are things
+        # that follow a profile becoming current rather than settings the
+        # profile pushes at a subsystem. None means the user is on another
+        # lighting mode (Ambient among them, which must not be painted over)
+        # or this machine has no controllable keyboard colour.
+        #
+        # This is one of four callers -- the tray's apply, the hotkey cycler
+        # and the enforcer are the others -- because a profile switch made
+        # with this window closed has to repaint the keys too, and most of
+        # them are.
+        result = hardware.set_profile_kbd_color(self.config, name, self.caps)
+        if result is not None and not result[0]:
+            failures.append(f"Keyboard colour: {result[1]}")
+
         cpu = profile.get("cpu") or {}
         if cpu:
             step("Applying the CPU power limits…")
@@ -905,12 +919,27 @@ class MainWindow(Adw.ApplicationWindow):
         """Remember the window's size for next launch.
 
         Called from two places: closing the window with its own X
-        ("close-request", while the widget is still fully realized, so
-        get_width()/get_height() report the size on screen), and the tray's
-        Quit item, which tears the application down through do_shutdown()
-        instead -- close-request is never emitted on that path, so a resize
-        followed by "Quit" from the tray used to be silently lost."""
-        width, height = self.get_width(), self.get_height()
+        ("close-request") and the tray's Quit item, which tears the
+        application down through do_shutdown() instead -- close-request is
+        never emitted on that path, so a resize followed by "Quit" from the
+        tray used to be silently lost.
+
+        get_default_size() rather than get_width()/get_height(): the two are
+        not interchangeable here. This window is restored by handing a saved
+        size straight back to set_default_size(), and on this GTK4 stack
+        get_width()/get_height() report a size ~20px smaller in each
+        dimension than what set_default_size() was actually given -- CSD
+        resize-shadow accounting that the two calls don't agree on. Saving
+        that shrunk figure and feeding it back through set_default_size()
+        next launch shrinks it again, and again on the launch after that:
+        every close-and-reopen quietly loses another ~20px until the window
+        bottoms out at MIN_WIDTH/MIN_HEIGHT, which is what "the size doesn't
+        stay the way I left it" actually was. get_default_size() is GTK's
+        own recommended call for exactly this -- it stays in the same units
+        set_default_size() was called with, live-tracking the window through
+        any manual resize, so the round trip through config has nothing left
+        to lose."""
+        width, height = self.get_default_size()
         if width > 0 and height > 0:
             self.config["window_size"] = [width, height]
             config_mod.save_config(self.config)

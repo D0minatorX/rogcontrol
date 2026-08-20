@@ -173,6 +173,48 @@ DEFAULT_PROFILES = {
 }
 
 
+# -- the keyboard colour a profile is worn in --------------------------------
+#
+# Profile Color mode paints the backlight with whichever profile is active,
+# so "which one am I on?" is answerable from the keys instead of from a
+# window that is closed most of the time. The colours live per profile in the
+# config under ``kbd_color`` and are the user's to change; this table is only
+# what a fresh install hands them to start from, exactly like the fan curves
+# above.
+#
+# The four stock names get the mapping people already read without being
+# told -- cool at the quiet end, hot at the loud one -- for the same reason
+# battery_to_rgb runs green to red rather than picking four arbitrary hues.
+# A colour that has to be looked up in a legend tells you nothing at a
+# glance, which is the entire point of the mode.
+PROFILE_KBD_COLORS = {
+    "Quiet": [0, 120, 255],                 # cool blue
+    "Balanced Power": [0, 200, 160],        # teal
+    "Balanced Performance": [255, 170, 0],  # amber
+    "Performance": [255, 0, 0],             # red
+}
+
+# What a profile the user invented starts on.
+#
+# Deliberately one neutral colour rather than a hue derived from the
+# profile's position in the list: that list reorders every time a profile is
+# created, deleted or imported, and a default that moved with it would
+# repaint the keyboard of someone who had only tidied up their profiles.
+# White is visible on every controller and reads as "nobody has chosen yet",
+# which is the cue to go and choose.
+FALLBACK_KBD_COLOR = [255, 255, 255]
+
+
+def default_kbd_color(profile_name):
+    """The colour a profile starts on, as a list nothing else shares.
+
+    A fresh list per call because the result is stored straight into the
+    config: handing out the table's own list would make editing one
+    profile's colour edit every other profile still sitting on that same
+    default, and the user would have no way to see why."""
+    return list(PROFILE_KBD_COLORS.get(profile_name, FALLBACK_KBD_COLOR))
+
+
 def tailored_default_profiles(gpu_min_w, gpu_max_w):
     """The stock profiles, with GPU wattage scaled to the GPU actually
     fitted rather than the 140W one this was written on.
