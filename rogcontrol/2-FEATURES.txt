@@ -50,19 +50,26 @@ throws them away every time the power mode changes.
 CPU
 
 STAPM, fast and slow power limits, temperature target, Curve Optimizer
-undervolt, turbo boost, and a maximum core clock.
+undervolt, turbo boost, and a maximum and minimum core clock.
 
 Nothing is written until you press Apply. Moving a control changes what the
 page is asking for and says so in a banner at the top; the chip is untouched
 until you decide. Apply writes the whole page in the one order that works —
-the limits, then boost, then the energy preference, then the clock ceiling,
-because the boost switch resets every policy's ceiling — and saves it to the
+the limits, then boost, then the energy preference, then the clock ceiling
+and last the clock floor, because the boost switch resets both and the
+ceiling write can pull the floor down with it — and saves it to the
 active profile only once the hardware has taken it. Leaving the page without
 applying discards the change; it is never applied behind your back.
 
 The clock setting is a ceiling, not a fixed speed — cores still drop to idle
 underneath it. Measured with a 3.0 GHz cap: a loaded core sat at 2974 MHz
 while idle cores sat at 1492 MHz.
+
+Turning turbo boost off greys the maximum clock out, and the ceiling is not
+written while it is off: boost off already pins every core at its base clock,
+and the boost write itself puts every policy's maximum back to the hardware's
+own on its way past. The value is kept, and comes back the moment boost does.
+The minimum clock is unaffected and is still applied.
 
 The undervolt carries a warning for a reason. Too negative freezes the machine
 under load; this laptop locked solid at −20. Move two or three counts at a

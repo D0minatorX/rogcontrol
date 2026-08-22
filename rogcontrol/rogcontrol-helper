@@ -29,7 +29,7 @@ find_hwmon_by_name() {
 }
 
 usage() {
-    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|bootsound|panelod|asusd_status|asusd_disable|asusd_enable> ..." >&2
+    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|cpuminclock|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|bootsound|panelod|asusd_status|asusd_disable|asusd_enable> ..." >&2
     exit 1
 }
 
@@ -237,6 +237,83 @@ case "$1" in
             [ -e "$f" ] || continue
             echo "$VAL" > "$f"
         done
+        ;;
+
+    cpuminclock)
+        # Floor under the core clock, in kHz, written to every cpufreq policy.
+        # The counterpart of cpuclock, and it must be written AFTER it -- see
+        # hardware.CPU_APPLY_STEPS. Two separate reasons, both measured:
+        #
+        #   * a cpufreq "boost" write refreshes every policy, and that resets
+        #     scaling_min_freq the same way it resets scaling_max_freq, so a
+        #     floor written before boost is gone;
+        #   * cpuclock itself lowers scaling_min_freq on any policy whose
+        #     floor would sit above the new ceiling (it has to -- the kernel
+        #     clamps min to max silently), so a floor written before the
+        #     ceiling can be pulled down by it.
+        #
+        # What the floor actually does: on amd-pstate it becomes the CPPC
+        # request's min_perf, which the hardware honours whenever it has the
+        # power budget to. It is a floor on the requested clock, NOT a
+        # guarantee of it -- with the package pinned at its STAPM limit under
+        # all-core load the SMU will run below the floor, because it cannot
+        # spend watts it has not got. Raise STAPM if that is the case; there
+        # is no cpufreq write that beats a power limit.
+        shift
+        VAL="$1"
+        POLICIES=(/sys/devices/system/cpu/cpufreq/policy*/scaling_min_freq)
+        [ -e "${POLICIES[0]}" ] || {
+            echo "no cpufreq policies on this machine" >&2; exit 1; }
+        P0=$(dirname "${POLICIES[0]}")
+        HW_MIN=$(cat "$P0/cpuinfo_min_freq")
+        HW_MAX=$(cat "$P0/cpuinfo_max_freq")
+        # A flag rather than an empty VAL: an empty argument is a caller bug,
+        # not a request for the default, and must not quietly mean one.
+        RESTORE=0
+        if [ "$VAL" = "min" ]; then
+            # "no floor", the way "max" means "no ceiling" for cpuclock. NOT
+            # cpuinfo_min_freq: on amd-pstate the driver's own resting floor
+            # is amd_pstate_lowest_nonlinear_freq (1.49 GHz on a G614PR
+            # against a 0.42 GHz hardware minimum), and writing the hardware
+            # minimum here would leave the machine idling lower than it does
+            # untouched -- which is a change, not a restore. Resolved per
+            # policy in the loop below, since the two files are per policy.
+            RESTORE=1
+        else
+            is_int "$VAL" || { echo "Invalid clock (kHz): $VAL" >&2; exit 1; }
+            [ "$VAL" -le "$HW_MAX" ] || {
+                echo "floor $VAL kHz above this CPU's maximum ($HW_MAX)" >&2; exit 1; }
+            [ "$VAL" -ge "$HW_MIN" ] || {
+                echo "floor $VAL kHz below this CPU's minimum ($HW_MIN)" >&2; exit 1; }
+        fi
+        for f in "${POLICIES[@]}"; do
+            [ -e "$f" ] || continue
+            D=$(dirname "$f")
+            if [ "$RESTORE" = 1 ]; then
+                if [ -r "$D/amd_pstate_lowest_nonlinear_freq" ]; then
+                    THIS=$(cat "$D/amd_pstate_lowest_nonlinear_freq")
+                else
+                    THIS=$(cat "$D/cpuinfo_min_freq")
+                fi
+            else
+                THIS="$VAL"
+                # The floor cannot sit above the ceiling. The kernel accepts
+                # such a write and then silently clamps the floor down to the
+                # ceiling, so reading scaling_min_freq back would agree with
+                # us while meaning something else; clamp here instead, and
+                # say so, so the number written is the number in effect.
+                CUR_MAX=$(cat "$D/scaling_max_freq")
+                if [ "$THIS" -gt "$CUR_MAX" ]; then
+                    THIS="$CUR_MAX"
+                fi
+            fi
+            echo "$THIS" > "$f"
+        done
+        if [ "$RESTORE" = 0 ]; then
+            CUR_MAX=$(cat "$P0/scaling_max_freq")
+            [ "$VAL" -le "$CUR_MAX" ] || echo \
+                "floor $VAL kHz is above the clock ceiling ($CUR_MAX kHz); held at the ceiling" >&2
+        fi
         ;;
 
     cpuepp)

@@ -18,14 +18,22 @@ Two hardware facts shape the code:
   one step of the apply. A failure invalidates all five, which is why the
   revert restores the whole group rather than one row.
 * The order of the steps is not a style choice. It is limits, boost, EPP,
-  then the kHz clock cap **last**: writing cpufreq's boost refreshes every
-  policy and takes ``scaling_max_freq`` back up to hardware maximum with it,
-  so a cap written before it is silently undone. The order lives in
-  ``hardware.cpu_apply_plan`` where it can be tested without a display.
+  the kHz clock ceiling, then the clock floor **last**: writing cpufreq's
+  boost refreshes every policy and takes both ``scaling_max_freq`` and
+  ``scaling_min_freq`` back to the hardware's own values with it, so a cap
+  written before it is silently undone -- and the ceiling write itself has to
+  pull the floor down whenever the two would cross, so the floor goes after
+  the ceiling as well. The order lives in ``hardware.cpu_apply_plan`` where
+  it can be tested without a display.
 
 Leaving the page, or switching profile, with unapplied changes discards them
 and puts the profile's own values back. Silently applying settings the user
 walked away from is the behaviour this page exists to remove.
+
+The clock ceiling is greyed while turbo boost is off, for the same reason:
+``hardware.cpu_apply_plan`` drops the ceiling write with boost off -- the
+boost write has already pinned every core at its base clock -- so a
+live-looking slider there would be claiming a setting no apply sends.
 """
 
 import gi
@@ -106,17 +114,39 @@ BOOST_TOOLTIP = (
 CLOCK_TOOLTIP = (
     "A hard ceiling on the core clock. The cores still idle right down below "
     "it; this only stops them going above it. At the top of the range no "
-    "limit is applied at all."
+    "limit is applied at all.\n\n"
+    "Greyed out while turbo boost is off: boost off already pins every core "
+    "at its base clock, so nothing is written here until it is back on."
+)
+
+MIN_CLOCK_TOOLTIP = (
+    "A floor under the core clock: how far down the cores are allowed to "
+    "drop while they have work to do. Raise it for snappier response on light "
+    "load, at the cost of idle power. At the bottom of the range no floor is "
+    "applied and the driver's own resting minimum stands.\n\n"
+    "It is a floor on what the kernel asks for, not a guarantee. Under a load "
+    "heavy enough to pin the package at its STAPM limit the chip runs below "
+    "it anyway — it cannot spend watts it has not got, and no clock setting "
+    "changes that. Raise STAPM if that is what you are hitting."
 )
 
 APPLY_TOOLTIP = (
     "Writes everything on this page to the chip, in the one order that works: "
     "the power limits, then turbo boost, then the energy preference, then the "
-    "clock ceiling — the boost switch resets every policy's ceiling, so the "
-    "cap has to go last."
+    "clock ceiling and the clock floor — the boost switch resets both of "
+    "those, and the ceiling write can pull the floor down with it, so they "
+    "go last and in that order."
 )
 
 REVERT_TOOLTIP = "Puts every control back to what the profile holds."
+
+# The rows the turbo boost switch governs. Boost off pins every core at its
+# base clock, so the ceiling above it is not a limit this profile is
+# applying -- hardware.cpu_apply_plan drops the "clock" step for the same
+# reason, and this greys the row so the page does not show a live-looking
+# control for a write that is not happening. The floor is not in here: it is
+# still written and still held with boost off.
+BOOST_GATED_ROWS = ("clock",)
 
 # Which controls each step of the apply owns, for saving what succeeded and
 # putting back what did not. "epp" owns no control: it comes from the profile
@@ -126,6 +156,7 @@ STEP_ROWS = {
     "boost": ("boost",),
     "epp": (),
     "clock": ("clock",),
+    "minclock": ("minclock",),
 }
 
 # Which config keys each step writes into the profile once the hardware has
@@ -144,6 +175,7 @@ STEP_SAVES = {
     # and still has to be applied, or switching away from a limited profile
     # would leave its limit behind.
     "clock": ("max_freq",),
+    "minclock": ("min_freq",),
 }
 
 STEP_LABELS = {
@@ -151,6 +183,7 @@ STEP_LABELS = {
     "boost": "Turbo boost",
     "epp": "Energy preference",
     "clock": "Clock ceiling",
+    "minclock": "Clock floor",
 }
 
 
@@ -282,6 +315,22 @@ class CpuPage(Gtk.Box):
         tuning.add(clock)
         self.rows["clock"] = clock
 
+        # The bottom of this one is NOT the hardware minimum the ceiling
+        # starts at. It is the floor cpufreq already rests at with nothing
+        # set -- 1.5 GHz here, against a 0.4 GHz hardware minimum -- because
+        # below that there is no floor to raise, only permission to idle
+        # lower than stock, which is a different setting and not this one.
+        # See hardware.read_cpu_clock_floor_default.
+        self.floor_min_ghz = (
+            self.caps.get("cpu_clock_floor") or clock_range[0]) / 1e6
+        min_clock = SliderRow(
+            title="Minimum core clock", minimum=self.floor_min_ghz,
+            maximum=self.max_ghz, step=0.1, digits=1, unit="GHz",
+            settle_ms=SETTLE_MS, tooltip=MIN_CLOCK_TOOLTIP,
+            subtitle=f"{self.floor_min_ghz:.1f} GHz means no floor")
+        min_clock.connect("changed", self._on_control_changed)
+        tuning.add(min_clock)
+        self.rows["minclock"] = min_clock
 
         self._build_actions_group()
         self._apply_capability_gating(limits, tuning)
@@ -324,11 +373,15 @@ class CpuPage(Gtk.Box):
         if not self.caps.get("cpu_boost"):
             self.rows["boost"].set_visible(False)
         if not self.caps.get("cpu_clock"):
+            # One capability, both rows: the ceiling and the floor are two
+            # files in the same cpufreq policy directory, and a machine that
+            # has one has the other.
             self.rows["clock"].set_visible(False)
-        # "Tuning" holds nothing else -- if all three of its rows just went,
-        # an empty titled group would be left standing for no reason.
+            self.rows["minclock"].set_visible(False)
+        # "Tuning" holds nothing else -- if all of its rows just went, an
+        # empty titled group would be left standing for no reason.
         if not any(self.rows[key].get_visible()
-                  for key in ("coall", "boost", "clock")):
+                  for key in ("coall", "boost", "clock", "minclock")):
             tuning_group.set_visible(False)
 
     # -- loading -------------------------------------------------------------
@@ -364,6 +417,11 @@ class CpuPage(Gtk.Box):
             boost = bool(cpu.get("boost", True))
             self.rows["boost"].set_active(boost)
             self._applied["boost"] = boost
+            # set_active only emits when the value changes, so the common
+            # case -- the same value as the last profile -- would leave the
+            # ceiling's sensitivity alone. Set it here rather than rely on
+            # the signal.
+            self._update_boost_sensitive()
 
             # max_freq of 0 (or absent) is this config's way of saying "no
             # ceiling", which on screen is the top of the range.
@@ -372,6 +430,16 @@ class CpuPage(Gtk.Box):
             row = self.rows["clock"]
             row.set_value(self._clamp(row, ghz))
             self._applied["clock"] = row.get_value()
+
+            # And min_freq of 0 (or absent) is "no floor", the bottom of that
+            # row's range. Deliberately not coupled to the ceiling here: a
+            # profile is shown as it is stored, and _pending_values is what
+            # refuses to send a crossed pair to the hardware.
+            min_freq = cpu.get("min_freq") or 0
+            floor_ghz = self.floor_min_ghz if not min_freq else min_freq / 1e6
+            row = self.rows["minclock"]
+            row.set_value(self._clamp(row, floor_ghz))
+            self._applied["minclock"] = row.get_value()
 
         finally:
             self._loading = was_loading
@@ -461,12 +529,91 @@ class CpuPage(Gtk.Box):
                 out.append(key)
         return out
 
-    def _on_control_changed(self, _row, _value):
+    def _clock_ceiling_active(self):
+        """True when the ceiling is a setting this apply will write.
+
+        The one condition, in one place: the page's greying and the floor's
+        coupling and clamp all have to agree with the step
+        hardware.cpu_apply_plan will or will not emit."""
+        if not self.caps.get("cpu_boost"):
+            # No boost control on this machine: nothing pins the cores at
+            # base clock, so the ceiling is written as it always was.
+            return True
+        row = self.rows.get("boost")
+        return True if row is None else row.get_active()
+
+    def _update_boost_sensitive(self):
+        """Grey the clock ceiling while turbo boost is off.
+
+        The ceiling is not written with boost off -- see
+        hardware.cpu_apply_plan -- so a row that still looked live would be
+        claiming a setting no apply is sending. Insensitive rather than
+        hidden: it is one switch away from mattering again, and the group
+        must not change height every time that switch is flipped."""
+        on = self._clock_ceiling_active()
+        for key in BOOST_GATED_ROWS:
+            if key in self.rows:
+                self.rows[key].set_sensitive(on)
+
+    @staticmethod
+    def _push(row, value, upward):
+        """Move ``row`` to ``value``, landing past it rather than short of it.
+
+        SliderRow snaps to whole steps measured from its own lower bound, and
+        the two clock rows do not start at the same place -- so setting one
+        to the other's value can land up to half a step on the wrong side of
+        it, which is exactly the crossing this is called to prevent. One more
+        step in the direction asked for settles it; the adjustment clamps at
+        the end of the range, and both rows end at the same maximum."""
+        row.set_value(value)
+        adj = row.get_adjustment()
+        step = adj.get_step_increment()
+        if upward and row.get_value() < value - 1e-9:
+            row.set_value(min(adj.get_upper(), row.get_value() + step))
+        elif not upward and row.get_value() > value + 1e-9:
+            row.set_value(max(adj.get_lower(), row.get_value() - step))
+
+    def _couple_clock_rows(self, row):
+        """Keep the floor at or below the ceiling as the user drags either.
+
+        The kernel does not refuse a floor above the ceiling: it accepts the
+        write and silently clamps the floor down to the ceiling, so a crossed
+        pair on screen would be a setting the machine is not running and
+        could not tell you it was not running. Pushing the other row rather
+        than refusing the drag leaves every position on both scales
+        reachable.
+
+        Done here rather than in reload() on purpose -- see reload()."""
+        clock, floor = self.rows.get("clock"), self.rows.get("minclock")
+        if clock is None or floor is None:
+            return
+        # Nothing to keep in order while the ceiling is not being written:
+        # with turbo boost off the ceiling is greyed and skipped, so pushing
+        # it up under a raised floor would move a control the apply ignores
+        # -- and leave it permanently unequal to the last applied value,
+        # which is this page's definition of an unapplied change.
+        if not self._clock_ceiling_active():
+            return
+        was, self._loading = self._loading, True
+        try:
+            if row is clock and floor.get_value() > clock.get_value():
+                self._push(floor, clock.get_value(), upward=False)
+            elif row is floor and clock.get_value() < floor.get_value():
+                self._push(clock, floor.get_value(), upward=True)
+        finally:
+            self._loading = was
+
+    def _on_control_changed(self, row, _value):
         if self._loading:
             return
+        self._couple_clock_rows(row)
         self._update_banner()
 
-    def _on_switch_changed(self, _row, _param):
+    def _on_switch_changed(self, row, _param):
+        # Before the loading guard: the clock ceiling has to match the boost
+        # switch whether it was the user or a profile load that moved it.
+        if row is self.rows.get("boost"):
+            self._update_boost_sensitive()
         if self._loading:
             return
         self._update_banner()
@@ -510,6 +657,21 @@ class CpuPage(Gtk.Box):
         # The top of the range means "no limit": the profile stores 0 and
         # reads as unlimited everywhere.
         unlimited = ghz >= self.max_ghz - 0.05
+        # And the bottom of the floor's own range means "no floor". Half a
+        # step of tolerance at each end, so a slider parked on the last stop
+        # is not read as a limit a hair inside it.
+        floor_ghz = self.rows["minclock"].get_value()
+        no_floor = floor_ghz <= self.floor_min_ghz + 0.05
+        # Last defence against a crossed pair, and the one that is not
+        # cosmetic: _couple_clock_rows keeps the two sliders in order while
+        # they are being dragged, but a profile hand-edited to a floor above
+        # its ceiling is loaded exactly as written and never goes through it.
+        # And not while the ceiling is not being written either: with turbo
+        # boost off the ceiling is not a limit the chip is being given, so
+        # clamping the floor to it would cut the floor down to a number
+        # nothing is enforcing.
+        if not no_floor and not unlimited and self._clock_ceiling_active():
+            floor_ghz = min(floor_ghz, ghz)
         values = {
             "stapm": int(self.rows["stapm"].get_value()) * 1000,
             "fast": int(self.rows["fast"].get_value()) * 1000,
@@ -518,6 +680,7 @@ class CpuPage(Gtk.Box):
             "coall": int(self.rows["coall"].get_value()),
             "boost": bool(self.rows["boost"].get_active()),
             "max_freq": 0 if unlimited else int(round(ghz * 1e6)),
+            "min_freq": 0 if no_floor else int(round(floor_ghz * 1e6)),
         }
         # There is no EPP control on this page; the profile owns it, and the
         # apply re-asserts it because a profile's EPP is part of what "these
