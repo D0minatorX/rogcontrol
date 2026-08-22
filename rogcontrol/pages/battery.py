@@ -150,8 +150,17 @@ class BatteryPage(Adw.PreferencesPage):
         # No subtitles: "On AC power" under "Automatic profile switching" is
         # already the whole sentence, and the caveat that matters -- this does
         # not switch anything now -- is on hover.
+        #
+        # "On Type-C charger" is a refinement of "On AC power", not a third
+        # power source: read_power_source (hardware.py) reports "usb" as one
+        # of two AC *kinds*, not a state alongside AC/battery. Left at
+        # "Don't auto-switch" -- its default -- a USB-C connect still falls
+        # through to whatever "On AC power" names, so this row only matters
+        # to someone who wants the barrel jack and a USB-C PD charger to land
+        # on different profiles.
         for source, title in (("ac", "On AC power"),
-                              ("battery", "On battery")):
+                              ("battery", "On battery"),
+                              ("usbc", "On Type-C charger")):
             row = Adw.ComboRow(title=title)
             row.set_tooltip_text(AUTO_SWITCH_TOOLTIP)
             row.set_model(Gtk.StringList.new(
@@ -338,7 +347,8 @@ class BatteryPage(Adw.PreferencesPage):
         # treats as "leave the profile alone on this power source".
         self.window.config[key] = value
         config_mod.save_config(self.window.config)
-        where = "AC power" if source == "ac" else "battery"
+        where = {"ac": "AC power", "battery": "battery",
+                 "usbc": "Type-C charger"}[source]
         self.window.toast(
             f"No automatic switch on {where}" if value is None
             else f"On {where}: {value}")

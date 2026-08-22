@@ -34,6 +34,11 @@ DEFAULT_CONFIG = {
     "charge_limit": 100,
     "ac_profile": "Performance",
     "battery_profile": "Quiet",
+    # None, not a stock profile: unlike ac_profile/battery_profile this is a
+    # refinement most machines have no USB-C PD supply to ever trigger, so
+    # defaulting it to a profile would be a switch nobody asked for on
+    # hardware that happens to expose the node.
+    "usbc_profile": None,
     "window_size": [600, 700],
     "fan_display_unit": "percent",
     # Whether the app has already put the fan-calibration prompt in front of
@@ -66,7 +71,8 @@ DEFAULT_CONFIG = {
 NO_AUTO_SWITCH = "Don't auto-switch"
 
 # Config keys the pickers write, by power source.
-AUTO_SWITCH_KEYS = {"ac": "ac_profile", "battery": "battery_profile"}
+AUTO_SWITCH_KEYS = {"ac": "ac_profile", "battery": "battery_profile",
+                    "usbc": "usbc_profile"}
 
 
 def auto_switch_choices(cfg):

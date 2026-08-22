@@ -670,7 +670,7 @@ def store_last_ac_state(on_ac):
         log(f"could not remember power source: {e}", "WARN", dedupe_key="acstate")
 
 
-def ac_switch_target(previous_ac, current_ac, config):
+def ac_switch_target(previous_ac, current_ac, config, current_kind=None):
     """The profile the power source change calls for, or None for "do
     nothing".
 
@@ -688,9 +688,14 @@ def ac_switch_target(previous_ac, current_ac, config):
       60 seconds and the plug moves maybe twice a day. Acting on it would
       re-apply the auto-switch profile over anything the user chose in
       between, once a minute, forever.
-    * A null (or missing) ``ac_profile``/``battery_profile`` is how the
-      Battery page stores "don't auto-switch" for that power source. It is
-      not a failure and must not fall back to a default.
+    * ``current_kind`` is only consulted while landing on AC: "usb" picks
+      ``usbc_profile`` over ``ac_profile`` when the user has configured one,
+      so a barrel-jack charger and a USB-C PD charger can target different
+      profiles. Left unset (the default), a USB-C connect falls through to
+      ``ac_profile`` exactly as before this key existed.
+    * A null (or missing) ``ac_profile``/``battery_profile``/``usbc_profile``
+      is how the Battery page stores "don't auto-switch" for that power
+      source. It is not a failure and must not fall back to a default.
     * A stored profile that no longer exists -- renamed or deleted since it
       was chosen -- has nothing to switch to.
     * A target that is already current needs no switch. Applying it anyway
@@ -700,7 +705,12 @@ def ac_switch_target(previous_ac, current_ac, config):
         return None
     if current_ac == previous_ac:
         return None
-    key = "ac_profile" if current_ac else "battery_profile"
+    if not current_ac:
+        key = "battery_profile"
+    elif current_kind == "usb" and config.get("usbc_profile"):
+        key = "usbc_profile"
+    else:
+        key = "ac_profile"
     target = config.get(key)
     if not target:
         return None
@@ -967,11 +977,12 @@ def _check_ac_auto_switch(config, service_name, trigger):
             # did not happen.
             log(f"charger flash failed: {e}", "WARN", dedupe_key="flash")
 
-    target = ac_switch_target(previous_ac, current_ac, config)
+    target = ac_switch_target(previous_ac, current_ac, config, current_kind)
     if target is None:
         return False
 
-    source = "AC" if current_ac else "battery"
+    source = "Type-C" if current_kind == "usb" else (
+        "AC" if current_ac else "battery")
 
     # Re-read before writing back, exactly as adopt_external_ppd_mode does.
     # ``config`` was read at the top of this cycle and the window, the tray
