@@ -16,7 +16,9 @@ Two hardware facts shape the code:
 
 * ryzenadj takes all five power values in a single call, so the five rows are
   one step of the apply. A failure invalidates all five, which is why the
-  revert restores the whole group rather than one row.
+  revert restores the whole group rather than one row. It is also why the
+  "Apply power limits" checkbox governs the Curve Optimizer as well as the
+  four limits: there is no sending half of that call.
 * The order of the steps is not a style choice. It is limits, boost, EPP,
   the kHz clock ceiling, then the clock floor **last**: writing cpufreq's
   boost refreshes every policy and takes both ``scaling_max_freq`` and
@@ -29,6 +31,13 @@ Two hardware facts shape the code:
 Leaving the page, or switching profile, with unapplied changes discards them
 and puts the profile's own values back. Silently applying settings the user
 walked away from is the behaviour this page exists to remove.
+
+The "Apply power limits" checkbox is stored per profile as ``limits_enabled``
+and is read by ``hardware.cpu_apply_plan``, not by this page, so unticking it
+stops the limits being written everywhere they are written from -- this page,
+the enforcer's 60-second re-assert, the tray apply and the hotkey cycler.
+Missing from a profile means ticked, so upgrading does not turn anybody's
+limits off.
 
 The clock ceiling is greyed while turbo boost is off, for the same reason:
 ``hardware.cpu_apply_plan`` drops the ceiling write with boost off -- the
@@ -140,6 +149,38 @@ APPLY_TOOLTIP = (
 
 REVERT_TOOLTIP = "Puts every control back to what the profile holds."
 
+# The profile key, and the key in ``rows``, for the checkbox at the top of
+# the Power limits group. Absent from a profile means on: profiles written
+# before the checkbox existed have no such key, and an upgrade must not
+# quietly stop applying their limits.
+LIMITS_KEY = "limits_enabled"
+
+LIMITS_ENABLED_TOOLTIP = (
+    "Whether this profile sets the chip's power limits at all.\n\n"
+    "Unticking it and pressing Apply hands the limits back to the firmware: "
+    "the firmware is told to reselect its own power table, so the BIOS "
+    "numbers are what runs from then on. Nothing here is written afterwards "
+    "either — the background service stops re-asserting these limits too, so "
+    "they stay the firmware's.\n\n"
+    "The governor still follows the profile. Only the power limits are given "
+    "up; the energy preference, turbo boost and the clock ceiling and floor "
+    "are still this profile's.\n\n"
+    "It covers the Curve Optimizer as well. ryzenadj takes the four limits "
+    "and the undervolt as a single call, so there is no sending one without "
+    "the other.\n\n"
+    "The firmware reselecting its power table drops the custom fan curves, "
+    "exactly as changing the power mode does. They are re-applied for you."
+)
+
+# Controls whose value is a bool, read with get_active() rather than
+# get_value(). Everything else in ``rows`` is a SliderRow.
+BOOL_ROWS = ("boost", LIMITS_KEY)
+
+# The rows the checkbox governs: the four ryzenadj limits and the Curve
+# Optimizer, which travels in the same call. Insensitive while it is off, so
+# a slider that would not be written does not look live.
+GATED_ROWS = ("stapm", "fast", "slow", "temp", "coall")
+
 # The rows the turbo boost switch governs. Boost off pins every core at its
 # base clock, so the ceiling above it is not a limit this profile is
 # applying -- hardware.cpu_apply_plan drops the "clock" step for the same
@@ -152,6 +193,9 @@ BOOST_GATED_ROWS = ("clock",)
 # putting back what did not. "epp" owns no control: it comes from the profile
 # and there is no widget for it.
 STEP_ROWS = {
+    # Owns no control: it is the untick itself reaching the hardware, and
+    # the checkbox is not put back when it fails -- see _save.
+    "fwreset": (),
     "limits": ("stapm", "fast", "slow", "temp", "coall"),
     "boost": ("boost",),
     "epp": (),
@@ -166,6 +210,9 @@ STEP_ROWS = {
 # without it every time the page reloaded. Keyed by every step in
 # hardware.CPU_APPLY_STEPS, checked by a test.
 STEP_SAVES = {
+    # The checkbox that caused this step is saved by _save on its own, on
+    # the same "not a step" grounds it is not in STEP_ROWS.
+    "fwreset": (),
     "limits": ("stapm", "fast", "slow", "temp", "coall"),
     "boost": ("boost",),
     # The profile already owns the energy preference; the apply only
@@ -179,6 +226,7 @@ STEP_SAVES = {
 }
 
 STEP_LABELS = {
+    "fwreset": "Firmware power limits",
     "limits": "Power limits",
     "boost": "Turbo boost",
     "epp": "Energy preference",
@@ -265,6 +313,28 @@ class CpuPage(Gtk.Box):
             description="Sent to ryzenadj as one set — Apply re-sends all "
                         "four together.")
         page.add(limits)
+
+        # A checkbox, not a switch, and first in the group it governs: it is
+        # not a setting of the chip's alongside the four under it, it decides
+        # whether those four are written at all. The switches on this page
+        # (turbo boost) each turn one piece of hardware on and off; this one
+        # turns a section of the page on and off, which is what a checkbox
+        # in front of a group says and a switch does not.
+        enable_row = Adw.ActionRow(
+            title="Apply power limits",
+            subtitle="Off hands the limits back to the firmware's own")
+        enable_row.set_tooltip_text(LIMITS_ENABLED_TOOLTIP)
+        enable_check = Gtk.CheckButton()
+        # Centred against a two-line row; without it the box sits against the
+        # title and reads as belonging to that line rather than the row.
+        enable_check.set_valign(Gtk.Align.CENTER)
+        enable_check.connect("toggled", self._on_limits_enabled_toggled)
+        enable_row.add_prefix(enable_check)
+        # So the whole row is a click target, not the 16 px box alone.
+        enable_row.set_activatable_widget(enable_check)
+        limits.add(enable_row)
+        self.rows[LIMITS_KEY] = enable_check
+
         for key, title, subtitle, tooltip, low, high, unit in LIMIT_ROWS:
             row = SliderRow(title=title, subtitle=subtitle, tooltip=tooltip,
                             minimum=low, maximum=high, step=1, unit=unit,
@@ -414,6 +484,19 @@ class CpuPage(Gtk.Box):
                 row.set_value(self._clamp(row, value))
                 self._applied[key] = row.get_value()
 
+            # Missing means ticked. A profile from before this checkbox
+            # existed had its limits applied, and loading it must not turn
+            # them off. Setting it fires "toggled", which is what puts the
+            # four rows above into the right sensitivity for this profile.
+            enabled = bool(cpu.get(LIMITS_KEY, True))
+            self.rows[LIMITS_KEY].set_active(enabled)
+            self._applied[LIMITS_KEY] = enabled
+            # set_active only emits when the value actually changes, so the
+            # common case -- the same value as the last profile -- would
+            # leave the sensitivity alone. Set it here rather than rely on
+            # the signal.
+            self._update_limits_sensitive()
+
             boost = bool(cpu.get("boost", True))
             self.rows["boost"].set_active(boost)
             self._applied["boost"] = boost
@@ -512,7 +595,7 @@ class CpuPage(Gtk.Box):
 
     def _current(self, key):
         row = self.rows[key]
-        return row.get_active() if key == "boost" else row.get_value()
+        return row.get_active() if key in BOOL_ROWS else row.get_value()
 
     def _dirty_keys(self):
         """Controls whose value is not the one the hardware was last given."""
@@ -522,12 +605,28 @@ class CpuPage(Gtk.Box):
             if was is None:
                 continue
             now = self._current(key)
-            if key == "boost":
+            if key in BOOL_ROWS:
                 if bool(was) != bool(now):
                     out.append(key)
             elif abs(float(was) - float(now)) > 1e-9:
                 out.append(key)
         return out
+
+    def _limits_toggle_moved(self, snapshot):
+        """True if the checkbox is not where the last apply left it."""
+        return bool(snapshot[LIMITS_KEY]) != bool(
+            self._applied.get(LIMITS_KEY, True))
+
+    def _update_limits_sensitive(self):
+        """Grey the rows the checkbox governs while it is off.
+
+        Not hidden: unlike a machine with no ryzenadj, these rows are a
+        choice the user has, and one they turn back on here. Insensitive
+        says "not being written" without the group jumping in height every
+        time the box is clicked."""
+        on = self.rows[LIMITS_KEY].get_active()
+        for key in GATED_ROWS:
+            self.rows[key].set_sensitive(on)
 
     def _clock_ceiling_active(self):
         """True when the ceiling is a setting this apply will write.
@@ -618,6 +717,14 @@ class CpuPage(Gtk.Box):
             return
         self._update_banner()
 
+    def _on_limits_enabled_toggled(self, _check):
+        # Before the loading guard: the rows below have to match the
+        # checkbox whether it was the user or a profile load that moved it.
+        self._update_limits_sensitive()
+        if self._loading:
+            return
+        self._update_banner()
+
     def _update_banner(self):
         if self._applying:
             # The banner is the progress line while an apply is running; the
@@ -681,6 +788,11 @@ class CpuPage(Gtk.Box):
             "boost": bool(self.rows["boost"].get_active()),
             "max_freq": 0 if unlimited else int(round(ghz * 1e6)),
             "min_freq": 0 if no_floor else int(round(floor_ghz * 1e6)),
+            # Read by hardware.cpu_apply_plan, which drops the whole
+            # ryzenadj step when it is False. The four limits above are
+            # still sent along -- the plan decides, not this function, so
+            # what is on screen is what gets saved the moment it is back on.
+            LIMITS_KEY: bool(self.rows[LIMITS_KEY].get_active()),
         }
         # There is no EPP control on this page; the profile owns it, and the
         # apply re-asserts it because a profile's EPP is part of what "these
@@ -698,22 +810,44 @@ class CpuPage(Gtk.Box):
         if self._applying:
             return
         values = self._pending_values()
-        plan = hardware.cpu_apply_plan(values, self.caps)
-        if not plan:
-            self.window.toast("Nothing on this page can be set on this "
-                              "machine.")
-            return
         # What every control held at the moment Apply was pressed. The
         # controls stay live while the write runs, so recording their current
         # position afterwards would mark a change made mid-apply as already
         # on the hardware.
         snapshot = {key: self._current(key) for key in self.rows}
+        # The untick itself is an action, not just the absence of one:
+        # ryzenadj has no reset, so the limits this app last wrote go on
+        # running until something puts the firmware's own back. This is the
+        # one moment that can be known to be that transition -- the box was
+        # ticked when the last apply finished and is not now -- so it is the
+        # one place the firmware reset is asked for. Re-applying with the box
+        # already off does not repeat it: the limits are the firmware's
+        # already, and each reset costs the fan curves a re-push.
+        if not values[LIMITS_KEY] and self._limits_toggle_moved(snapshot):
+            values["reset_to_firmware"] = True
+        plan = hardware.cpu_apply_plan(values, self.caps)
         # And which profile they belong to, for the same reason: the write
         # runs off the main loop, and the enforcer switches profile on
         # AC/battery without asking. Resolving the profile when the write
         # finishes would save these limits into whichever one is current
         # then. See config.deferred_save_target.
         target = self.window.current_profile_name()
+        if not plan:
+            # Unticking the checkbox can empty the plan outright, on a
+            # machine whose only CPU control is ryzenadj. There is then
+            # nothing to write -- but the checkbox is itself a profile
+            # setting the user just changed, and it has to be saved or the
+            # limits come straight back on the next apply. No worker thread:
+            # this path touches the config and nothing else.
+            if self._limits_toggle_moved(snapshot):
+                refused = self._save(target, values, snapshot, [])
+                self._update_banner()
+                self.window.toast(
+                    refused or f"CPU settings saved to {target}.")
+            else:
+                self.window.toast("Nothing on this page can be set on this "
+                                  "machine.")
+            return
         self._set_busy(True)
         self._show_banner("Writing the CPU settings…")
         self.window.apply_async(lambda: self._apply_worker(plan),
@@ -749,11 +883,11 @@ class CpuPage(Gtk.Box):
             else:
                 failures.append(f"{STEP_LABELS[step]}: {message}")
 
-        # Only when something reached the chip: an apply the chip refused
+        # Only when something reached the chip -- or when the checkbox
+        # moved, which _save decides for itself: an apply the chip refused
         # outright has nothing to save, and saying "written to the hardware
         # but not saved" about it would be untrue in both halves.
-        refused = (self._save(target, values, snapshot, applied_steps)
-                   if applied_steps else None)
+        refused = self._save(target, values, snapshot, applied_steps)
         # Everything a failed step owns goes back to the last value the
         # hardware accepted, so no control is left claiming a setting the
         # chip refused.
@@ -776,6 +910,35 @@ class CpuPage(Gtk.Box):
             self.window.toast(
                 f"CPU settings applied and saved to {target}.")
 
+        if "fwreset" in applied_steps:
+            self._reapply_profile_after_firmware_reset()
+
+    def _reapply_profile_after_firmware_reset(self):
+        """Put the machine back to the profile after a firmware reset.
+
+        The firmware reselecting its power table is not a quiet write. The
+        EC drops the custom fan curves when its thermal policy is written,
+        exactly as it does on an ordinary power-mode change, so leaving it
+        there would trade "the limits are the firmware's again" for fans
+        running the firmware's curve until something noticed -- up to five
+        minutes, which is how long the enforcer's re-verify takes.
+
+        So the whole profile is re-applied, rather than the fan curves being
+        re-pushed from here. The window's apply is the one piece of code
+        that knows the order this needs -- power mode first, fan curves last
+        -- and that reads the curves back from the driver to write only the
+        channels the EC actually threw away. A second copy of that here is
+        how three of the four CPU applies in this tree came to silently drop
+        settings.
+
+        The profile applied is whichever is current NOW, not the one Apply
+        was pressed on: the enforcer switches profile on AC/battery without
+        asking, and the machine has to end up matching what it is running."""
+        name = self.window.current_profile_name()
+        if not name:
+            return
+        self.window.apply_profile_async(name)
+
     def _save(self, target, values, snapshot, steps):
         """Write what reached the hardware into profile ``target``.
 
@@ -785,11 +948,28 @@ class CpuPage(Gtk.Box):
 
         Only the steps that took are written: a profile holding a limit the
         chip refused is a profile that silently disagrees with the machine,
-        and the next window to open would show it as fact."""
+        and the next window to open would show it as fact.
+
+        The checkbox is the one exception, because it is not a step. It
+        says whether the limits step should run at all, so an apply that
+        turned it off has no "limits" step to hang it on and would never
+        save it -- and the box would come back ticked on the next reload,
+        with the limits applied again. It is written whenever it moved,
+        whether or not anything reached the chip; nothing is claimed of the
+        hardware by storing a preference about what to write to it.
+
+        Saves nothing, and asks the config nothing, when neither applies:
+        an apply with nothing to record must not be able to produce a
+        "the profile moved" refusal as the only thing the user hears."""
         data = {}
         for step in steps:
             for key in STEP_SAVES.get(step, ()):
                 data[key] = values[key]
+        toggle_moved = self._limits_toggle_moved(snapshot)
+        if toggle_moved:
+            data[LIMITS_KEY] = bool(snapshot[LIMITS_KEY])
+        if not steps and not toggle_moved:
+            return None
         refused = config_mod.save_deferred(
             self.window.config, target, "cpu", data, "CPU settings")
         if refused is not None:
@@ -799,6 +979,8 @@ class CpuPage(Gtk.Box):
             # banner claim the new profile is running settings that belong
             # to the old one.
             return refused
+        if toggle_moved:
+            self._applied[LIMITS_KEY] = bool(snapshot[LIMITS_KEY])
         for step in steps:
             for key in STEP_ROWS[step]:
                 self._applied[key] = snapshot[key]
@@ -813,7 +995,7 @@ class CpuPage(Gtk.Box):
                 if value is None:
                     continue
                 row = self.rows[key]
-                if key == "boost":
+                if key in BOOL_ROWS:
                     row.set_active(bool(value))
                 else:
                     row.set_value(value)

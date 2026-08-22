@@ -665,10 +665,18 @@ def read_current_epp(root=None):
 # rogcontrol-apply.py, which is why it is worth having one tested definition
 # of it here.
 #
-# The floor goes after the ceiling: cpuclock has to pull scaling_min_freq
-# down on any policy whose floor would sit above the new ceiling, so a floor
-# written first can be lowered by the very next step.
-CPU_APPLY_STEPS = ("limits", "boost", "epp", "clock", "minclock")
+# ``fwreset`` is first and is the only optional-by-request one -- see
+# cpu_apply_plan. The floor goes after the ceiling for a second, separate
+# reason: cpuclock has to pull scaling_min_freq down on any policy whose
+# floor would sit above the new ceiling, so a floor written first can be
+# lowered by the very next step.
+#
+# EVERY step cpu_apply_plan can emit belongs here, and every one of them
+# needs a row, a save entry and a label on the CPU page. A step that reaches
+# the hardware with no save entry is written on every Apply and never stored,
+# and the profile comes back without it each time the page reloads. That is
+# what this tuple is checked against.
+CPU_APPLY_STEPS = ("fwreset", "limits", "boost", "epp", "clock", "minclock")
 
 
 def cpu_apply_plan(values, caps=None):
@@ -692,10 +700,50 @@ def cpu_apply_plan(values, caps=None):
     also drops the ``clock`` step: the cores are pinned at base clock by the
     boost write itself, so a ceiling on top of that is not a limit the
     profile is applying.
+
+    ``limits_enabled`` is the exception to that: it is the CPU page's
+    checkbox, false drops the whole ryzenadj step, and missing means true so
+    that profiles predating it keep their limits. ``reset_to_firmware`` is
+    the other: true adds a first step that makes the firmware reselect its
+    own power table, and it is one-shot -- only a caller that has just
+    watched the checkbox go off sets it.
     """
     caps = caps or {}
     plan = []
-    if caps.get("ryzenadj") and all(
+    # First, and only when the caller asks for it: hand the limits back to
+    # the firmware. See THROTTLE_POLICY_PATH -- ryzenadj has no reset, so
+    # unticking the checkbox has to make the firmware reselect its own power
+    # table or the last limits this app wrote keep running until a reboot.
+    #
+    # ``reset_to_firmware`` is opt-in and one-shot, set by the CPU page on
+    # the tick-to-untick transition and by nothing else. It is deliberately
+    # NOT derived from ``limits_enabled`` being false: the enforcer builds
+    # this plan every 60 seconds, and deriving it would poke the EC -- and
+    # drop the fan curves with it -- once a minute for as long as a profile
+    # had its limits off.
+    #
+    # Before the cpufreq steps, not after. The EC reselecting its table can
+    # take the energy preference with it, so the EPP and clock writes below
+    # go last and leave the governor where the profile wants it, which is
+    # the half of "off" that stays this app's business.
+    if values.get("reset_to_firmware") and caps.get("fw_power_reset"):
+        plan.append(("fwreset", ("cpufwlimits",)))
+    # ``limits_enabled`` is the CPU page's checkbox, and it gates the whole
+    # ryzenadj call: the helper's ``cpu`` action takes the four limits and
+    # the Curve Optimizer offset as one set, so there is no way to send part
+    # of it. Off means this profile leaves the chip's power limits to the
+    # firmware, and every caller of this plan -- the page, the enforcer's
+    # 60-second pass, the tray apply and the hotkey cycler -- stops writing
+    # them, which is the only way "off" can mean anything: a limit the page
+    # skips and the enforcer re-asserts a minute later is not off.
+    #
+    # Missing means on, and so does a null: profiles written before the
+    # checkbox existed have no such key, and an upgrade must not silently
+    # stop applying their limits. Only an explicit false turns it off.
+    limits_enabled = values.get("limits_enabled")
+    if limits_enabled is None:
+        limits_enabled = True
+    if caps.get("ryzenadj") and limits_enabled and all(
             key in values for key in ("stapm", "fast", "slow", "temp")):
         plan.append(("limits", ("cpu", values["stapm"], values["fast"],
                                 values["slow"], values["temp"],
@@ -1134,6 +1182,24 @@ def read_boot_sound(root=None):
 # call, which is why this is a switch they own rather than something a
 # profile decides for them.
 PANEL_OD_PATH = f"{ASUS_WMI_DIR}/panel_od"
+
+# The firmware's own power-table selector, and the generic ACPI control that
+# stands in for it on a machine without asus-wmi. Nothing here reads or
+# writes them -- the write is the helper's ``cpufwlimits`` action, which
+# re-states whichever value is already in one of these to make the firmware
+# reselect its power table. These two paths exist here only so
+# detect_capabilities can answer whether that action has anything to write
+# to, and so the two copies of the path (helper, capability probe) sit next
+# to a single explanation of what they are for.
+#
+# Why the app needs this at all: ryzenadj has no reset. A power limit it has
+# written stays in the SMU until the machine reboots, so a profile that just
+# stops writing its limits leaves the previous ones running -- and the CPU
+# page's "Apply power limits" checkbox would be a switch with nothing behind
+# it. Telling the firmware to reselect its table is the one lever that puts
+# the firmware's numbers back without a reboot.
+THROTTLE_POLICY_PATH = f"{ASUS_WMI_DIR}/throttle_thermal_policy"
+PLATFORM_PROFILE_PATH = "/sys/firmware/acpi/platform_profile"
 
 
 def read_panel_od(root=None):
@@ -1908,6 +1974,14 @@ def detect_capabilities(root=None):
     # currently off still has the control, so gating on the value would take
     # the switch away the moment it was used to switch overdrive off.
     caps["panel_od"] = os.path.exists(_under(root, PANEL_OD_PATH))
+    # Whether there is anything for the helper's cpufwlimits action to write,
+    # which is what hands the CPU power limits back to the firmware when the
+    # CPU page's checkbox is unticked. Either control will do; the helper
+    # prefers the asus-wmi one and falls back to the ACPI one in the same
+    # order this does.
+    caps["fw_power_reset"] = (
+        os.path.exists(_under(root, THROTTLE_POLICY_PATH))
+        or os.path.exists(_under(root, PLATFORM_PROFILE_PATH)))
     caps["nvidia"] = have_cmd("nvidia-smi")
     # A separate question from nvidia-smi: the two clock offsets go through
     # nvidia-settings, which is its own package and is missing on plenty of

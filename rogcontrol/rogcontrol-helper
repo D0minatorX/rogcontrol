@@ -29,7 +29,7 @@ find_hwmon_by_name() {
 }
 
 usage() {
-    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|cpuminclock|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|bootsound|panelod|asusd_status|asusd_disable|asusd_enable> ..." >&2
+    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|cpuminclock|cpufwlimits|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|bootsound|panelod|asusd_status|asusd_disable|asusd_enable> ..." >&2
     exit 1
 }
 
@@ -313,6 +313,60 @@ case "$1" in
             CUR_MAX=$(cat "$P0/scaling_max_freq")
             [ "$VAL" -le "$CUR_MAX" ] || echo \
                 "floor $VAL kHz is above the clock ceiling ($CUR_MAX kHz); held at the ceiling" >&2
+        fi
+        ;;
+
+    cpufwlimits)
+        # Hand the CPU power limits back to the firmware.
+        #
+        # This exists because ryzenadj has no reset. What it writes goes into
+        # the SMU and stays there: a profile that simply stops writing its
+        # limits leaves the LAST ones it wrote running until the machine is
+        # rebooted, so "do not apply the limits" would be a setting with no
+        # visible effect at all. What does put the firmware's own numbers
+        # back is the firmware being told to reselect its power table, and
+        # that is what throttle_thermal_policy (and, on machines without
+        # asus-wmi, the generic ACPI platform_profile) is.
+        #
+        # The value written is the one already there, read a line earlier.
+        # asus-wmi's store function does the WMI call unconditionally, so
+        # writing back the current mode re-sends the whole table to the EC
+        # without changing which mode the user is on -- exactly the "reassert
+        # what the firmware wants" this needs, and nothing else.
+        #
+        # It therefore takes no arguments, and cannot be asked to put the
+        # machine on a different power mode: this action can only re-state
+        # the mode already selected. That is deliberate. A caller-supplied
+        # mode would make this a privileged write to a firmware knob with a
+        # value from userspace, which is the shape this helper exists not to
+        # have.
+        #
+        # Side effect worth knowing: the EC reselecting its power table also
+        # drops the custom fan curves, exactly as an ordinary power-mode
+        # change does. The callers re-push the curves afterwards for the same
+        # reason they do after a profile switch.
+        shift
+        no_args cpufwlimits "$@"
+        THROTTLE=/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy
+        PLATFORM=/sys/firmware/acpi/platform_profile
+        if [ -e "$THROTTLE" ]; then
+            # asus-wmi first: it is the ASUS-specific control, and on this
+            # hardware it is the one that maps to the firmware's own power
+            # table rather than going through whatever the ACPI layer decides
+            # to do with it.
+            CUR=$(cat "$THROTTLE")
+            is_int "$CUR" || {
+                echo "throttle_thermal_policy reads '$CUR', which is not a policy number" >&2
+                exit 1; }
+            echo "$CUR" > "$THROTTLE"
+        elif [ -e "$PLATFORM" ]; then
+            CUR=$(cat "$PLATFORM")
+            [ -n "$CUR" ] || {
+                echo "platform_profile is empty" >&2; exit 1; }
+            echo "$CUR" > "$PLATFORM"
+        else
+            echo "no asus-wmi throttle_thermal_policy and no ACPI platform_profile on this machine" >&2
+            exit 1
         fi
         ;;
 
