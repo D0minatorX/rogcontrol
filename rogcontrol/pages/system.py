@@ -46,6 +46,8 @@ response-time setting, written to the same asus-wmi platform device as the
 chime, held in firmware, and no more part of a profile than the chime is.
 """
 
+import time
+
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -55,11 +57,34 @@ from gi.repository import Adw, Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from .. import APP_VERSION  # noqa: E402
 from .. import config as config_mod  # noqa: E402
+from .. import fancurve  # noqa: E402
 from .. import hardware  # noqa: E402
 from .. import profiles as profiles_mod  # noqa: E402
 
 REFRESH_SECONDS = 5
 DASH = "—"
+
+# A flat, temporary override rather than a fourth profile: it holds every
+# channel at one percentage regardless of temperature for a fixed time, then
+# hands the fans straight back to whatever profile is active. Same shape as
+# the calibration step in pages/fans.py (_write_flat), minus the measuring.
+FAN_BOOST_PCT = 85
+FAN_BOOST_SECONDS = 120
+# Matches pages/fans.py's CHANNEL_GAP_S: the embedded controller silently
+# drops a fan-curve write fired closer to the last one than this.
+FAN_BOOST_CHANNEL_GAP_S = 5
+
+FAN_BOOST_SUBTITLE = (
+    f"Hold every fan at a flat {FAN_BOOST_PCT}% for "
+    f"{FAN_BOOST_SECONDS // 60} minutes, then restore the active profile's "
+    f"curve")
+
+FAN_BOOST_TOOLTIP = (
+    "Pauses the background enforcer so it cannot fight this, drives every "
+    f"fan channel to a flat {FAN_BOOST_PCT}% regardless of temperature for "
+    f"{FAN_BOOST_SECONDS} seconds, then reapplies the active profile -- the "
+    "same push Applying a profile does -- and resumes the enforcer. Useful "
+    "for clearing dust or checking the fans still spin up.")
 
 # Lines of log kept in the view. Enough to cover a boot's worth of applies
 # and the failure before it; more than this and the widget costs more to
@@ -212,6 +237,15 @@ class SystemPage(Adw.PreferencesPage):
         # single flag would freeze the chime switch while overdrive was
         # being written for no reason the user could see.
         self._panel_od_busy = False
+        # Fan boost: true from the click until the profile has been put
+        # back at the end of the hold, so the button cannot be pressed
+        # again mid-flight and a second worker cannot stack a second
+        # enforcer pause on top of the first.
+        self._boost_active = False
+        self._boost_countdown_id = None
+        self._boost_deadline = None
+        self._boost_profile = None
+        self._boost_enforcer_paused = False
         self.asusd_state = {}
         # What is in the picker, and separately the last non-empty answer
         # supergfxctl -s gave. The two are deliberately not the same list.
@@ -230,6 +264,7 @@ class SystemPage(Adw.PreferencesPage):
         self._build_supergfx()
         self._build_asusd()
         self._build_sync()
+        self._build_fan_boost()
         self._build_firmware()
         self._build_log()
         self._build_about()
@@ -317,6 +352,27 @@ class SystemPage(Adw.PreferencesPage):
         self.osmode_row, self.osmode_value = self._value_row(
             group, "OS power mode", "power-profiles-daemon's active profile")
         self.sync_row, self.sync_value = self._value_row(group, "In sync")
+
+    def _build_fan_boost(self):
+        """A temporary flat override, not a fourth profile.
+
+        Gated on the same capability as the fans page itself -- a button
+        that cannot reach the hardware is worse than no button."""
+        if not self.window.caps.get("fan_curve"):
+            return
+        group = Adw.PreferencesGroup(title="Fan boost")
+        self.add(group)
+        self.fan_boost_row = Adw.ActionRow(title="Fan boost",
+                                           subtitle=FAN_BOOST_SUBTITLE)
+        self.fan_boost_row.set_subtitle_lines(0)
+        self.fan_boost_row.set_tooltip_text(FAN_BOOST_TOOLTIP)
+        self.fan_boost_button = Gtk.Button(
+            label=f"Boost {FAN_BOOST_PCT}% for {FAN_BOOST_SECONDS // 60} min")
+        self.fan_boost_button.set_valign(Gtk.Align.CENTER)
+        self.fan_boost_button.connect("clicked", self._on_fan_boost_clicked)
+        self.fan_boost_row.add_suffix(self.fan_boost_button)
+        self.fan_boost_row.set_activatable_widget(self.fan_boost_button)
+        group.add(self.fan_boost_row)
 
     def _build_firmware(self):
         """Settings that live in the firmware rather than in a profile."""
@@ -477,6 +533,11 @@ class SystemPage(Adw.PreferencesPage):
         if self._timer_id is not None:
             GLib.source_remove(self._timer_id)
             self._timer_id = None
+        # The fan boost countdown is deliberately not cancelled here: it is
+        # what puts the profile's real curve back and restarts the
+        # enforcer. Dropping it on page/window teardown would leave the
+        # fans pinned at a flat curve with the enforcer stopped until the
+        # next boot -- worse than a stray timer on a closed page.
 
     def _tick(self):
         if self.get_mapped():
@@ -764,6 +825,109 @@ class SystemPage(Adw.PreferencesPage):
                 f"“{name}” expects {expected}, but the OS is on "
                 f"{power_mode} — the enforcer settles this within a minute "
                 f"by switching to the profile {power_mode} maps to")
+
+    # -- fan boost -------------------------------------------------------
+
+    def _on_fan_boost_clicked(self, _button):
+        if self._boost_active or not self.window.caps.get("fan_curve"):
+            return
+        # Captured now, not read back when the hold ends: the enforcer is
+        # about to be paused, and without it the profile could otherwise
+        # switch itself mid-hold (AC/battery) and the wrong one would be
+        # the one put back. See config.deferred_save_target for the same
+        # concern on the fans page's own Apply.
+        self._boost_profile = self.window.current_profile_name()
+        self._boost_active = True
+        self.fan_boost_button.set_sensitive(False)
+        self.fan_boost_row.set_subtitle(
+            f"Setting every fan to {FAN_BOOST_PCT}%…")
+        self.window.apply_async(self._fan_boost_worker,
+                                self._on_fan_boost_written)
+
+    def _fan_boost_worker(self):
+        """Worker thread: pause the enforcer, hold every channel flat.
+
+        Same shape as pages/fans.py's _write_flat -- a flat curve at every
+        sampled temperature -- and the same CHANNEL_GAP_S-style wait between
+        channels, because the embedded controller drops a curve write fired
+        too soon after the last one."""
+        enforcer_paused = hardware.set_enforcer_running(False)
+        pwm = fancurve.pct_to_pwm255(FAN_BOOST_PCT)
+        flat = []
+        for temp in (30, 40, 50, 55, 60, 65, 70, 90):
+            flat += [temp, pwm]
+        channels = list(hardware.FAN_CHANNELS)
+        results = []
+        for i, channel in enumerate(channels):
+            if i > 0:
+                time.sleep(FAN_BOOST_CHANNEL_GAP_S)
+            ok, message = hardware.run_helper("fan", channel, *flat)
+            results.append((channel, ok, message))
+        return {"results": results, "enforcer_paused": enforcer_paused}
+
+    def _on_fan_boost_written(self, data, error):
+        if error is not None:
+            self._fan_boost_abort(f"Fan boost failed: {error}", False)
+            return
+        self._boost_enforcer_paused = data.get("enforcer_paused", False)
+        failures = [f"{hardware.FAN_LABELS[ch]}: {message}"
+                   for ch, ok, message in data["results"] if not ok]
+        if failures:
+            self._fan_boost_abort(
+                "Fan boost failed: " + "; ".join(failures), True)
+            return
+        self._boost_deadline = time.monotonic() + FAN_BOOST_SECONDS
+        self.window.toast(
+            f"Fans holding at {FAN_BOOST_PCT}% for "
+            f"{FAN_BOOST_SECONDS // 60} minutes.")
+        self._fan_boost_tick()
+        self._boost_countdown_id = GLib.timeout_add_seconds(
+            1, self._fan_boost_tick)
+
+    def _fan_boost_tick(self):
+        remaining = int(round(self._boost_deadline - time.monotonic()))
+        if remaining <= 0:
+            self._boost_countdown_id = None
+            self._on_fan_boost_revert()
+            return GLib.SOURCE_REMOVE
+        self.fan_boost_row.set_subtitle(
+            f"Holding at {FAN_BOOST_PCT}% — {remaining}s left")
+        return GLib.SOURCE_CONTINUE
+
+    def _on_fan_boost_revert(self):
+        """The hold is over: put the profile back exactly as Apply would.
+
+        Not a hand-rolled curve write -- apply_profile_async is the same
+        push a profile switch does, so the fans end up wherever the rest of
+        that profile's settings already are, and the enforcer is resumed
+        alongside it rather than racing its own reassertion."""
+        self.fan_boost_row.set_subtitle("Restoring the active profile…")
+        name = self._boost_profile or self.window.current_profile_name()
+        self.window.apply_profile_async(name)
+        self.window.apply_async(
+            lambda: (hardware.set_enforcer_running(True)
+                    if self._boost_enforcer_paused else True),
+            self._on_fan_boost_done)
+
+    def _on_fan_boost_done(self, _result, error):
+        self._boost_active = False
+        self._boost_enforcer_paused = False
+        self.fan_boost_button.set_sensitive(True)
+        self.fan_boost_row.set_subtitle(FAN_BOOST_SUBTITLE)
+        if error is not None:
+            self.window.toast(f"Resuming the fan enforcer failed: {error}")
+
+    def _fan_boost_abort(self, message, enforcer_may_be_paused):
+        """A failed write or a worker exception: put the button back rather
+        than leaving it stuck on "Setting every fan to 85%…" forever."""
+        self._boost_active = False
+        self.fan_boost_button.set_sensitive(True)
+        self.fan_boost_row.set_subtitle(FAN_BOOST_SUBTITLE)
+        self.window.toast(message)
+        if enforcer_may_be_paused and self._boost_enforcer_paused:
+            self.window.apply_async(
+                lambda: hardware.set_enforcer_running(True), None)
+        self._boost_enforcer_paused = False
 
     def _reload_log(self):
         text = hardware.read_log_tail(LOG_LINES)
