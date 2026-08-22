@@ -15,6 +15,7 @@ the mock rather than the path.
 
 import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1427,6 +1428,103 @@ def set_gpu_mode(mode, timeout=10):
     return True, result.stdout.strip()
 
 
+# -- Panel self-refresh (amdgpu boot parameter) ------------------------------
+#
+# PSR lets the display controller stop sending frames to a static screen and
+# let the panel refresh itself from its own memory. It saves real battery, and
+# on this hardware it is also the one thing standing between a working Hybrid
+# graphics mode and a machine that freezes seconds after the login screen
+# appears.
+#
+# Why it belongs in this app at all, when it is a kernel bug and not an ASUS
+# knob: the freeze is only reachable in Hybrid and Integrated, because those
+# are the modes where the internal panel hangs off the AMD iGPU. In
+# AsusMuxDgpu the panel is wired to the NVIDIA card, amdgpu reads no PSR
+# capability from it, and the faulty path never runs. So the setting that
+# decides whether the graphics-mode picker on the GPU page is usable is this
+# one -- which makes it this app's business even though nothing about it is
+# ASUS firmware.
+#
+# Measured on an ROG Strix G16 G614PR, kernel 7.2.0-1-cachyos: three Hybrid
+# boots, three hard freezes, each preceded by
+#
+#     WARNING: .../display/modules/power/power_psr.c:236
+#     at mod_power_set_psr_event+0x2a1/0x310 [amdgpu]
+#
+# and three AsusMuxDgpu boots with no warning and no freeze. The frozen boots
+# logged "sink PSR ver 3 DPCD caps 0x7a" for eDP-2; the clean ones logged
+# "caps 0x0", which is the panel not being on the AMD side at all. One of the
+# three froze at the GDM greeter, before any user session existed, which is
+# also what rules this app out as the cause.
+LIMINE_DEFAULT_PATH = "/etc/default/limine"
+
+# The exact token the helper writes, spelled the same way in both places.
+# 0x610 is DC_DISABLE_PSR | DC_DISABLE_PSR_SU | DC_DISABLE_REPLAY -- see the
+# helper's psr action for why all three rather than PSR alone.
+PSR_DISABLE_PARAM = "amdgpu.dcdebugmask=0x610"
+
+PROC_CMDLINE_PATH = "/proc/cmdline"
+
+
+def _read_text(path):
+    """A whole file as text, or None when it cannot be read."""
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def read_psr_disabled_pending(root=None):
+    """True when the bootloader config carries the PSR-off parameter.
+
+    What the *next* boot will do, which is not necessarily what this one is
+    doing -- see read_psr_disabled_live. None when the config cannot be read,
+    which on a machine that is not running Limine is the ordinary case and not
+    an error."""
+    text = _read_text(_under(root, LIMINE_DEFAULT_PATH))
+    if text is None:
+        return None
+    return PSR_DISABLE_PARAM in text
+
+
+def read_psr_disabled_live(root=None):
+    """True when the running kernel was given the PSR-off parameter.
+
+    Read from /proc/cmdline rather than inferred from the config, because the
+    two disagree for exactly as long as it takes to reboot -- and that gap is
+    the thing the switch has to be able to tell the user about."""
+    text = _read_text(_under(root, PROC_CMDLINE_PATH))
+    if text is None:
+        return None
+    return PSR_DISABLE_PARAM in text.split()
+
+
+def psr_foreign_dcdebugmask(root=None):
+    """A dcdebugmask this app did not write, or None.
+
+    Somebody else's debug mask is somebody else's setting: the helper refuses
+    to touch it, and the switch says so rather than offering an action that
+    will come back refused."""
+    text = _read_text(_under(root, LIMINE_DEFAULT_PATH))
+    if text is None:
+        return None
+    for match in re.findall(r"amdgpu\.dcdebugmask=\S+", text):
+        if match != PSR_DISABLE_PARAM:
+            return match
+    return None
+
+
+def set_psr_disabled(disabled, timeout=120):
+    """Turn PSR off (True) or back on (False) at the next boot.
+
+    Through the helper, which does the whole regenerate-and-re-enroll dance
+    and puts the config back if any part of it fails. The timeout is minutes
+    rather than seconds because limine-update rebuilds boot entries and
+    hashes them, which is not a thing that finishes in ten."""
+    return run_helper("psr", 0 if disabled else 1, timeout=timeout)
+
+
 # -- OS power mode (power-profiles-daemon) -----------------------------------
 
 # PPD has shipped under two bus names across distro versions, so both are
@@ -1982,6 +2080,17 @@ def detect_capabilities(root=None):
     caps["fw_power_reset"] = (
         os.path.exists(_under(root, THROTTLE_POLICY_PATH))
         or os.path.exists(_under(root, PLATFORM_PROFILE_PATH)))
+    # Four separate questions, all of which have to answer yes: there has to
+    # be an AMD display driver for the parameter to mean anything, a Limine
+    # config to put it in, and both Limine tools to regenerate and re-enroll
+    # what was changed. Anything less and the switch would offer an action
+    # that cannot finish -- and this is the one action in the app whose
+    # half-finished state costs a boot rather than a setting.
+    caps["psr_toggle"] = (
+        os.path.exists(_under(root, "/sys/module/amdgpu"))
+        and os.path.isfile(_under(root, LIMINE_DEFAULT_PATH))
+        and have_cmd("limine-update")
+        and have_cmd("limine-enroll-config"))
     caps["nvidia"] = have_cmd("nvidia-smi")
     # A separate question from nvidia-smi: the two clock offsets go through
     # nvidia-settings, which is its own package and is missing on plenty of

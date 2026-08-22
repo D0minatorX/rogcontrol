@@ -207,6 +207,45 @@ PANEL_OD_TOOLTIP = (
     "reset loses it."
 )
 
+# The one switch on this page that does not take effect when it is moved, so
+# the row says which way round it is before it is touched rather than only
+# afterwards in a toast.
+PSR_SUBTITLE = (
+    "Saves battery on the internal panel. Turn it off if the machine freezes "
+    "after login in Hybrid or Integrated graphics. Takes effect at the next "
+    "boot")
+
+PSR_TOOLTIP = (
+    "Panel self-refresh lets the display controller stop sending frames to a "
+    "still screen and lets the panel redraw itself from its own memory, which "
+    "saves power while nothing is moving.\n\n"
+    "Turn it off if switching to Hybrid or Integrated graphics leaves the "
+    "machine frozen a few seconds after the login screen. Those are the modes "
+    "where the built-in screen is driven by the AMD graphics rather than the "
+    "NVIDIA card, and some kernel versions crash in the panel self-refresh "
+    "code when it is. In AsusMuxDgpu the screen is on the NVIDIA card, that "
+    "code never runs, and this setting changes nothing.\n\n"
+    "This one is not an ASUS firmware knob like the two above: it is a kernel "
+    "boot parameter, so it is written into the bootloader's configuration and "
+    "only takes effect after a reboot. The old configuration is backed up "
+    "first, and put back automatically if any part of the change fails."
+)
+
+PSR_PENDING_ON = (
+    "The bootloader has been changed to turn panel self-refresh back on, but "
+    "this session is still running with it off. Reboot to finish.")
+
+PSR_PENDING_OFF = (
+    "The bootloader has been changed to turn panel self-refresh off, but this "
+    "session is still running with it on — so a graphics-mode switch can "
+    "still freeze until you reboot.")
+
+PSR_FOREIGN = (
+    "Something else on this machine already sets amdgpu.dcdebugmask ({0}) in "
+    "the bootloader configuration. That is not this app's setting to rewrite, "
+    "so this switch is disabled. Remove it by hand if you want this app to "
+    "manage panel self-refresh.")
+
 SYNC_DESCRIPTION = (
     "This app and the OS both hold an opinion about the power mode. "
     "Selecting a profile here sets the OS mode to match. Changing it the "
@@ -237,6 +276,11 @@ class SystemPage(Adw.PreferencesPage):
         # single flag would freeze the chime switch while overdrive was
         # being written for no reason the user could see.
         self._panel_od_busy = False
+        # Its own flag on the same grounds as the two above, and needed more:
+        # the helper call behind it runs limine-update, which takes seconds
+        # rather than milliseconds, so there is a real window in which a
+        # sample could land and put the switch back under the user.
+        self._psr_busy = False
         # Fan boost: true from the click until the profile has been put
         # back at the end of the hold, so the button cannot be pressed
         # again mid-flight and a second worker cannot stack a second
@@ -266,6 +310,7 @@ class SystemPage(Adw.PreferencesPage):
         self._build_sync()
         self._build_fan_boost()
         self._build_firmware()
+        self._build_psr()
         self._build_log()
         self._build_about()
 
@@ -400,6 +445,33 @@ class SystemPage(Adw.PreferencesPage):
             # Nothing left in "Firmware" to show a heading for.
             self.firmware_group.set_visible(False)
 
+    def _build_psr(self):
+        """The one switch here that changes the kernel command line.
+
+        Its own group and not a third row under Firmware, because it is not
+        firmware: it is a boot parameter, it needs a reboot, and grouping it
+        with two switches that take effect the instant they are moved would
+        make it look like it does too."""
+        if not self.caps.get("psr_toggle"):
+            return
+        group = Adw.PreferencesGroup(title="Kernel boot options")
+        self.add(group)
+
+        self.psr_row = Adw.SwitchRow(title="AMD panel self-refresh",
+                                     subtitle=PSR_SUBTITLE)
+        self.psr_row.set_subtitle_lines(0)
+        self.psr_row.set_tooltip_text(PSR_TOOLTIP)
+        self.psr_row.connect("notify::active", self._on_psr)
+        group.add(self.psr_row)
+
+        # Only ever visible when the config and the running kernel disagree,
+        # which is the whole of the time between changing this and rebooting.
+        # A switch that has already moved is not evidence of anything having
+        # happened yet, and this is the row that says so.
+        self.psr_pending_row = Adw.ActionRow(title="Pending")
+        self.psr_pending_row.set_subtitle_lines(0)
+        self.psr_pending_row.set_visible(False)
+        group.add(self.psr_pending_row)
 
     def _build_log(self):
         group = Adw.PreferencesGroup(
@@ -521,6 +593,7 @@ class SystemPage(Adw.PreferencesPage):
             ("GPU temp target", caps.get("nv_temp_target")),
             ("charge limit", caps.get("charge_limit")),
             ("panel overdrive", caps.get("panel_od")),
+            ("panel self-refresh toggle", caps.get("psr_toggle")),
             ("keyboard backlight", caps.get("kbd_backlight")),
         ) if ok]
         lines.append("Available: " + (", ".join(present) if present
@@ -576,6 +649,18 @@ class SystemPage(Adw.PreferencesPage):
             # machine that talks to asus-wmi.
             "panel_od": (hardware.read_panel_od()
                          if self.caps.get("panel_od") else None),
+            # Three separate readings, because they can all three differ. The
+            # config says what the next boot will do, /proc/cmdline says what
+            # this one is doing, and a foreign dcdebugmask says the switch has
+            # no business acting at all. Sampled rather than read once because
+            # a package upgrade can regenerate the bootloader config under a
+            # running window.
+            "psr_pending": (hardware.read_psr_disabled_pending()
+                            if self.caps.get("psr_toggle") else None),
+            "psr_live": (hardware.read_psr_disabled_live()
+                         if self.caps.get("psr_toggle") else None),
+            "psr_foreign": (hardware.psr_foreign_dcdebugmask()
+                            if self.caps.get("psr_toggle") else None),
         }
 
     def _on_sample(self, data, error):
@@ -589,6 +674,8 @@ class SystemPage(Adw.PreferencesPage):
         self._render_sync(data.get("power_mode"))
         self._render_boot_sound(data.get("boot_sound"))
         self._render_panel_od(data.get("panel_od"))
+        self._render_psr(data.get("psr_pending"), data.get("psr_live"),
+                         data.get("psr_foreign"))
 
     def _render_supergfx(self, mode, error):
         """Three states, said apart: absent, present but silent, working.
@@ -751,6 +838,113 @@ class SystemPage(Adw.PreferencesPage):
         # Ask the hardware rather than assuming the switch worked; a refused
         # write puts the switch straight back.
         self._refresh_now()
+
+    # -- panel self-refresh --------------------------------------------------
+
+    def _render_psr(self, pending, live, foreign):
+        """The switch shows the config; the row below shows the disagreement.
+
+        The switch follows ``pending`` and not ``live`` because pending is
+        what the user last asked for, and a switch that snapped back to the
+        running kernel's value would look like the change had been refused
+        when it had in fact been made and was waiting on a reboot. The
+        Pending row carries that distinction instead, in words."""
+        if not self.caps.get("psr_toggle") or self._psr_busy:
+            return
+        if foreign:
+            # Somebody else's setting. Say whose shape it is and stop, rather
+            # than leaving an enabled switch whose every use comes back
+            # refused by the helper.
+            self.psr_row.set_sensitive(False)
+            self.psr_row.set_subtitle(PSR_FOREIGN.format(foreign))
+            self.psr_pending_row.set_visible(False)
+            return
+        self.psr_row.set_sensitive(True)
+        self.psr_row.set_subtitle(PSR_SUBTITLE)
+        if pending is None:
+            return
+        was_loading = self._loading
+        self._loading = True
+        try:
+            # Inverted on purpose: the parameter's presence means PSR is off,
+            # and a switch labelled "panel self-refresh" that was on when the
+            # feature was disabled would be a switch showing the opposite of
+            # what it says.
+            self.psr_row.set_active(not pending)
+        finally:
+            self._loading = was_loading
+        if live is None or live == pending:
+            self.psr_pending_row.set_visible(False)
+            return
+        self.psr_pending_row.set_subtitle(
+            PSR_PENDING_OFF if pending else PSR_PENDING_ON)
+        self.psr_pending_row.set_visible(True)
+
+    def _on_psr(self, row, _param):
+        if self._loading or self._psr_busy:
+            return
+        # The switch is "panel self-refresh", so off is what the helper calls
+        # disabled. One inversion, in one place, right next to the one in
+        # _render_psr that has to match it.
+        disabled = not row.get_active()
+        self._psr_busy = True
+        row.set_sensitive(False)
+        self.psr_row.set_subtitle("Writing the bootloader configuration…")
+        self.window.apply_async(
+            lambda: hardware.set_psr_disabled(disabled),
+            lambda result, error: self._on_psr_set(disabled, result, error))
+
+    def _on_psr_set(self, disabled, result, error):
+        self._psr_busy = False
+        self.psr_row.set_sensitive(True)
+        self.psr_row.set_subtitle(PSR_SUBTITLE)
+        ok, message = (False, str(error)) if error is not None else result
+        if not ok:
+            # The helper puts the configuration back itself before reporting a
+            # failure, so there is nothing to undo here -- only a switch to
+            # put where the configuration actually is, which _refresh_now
+            # does.
+            self.window.toast(f"Panel self-refresh change failed: {message}")
+            self._refresh_now()
+            return
+        # Not saved into the config the way the chime and overdrive are: this
+        # lives in the bootloader, which survives everything this app could
+        # re-assert it from, and a boot-apply service pushing it again every
+        # boot would mean regenerating the bootloader config on every boot.
+        self._refresh_now()
+        self._ask_to_reboot_for_psr(disabled)
+
+    def _ask_to_reboot_for_psr(self, disabled):
+        """Offer the reboot, rather than take it.
+
+        The same shape as the GPU page's MUX reboot prompt and for the same
+        reason: nothing a running system does applies a kernel parameter, so
+        "done" here is a promise about the next boot and the user is the one
+        who decides when that is."""
+        dialog = Adw.AlertDialog(
+            heading="Reboot to apply?",
+            body=("Panel self-refresh is turned off in the bootloader "
+                  "configuration. It stays on until the machine reboots, so a "
+                  "graphics-mode switch can still freeze until then."
+                  if disabled else
+                  "Panel self-refresh is turned back on in the bootloader "
+                  "configuration. It takes effect at the next boot."))
+        dialog.add_response("later", "Later")
+        dialog.add_response("reboot", "Reboot now")
+        dialog.set_response_appearance("reboot",
+                                       Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("later")
+        dialog.set_close_response("later")
+        dialog.connect("response", self._on_psr_reboot_response)
+        dialog.present(self)
+
+    def _on_psr_reboot_response(self, _dialog, response):
+        if response != "reboot":
+            self.window.toast("Saved — it takes effect at the next reboot.")
+            return
+        ok, message = hardware.reboot_system()
+        if not ok:
+            self.window.toast(f"Could not reboot: {message}")
 
     def _on_check_asusd(self, _button):
         self._refresh_now()
