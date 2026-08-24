@@ -184,6 +184,16 @@ def apply_once(config, profile_only=False):
         # power-mode change, and a channel it has thrown away has to be
         # rewritten even though nothing in the config moved.
         wanted = profile.get("fans", {})
+        # Not while a fan boost is running. The System page's boost is a
+        # deadline on disk that the enforcer maintains and ends (see
+        # hardware.FAN_BOOST_STATE_PATH); writing the profile's curves over
+        # it here -- this script is what the tray runs on a profile switch --
+        # would have the enforcer push the flat curve straight back on its
+        # next pass, and the fans would flip between the two for the rest of
+        # the hold. The boost expires on its own, and the curves below go on
+        # at that point.
+        if hardware.fan_boost_active(hardware.read_fan_boost()):
+            wanted = {}
         held = {ch: hardware.read_fan_curve_points(ch) for ch in wanted}
         enabled = hardware.read_fan_curve_enabled()
         todo = [(ch, pts) for ch, pts in wanted.items()
