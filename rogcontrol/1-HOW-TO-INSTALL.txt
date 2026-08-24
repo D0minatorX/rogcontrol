@@ -45,26 +45,16 @@ BAZZITE AND OTHER ATOMIC SYSTEMS
 Fedora Atomic images -- Bazzite, Silverblue, Kinoite, the GNOME and the KDE
 Plasma spins alike -- have a read-only /usr and no dnf, so GTK4 and
 libadwaita cannot simply be installed the way they are elsewhere. The
-installer notices and asks you once, and only once:
+installer notices and layers them onto the system with rpm-ostree instead,
+as real packages. This needs one reboot before the app can run, and layered
+packages make OS updates slower and can occasionally break them.
 
-    1) Distrobox   A Fedora container holds the GTK libraries and the app
-                   runs out of it, in your menu like any other app. No
-                   reboot, nothing added to the base image. This is the
-                   default, and what Bazzite's own documentation recommends.
+Everything else installs onto the real system exactly as it does everywhere
+else: the privileged helper, the sudoers rule, the background services, the
+suspend hook, the menu entry and your settings.
 
-    2) rpm-ostree  Layers the libraries onto the system as real packages.
-                   Needs one reboot before the app can run, and layered
-                   packages make OS updates slower and can occasionally
-                   break them.
-
-Everything else installs onto the real system identically either way: the
-privileged helper, the sudoers rule, the background services, the suspend
-hook, the menu entry and your settings. Hardware control works the same in
-both -- the window reaches the helper on the host from inside the container
-too. The choice only decides where the window's GTK libraries live.
-
-If you pick 2, the installer layers the packages, does everything else it
-normally would, and stops with:
+The installer layers the packages, does everything else it normally would,
+and stops with:
 
     1. Reboot
     2. Run ./install.sh again from this same folder
@@ -72,9 +62,6 @@ normally would, and stops with:
 The second run keeps every setting, skips what is already done, and asks
 nothing. Your profiles are applied and the background services are running
 in the meantime either way, so the hardware is under control while you wait.
-
-Uninstalling removes the container too, after asking -- a container can have
-had other things put in it, so that one is never assumed.
 
 
 CACHYOS AND OTHER ARCH SYSTEMS
