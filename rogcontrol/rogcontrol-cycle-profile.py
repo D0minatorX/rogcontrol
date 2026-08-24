@@ -112,6 +112,11 @@ def apply_profile(profile):
     # profile whose fans matched exactly -- which is why the notify-send
     # after it felt slow even when nothing about the fans had changed.
     fans = profile.get("fans", {})
+    # Not while a fan boost is running -- see rogcontrol-apply.py for why
+    # writing the profile's curves over a live boost only makes the two
+    # fight until the boost expires.
+    if hardware.fan_boost_active(hardware.read_fan_boost()):
+        fans = {}
     held = {ch: hardware.read_fan_curve_points(ch) for ch in fans}
     enabled = hardware.read_fan_curve_enabled()
     todo = [(ch, pts) for ch, pts in fans.items()
