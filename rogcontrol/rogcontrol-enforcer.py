@@ -412,11 +412,38 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
         if full:
             gpu = profile.get("gpu")
             if gpu and hardware.dgpu_available():
-                run_helper("gpu", gpu["watts"])
+                # Asked for, not assumed -- see rogcontrol-apply.py. Here a
+                # KeyError is caught by the cycle's own handler and logged as
+                # "cycle failed", which is true but says nothing about which
+                # profile or which key, once a minute forever.
+                if "watts" in gpu:
+                    run_helper("gpu", gpu["watts"])
                 apply_gpu_clock_offsets(gpu)
 
+        # The fan boost, if one is in force, replaces the profile's curves
+        # for as long as it lasts. This service is what makes the boost
+        # survive the window being closed: the System page records a
+        # deadline and writes the flat curve, and from then on the boost is
+        # this loop's to maintain and to end. See hardware.FAN_BOOST_STATE_PATH.
+        #
+        # Substituting the curve rather than skipping the fan block is what
+        # lets the enforcer keep doing its actual job during a boost: the EC
+        # drops custom curves on every power-mode change, and a boost is not
+        # a reason for the fans to fall back to firmware control halfway
+        # through. It is also why the page no longer has to stop this
+        # service -- there is nothing left to fight over.
+        #
+        # The signature carries the boost rather than the profile name, so
+        # the moment the deadline passes and the profile's curves come back,
+        # they differ from what was last pushed and are written immediately.
         fans = profile.get("fans", {})
-        fans_signature = (config.get("current_profile"), json.dumps(fans, sort_keys=True))
+        boost = hardware.read_fan_boost()
+        if hardware.fan_boost_active(boost):
+            fans = hardware.fan_boost_curves(boost["pct"])
+            fans_signature = ("__fan_boost__", json.dumps(fans, sort_keys=True))
+        else:
+            fans_signature = (config.get("current_profile"),
+                              json.dumps(fans, sort_keys=True))
         stale = (time.monotonic() - _last_fan_apply_time) >= FAN_REVERIFY_SECONDS
         if force_fan_reapply or stale or fans_signature != _last_applied_fans:
             for i, (channel, points) in enumerate(fans.items()):
@@ -1304,6 +1331,45 @@ def ppd_watcher_thread():
 
 
 
+def expire_fan_boost():
+    """End a fan boost whose time is up. True when one just ended.
+
+    Only the deadline passing ends a boost here -- an active one is left
+    exactly as it is. Clearing the record is all this does: apply_full_profile
+    reads it on the same cycle and, finding no boost, pushes the profile's own
+    curves back, which is the restore.
+
+    This is the half of the feature that made it safe to close the window
+    mid-boost, so it runs on every cycle including the first after a start:
+    a boost recorded by a window that has since been closed -- or by one that
+    was killed, or before a reboot -- expires here with nobody watching."""
+    state = hardware.read_fan_boost()
+    if state is None or hardware.fan_boost_active(state):
+        return False
+    hardware.clear_fan_boost()
+    log(f"fan boost finished -- restoring the fan curve of "
+        f"'{state.get('profile') or 'the active profile'}'")
+    return True
+
+
+def seconds_until_next_cycle():
+    """How long to sleep before the next pass.
+
+    INTERVAL_SECONDS normally. Shorter while a fan boost is running, so the
+    fans come off the flat curve when the boost actually ends rather than up
+    to a minute later -- a two minute boost that stops after three is the
+    kind of imprecision that reads as the feature being broken."""
+    state = hardware.read_fan_boost()
+    if state is None:
+        return INTERVAL_SECONDS
+    remaining = state["until"] - time.time()
+    if 0 < remaining < INTERVAL_SECONDS:
+        # A second past it, not exactly on it: waking a hair early would
+        # find the boost still active and sleep another full cycle.
+        return max(1.0, remaining + 1)
+    return INTERVAL_SECONDS
+
+
 def read_thermal_state():
     """Current (platform_profile, throttle_thermal_policy). Either changing
     means the EC has just discarded the custom fan curve."""
@@ -1411,9 +1477,15 @@ def main():
                 # itself becomes the new baseline instead of looking like an
                 # external one next cycle.
                 thermal_changed = thermal_state_changed()
+                # A boost whose deadline has passed is ended here, before the
+                # apply below -- which then finds no boost on record and
+                # pushes the profile's own curves back. That IS the restore,
+                # and it happens whether or not a window is open.
+                boost_ended = expire_fan_boost()
                 if not switched:
                     apply_full_profile(config, profile,
-                                       force_fan_reapply=thermal_changed,
+                                       force_fan_reapply=thermal_changed
+                                       or boost_ended,
                                        full=thermal_changed)
 
                 # Keyboard brightness and charge limit are NOT re-applied
@@ -1445,7 +1517,7 @@ def main():
             # Never let one bad cycle kill the service, but do not hide it
             # either -- this was a silent 'pass' before.
             log(f"cycle failed: {e}", "ERROR", dedupe_key="cycle")
-        time.sleep(INTERVAL_SECONDS)
+        time.sleep(seconds_until_next_cycle())
 
 
 if __name__ == "__main__":
