@@ -52,6 +52,50 @@ def get_rpm_cal(config, channel):
     return FAN_RPM_CAL.get(channel)
 
 
+# Coldest and hottest a point may sit at, and the closest two points may get.
+# The gap is not cosmetic: the firmware wants eight strictly increasing
+# temperatures, and two points sharing one is a curve it cannot store.
+TEMP_MIN, TEMP_MAX = 0, 100
+PCT_MIN, PCT_MAX = 0, 100
+MIN_TEMP_GAP = 1
+
+
+def _clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def _spread_temps(points, min_gap=MIN_TEMP_GAP):
+    """``points`` with strictly increasing temperatures, as lists.
+
+    THE invariant, in one place. The firmware stores eight points and steps
+    between them by temperature, so two of them sharing a temperature is not
+    a curve it can run -- and nothing downstream rejects one: the helper
+    range-checks each value on its own, so a duplicate is written to the
+    embedded controller and what the fan then does is undefined.
+
+    The editor has always enforced this on the points it hands out, which is
+    why curves drawn in the window are fine. What could carry duplicates is
+    everything that does NOT come through the editor: an imported profile
+    file (parse_import checks that a fans section is a dict and nothing
+    about the points in it), a hand-edited config, or a curve from another
+    machine. Those reach the hardware through interpolate_curve, which is
+    why it now ends here too.
+
+    Push forwards, then pull backwards. One pass alone is not enough: the
+    forward pass can shove the hottest point past TEMP_MAX, and the backward
+    pass is what walks that back down through the ones behind it.
+
+    A curve that is already strictly increasing comes back untouched, which
+    is what makes this safe to put on the apply path -- every stock profile,
+    and every curve the editor has ever saved, passes through unchanged."""
+    pts = [[int(t), int(p)] for t, p in points]
+    for i in range(1, len(pts)):
+        pts[i][0] = max(pts[i][0], min(TEMP_MAX, pts[i - 1][0] + min_gap))
+    for i in range(len(pts) - 2, -1, -1):
+        pts[i][0] = min(pts[i][0], max(TEMP_MIN, pts[i + 1][0] - min_gap))
+    return pts
+
+
 def interpolate_curve(points, n=8):
     """Expand a user curve to exactly n points for the firmware.
 
@@ -75,9 +119,11 @@ def interpolate_curve(points, n=8):
     interpolating, so a moved point moves where the fan audibly changes.
     """
     pts = sorted({(int(t), int(p)) for t, p in points})
-    if len(pts) >= n:
-        return pts[:n]
-
+    # The set collapses points that are identical in BOTH values; two points
+    # at the same temperature with different percentages both survive it,
+    # and that is the duplicate the firmware cannot store. _spread_temps at
+    # the bottom is what settles it -- for this branch as well as the loop,
+    # which is why neither returns early any more.
     while len(pts) < n:
         # widest gap first, so added points are spread out evenly
         gaps = [(pts[i + 1][0] - pts[i][0], i) for i in range(len(pts) - 1)]
@@ -98,7 +144,8 @@ def interpolate_curve(points, n=8):
             if first_t <= 0:
                 break  # nowhere left to go; return what we have
             pts.insert(0, (first_t - 1, first_p))
-    return pts[:n]
+    # Tuples out, as this has always returned, so no caller sees a change.
+    return [tuple(point) for point in _spread_temps(pts[:n])]
 
 
 def pct_to_pwm255(pct):
@@ -159,19 +206,6 @@ def curve_matches_hardware(points, hardware_pairs, n=8):
 # handles are fiddlier with a mouse, which is why the arrow keys exist.
 EDITOR_POINTS = 8
 
-# Coldest and hottest a point may sit at, and the closest two points may get.
-# The gap is not cosmetic: the firmware wants eight strictly increasing
-# temperatures, and two points sharing one leaves interpolate_curve nothing
-# to bisect.
-TEMP_MIN, TEMP_MAX = 0, 100
-PCT_MIN, PCT_MAX = 0, 100
-MIN_TEMP_GAP = 1
-
-
-def _clamp(value, low, high):
-    return max(low, min(high, value))
-
-
 def editor_points(points, count=EDITOR_POINTS, min_gap=MIN_TEMP_GAP):
     """Exactly ``count`` ordered points, whatever came in.
 
@@ -205,14 +239,8 @@ def editor_points(points, count=EDITOR_POINTS, min_gap=MIN_TEMP_GAP):
             first_t, first_p = pts[0]
             pts.insert(0, [max(TEMP_MIN, first_t - min_gap), first_p])
 
-    # Push forwards, then pull backwards. One pass alone is not enough: the
-    # forward pass can shove the hottest point past 100C, and the backward
-    # pass is what walks that back down through the ones behind it.
-    for i in range(1, len(pts)):
-        pts[i][0] = max(pts[i][0], min(TEMP_MAX, pts[i - 1][0] + min_gap))
-    for i in range(len(pts) - 2, -1, -1):
-        pts[i][0] = min(pts[i][0], max(TEMP_MIN, pts[i + 1][0] - min_gap))
-    return pts
+    # The same spread the apply path uses -- this is where it came from.
+    return _spread_temps(pts, min_gap)
 
 
 def move_point(points, index, temp, pct, min_gap=MIN_TEMP_GAP):
