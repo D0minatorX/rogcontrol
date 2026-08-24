@@ -686,7 +686,18 @@ class FansPage(Gtk.Box):
             self._tick()
             return
 
-        self.window.config["fan_rpm_cal"] = cal
+        # MERGED into whatever is already there, not written over it. A
+        # channel that produced no usable fit is not in ``cal``, and
+        # replacing the whole dict dropped its previous calibration with it
+        # -- so a fan that failed to respond this time silently fell back to
+        # the built-in G614PR figures, while the banner below told the user
+        # its previous figures were kept. Only the channels that actually
+        # measured are updated; every other one keeps what it had.
+        saved = self.window.config.get("fan_rpm_cal")
+        if not isinstance(saved, dict):
+            saved = {}
+        saved.update(cal)
+        self.window.config["fan_rpm_cal"] = saved
         config_mod.save_config(self.window.config)
         parts = []
         for channel, editor in self.editors.items():
