@@ -41,7 +41,6 @@ to the BIOS update that caused it.
 
 import json
 import os
-import subprocess
 import sys
 import time
 
@@ -97,11 +96,19 @@ CHANNEL_GAP_S = 5
 
 
 def apply_gpu_clock_offsets(gpu):
+    # Through hardware.set_nvidia_clock_offset, not a hand-built command
+    # line. Both copies of this ran nvidia-settings with NO timeout, in a
+    # service that is a single loop: one hung call and the enforcer stops
+    # enforcing anything, for good, with nothing logged -- and on the
+    # auto-switch path it hangs while holding _ac_lock. The package's call
+    # has a timeout and turns a failure into (ok, message) rather than an
+    # exception, which is what every other subprocess in this tree does.
     if "clock_offset" in gpu:
-        subprocess.run(
-            ["nvidia-settings", "-a",
-             f"[gpu:0]/GPUGraphicsClockOffsetAllPerformanceLevels={gpu['clock_offset']}"],
-            capture_output=True, text=True)
+        ok, message = hardware.set_nvidia_clock_offset(
+            "core", gpu["clock_offset"])
+        if not ok:
+            hardware.log(f"GPU core clock offset failed: {message}", "ERROR",
+                         source="apply", dedupe_key="nvcore")
     if "clock_limit" in gpu:
         # Against the card's own maximum, not a hardcoded 3090: the top of
         # the slider means "no ceiling", and comparing against another
@@ -114,10 +121,11 @@ def apply_gpu_clock_offsets(gpu):
     if "temp_target" in gpu:
         run_helper("nvtemp", gpu["temp_target"])
     if "mem_clock_offset" in gpu:
-        subprocess.run(
-            ["nvidia-settings", "-a",
-             f"[gpu:0]/GPUMemoryTransferRateOffsetAllPerformanceLevels={gpu['mem_clock_offset']}"],
-            capture_output=True, text=True)
+        ok, message = hardware.set_nvidia_clock_offset(
+            "memory", gpu["mem_clock_offset"])
+        if not ok:
+            hardware.log(f"GPU memory clock offset failed: {message}", "ERROR",
+                         source="apply", dedupe_key="nvmem")
 
 
 def apply_once(config, profile_only=False):
@@ -157,7 +165,15 @@ def apply_once(config, profile_only=False):
                 run_helper(*args)
         gpu = profile.get("gpu")
         if gpu and hardware.dgpu_available():
-            run_helper("gpu", gpu["watts"])
+            # "watts" asked for rather than assumed. A profile whose gpu
+            # section is present but empty -- hand-edited, or imported from a
+            # file that only carried part of one -- raised KeyError here, and
+            # the whole apply is wrapped in `except Exception: pass`, so the
+            # crash silently took the charge limit, the boot chime and the
+            # panel overdrive below it down as well. The window has always
+            # guarded this; the three background copies did not.
+            if "watts" in gpu:
+                run_helper("gpu", gpu["watts"])
             apply_gpu_clock_offsets(gpu)
 
         # Only the channels whose curve is not already the one the

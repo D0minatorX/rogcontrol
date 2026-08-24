@@ -71,7 +71,12 @@ def apply_profile(profile):
             run_helper(*args)
     gpu = profile.get("gpu")
     if gpu:
-        run_helper("gpu", gpu["watts"])
+        # Asked for, not assumed -- see rogcontrol-apply.py. Nothing catches
+        # an exception in this script at all, so a profile with an empty gpu
+        # section made the hotkey traceback and stop, leaving the fan curves
+        # below unwritten.
+        if "watts" in gpu:
+            run_helper("gpu", gpu["watts"])
         # These must be applied here too. The enforcer only re-asserts them
         # on a full apply now, not every cycle, so switching profiles from
         # this shortcut has to set them itself or they would be left on the
@@ -88,18 +93,18 @@ def apply_profile(profile):
             run_helper("nvboost", gpu["dyn_boost"])
         if "temp_target" in gpu:
             run_helper("nvtemp", gpu["temp_target"])
-        if "clock_offset" in gpu:
-            subprocess.run(
-                ["nvidia-settings", "-a",
-                 f"[gpu:0]/GPUGraphicsClockOffsetAllPerformanceLevels={gpu['clock_offset']}"],
-                capture_output=True, text=True,
-            )
-        if "mem_clock_offset" in gpu:
-            subprocess.run(
-                ["nvidia-settings", "-a",
-                 f"[gpu:0]/GPUMemoryTransferRateOffsetAllPerformanceLevels={gpu['mem_clock_offset']}"],
-                capture_output=True, text=True,
-            )
+        # Through the package's own call rather than a hand-built command
+        # line: it has a timeout, where this had none. A hotkey that hangs
+        # on nvidia-settings is a keypress that never finishes and a profile
+        # switch left half-applied.
+        for kind, key in (("core", "clock_offset"),
+                          ("memory", "mem_clock_offset")):
+            if key in gpu:
+                ok, message = hardware.set_nvidia_clock_offset(kind, gpu[key])
+                if not ok:
+                    hardware.log(f"GPU {kind} clock offset failed: {message}",
+                                 "ERROR", source="cycle-profile",
+                                 dedupe_key=f"nv{kind}")
     # Only the channels whose curve is not already the one the controller is
     # running -- see rogcontrol-apply.py and app.py's _apply_profile_worker.
     # This script used to skip that check and pay the CHANNEL_GAP_S EC gap
