@@ -8,7 +8,7 @@ warn() { printf '%s %s\n' "$WARN" "$*"; }
 die()  { printf '%s %s\n' "$ERR" "$*" >&2; exit 1; }
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
-VERSION=1.0.0.2
+VERSION=1.0.0.4
 STATE_DIR="$HOME/.local/share/rogcontrol"
 STATE_FILE="$STATE_DIR/install-state"
 APP_CONFIG="$HOME/.config/rogcontrol.json"
@@ -91,12 +91,6 @@ esac
 # first launch, which tells the user nothing they can act on.
 step "Checking GTK4 and libadwaita"
 
-# Set by the atomic branch below and consulted by the launcher, the tray and
-# the verification steps at the end. Zero on every traditional install, which
-# is what keeps all three of those unchanged there.
-USE_DISTROBOX=0
-DBOX_NAME=rogcontrol
-DBOX_IMAGE="registry.fedoraproject.org/fedora-toolbox:latest"
 PENDING_REBOOT=0
 
 # The GUI packages, as one list: GTK4 and libadwaita for the window,
@@ -140,81 +134,26 @@ fi
 atomic_gui_setup() {
     # An atomic system. /usr is read-only and there is no dnf, so the missing
     # packages cannot simply be installed the way they are everywhere else.
-    # There are two ways round it and they trade off against each other in a
-    # way only the person running this can settle, so it is asked rather than
-    # decided here. Everything after the answer runs unattended.
+    # rpm-ostree layers them onto the system as real packages; that needs a
+    # REBOOT before the app can run, and layered packages make future OS
+    # updates slower and can occasionally break them -- but the helper, the
+    # services, the hardware access and the settings all land on the real
+    # system exactly like every other install, with nothing containerised.
+    command -v rpm-ostree >/dev/null 2>&1 \
+        || die "rpm-ostree is not installed, so the GUI packages cannot be layered here."
     echo
     echo "  This is an atomic (rpm-ostree) system: ${OS_NAME:-unknown}"
-    echo "  Its /usr is read-only, so those packages have to come from one of:"
+    echo "  Its /usr is read-only, so the GUI packages are layered onto the"
+    echo "  system with rpm-ostree. This needs a REBOOT before the app can run."
     echo
-    echo "    1) Distrobox   A Fedora container holds the GUI packages and the"
-    echo "                   app runs out of it, in your menu like any other."
-    echo "                   No reboot, nothing added to the base image. This"
-    echo "                   is what Bazzite's own documentation recommends."
-    echo
-    echo "    2) rpm-ostree  Layers the packages onto the system itself, as"
-    echo "                   real system packages. Needs a REBOOT before the"
-    echo "                   app can run, and layered packages make future OS"
-    echo "                   updates slower and can occasionally break them."
-    echo
-    echo "  Either way the helper, the services, the hardware access and your"
-    echo "  settings are installed on the real system exactly the same. This"
-    echo "  choice only decides where the window's GTK libraries live."
-    echo
-    read -rp "  Which? [1/2, default 1] " a
-    case "${a:-1}" in
-    2)
-        command -v rpm-ostree >/dev/null 2>&1 \
-            || die "rpm-ostree is not installed, so option 2 cannot work here."
-        step "Layering the GUI packages with rpm-ostree"
-        echo "  This takes a few minutes. Nothing else is interactive."
-        # --idempotent so a re-run after a partial install does not fail on
-        # the packages that already went in.
-        sudo rpm-ostree install --idempotent -y $GUI_PKGS \
-            || die "rpm-ostree could not layer the packages. Nothing else has been changed."
-        PENDING_REBOOT=1
-        say "Packages layered - they become usable after a reboot"
-        ;;
-    *)
-        command -v distrobox >/dev/null 2>&1 \
-            || die "distrobox is not installed, so option 1 cannot work here.
-Bazzite ships it by default; on another atomic system, install it and re-run."
-        step "Setting up the Distrobox container"
-        # Reused rather than recreated: a re-run or an update must not throw
-        # away a container the user may have put other things in.
-        if distrobox list 2>/dev/null | grep -q "[[:space:]]$DBOX_NAME[[:space:]]"; then
-            say "Container '$DBOX_NAME' already exists - reusing it"
-        else
-            # --nvidia passes the host's driver and nvidia-smi through. The
-            # GPU page reads both from wherever the window runs, so without
-            # it every GPU control in the container would be greyed out on a
-            # machine that plainly has the card. Only offered when the host
-            # actually has the driver, since it fails outright without one.
-            DBOX_CREATE_ARGS=()
-            if command -v nvidia-smi >/dev/null 2>&1; then
-                DBOX_CREATE_ARGS+=(--nvidia)
-            fi
-            distrobox create -n "$DBOX_NAME" -i "$DBOX_IMAGE" -Y \
-                "${DBOX_CREATE_ARGS[@]+"${DBOX_CREATE_ARGS[@]}"}" >/dev/null \
-                || die "Could not create the container. Nothing else has been changed."
-            say "Container '$DBOX_NAME' created from $DBOX_IMAGE"
-        fi
-        echo "  Installing the GUI packages inside it (a few minutes)..."
-        distrobox enter "$DBOX_NAME" -- sudo dnf install -y $GUI_PKGS \
-            || die "Could not install the GUI packages inside the container."
-        # Checked rather than assumed: this is the same gate that failed on
-        # the host, and if it fails in here too there is no window either way.
-        distrobox enter "$DBOX_NAME" -- python3 -c "
-import gi
-gi.require_version('Gtk', '4.0')
-gi.require_version('Adw', '1')
-from gi.repository import Gtk, Adw
-" >/dev/null 2>&1 \
-            || die "GTK4/libadwaita still do not import inside the container."
-        USE_DISTROBOX=1
-        say "GTK4 and libadwaita work inside '$DBOX_NAME'"
-        ;;
-    esac
+    step "Layering the GUI packages with rpm-ostree"
+    echo "  This takes a few minutes. Nothing else is interactive."
+    # --idempotent so a re-run after a partial install does not fail on
+    # the packages that already went in.
+    sudo rpm-ostree install --idempotent -y $GUI_PKGS \
+        || die "rpm-ostree could not layer the packages. Nothing else has been changed."
+    PENDING_REBOOT=1
+    say "Packages layered - they become usable after a reboot"
 }
 
 # --- fresh install or update? -----------------------------------------------
@@ -394,17 +333,10 @@ DEPS=(
   "power-profiles-daemon (OS power-mode sync)|command -v powerprofilesctl|power-profiles-daemon|power-profiles-daemon|power-profiles-daemon"
 )
 
-# Where a dependency has to exist to be any use at all. On the distrobox
-# path that is inside the container, because that is where the window and
-# the tray run and therefore where they load their libraries from; a probe
-# out here would report the host, which is not the thing being asked about.
-PROBE=""
-[ "$USE_DISTROBOX" = 1 ] && PROBE="distrobox enter $DBOX_NAME -- "
-
 missing_pkgs=(); missing_names=()
 for entry in "${DEPS[@]}"; do
     IFS='|' read -r name check pac dnfp aptp <<<"$entry"
-    if ! eval "$PROBE$check" >/dev/null 2>&1; then
+    if ! eval "$check" >/dev/null 2>&1; then
         case "$PM" in
             pacman) pkg="$pac" ;; dnf) pkg="$dnfp" ;; apt) pkg="$aptp" ;; *) pkg="" ;;
         esac
@@ -414,7 +346,7 @@ for entry in "${DEPS[@]}"; do
 done
 
 # AppIndicator: several package names across distros, any one will do
-if ! eval "${PROBE}python3 -c \"
+if ! eval "python3 -c \"
 import gi
 try: gi.require_version('AppIndicator3','0.1')
 except ValueError: gi.require_version('AyatanaAppIndicator3','0.1')
@@ -430,17 +362,6 @@ fi
 step "Checking dependencies"
 if [ ${#missing_names[@]} -eq 0 ]; then
     say "All repository dependencies already present - nothing to install"
-elif [ "$USE_DISTROBOX" = 1 ]; then
-    # Into the container, for the same reason the probes ran in there: the
-    # window is what loads these. No prompt -- the container is this app's
-    # own, made moments ago, so there is nothing here to weigh up.
-    warn "Missing: ${missing_names[*]}"
-    if [ ${#missing_pkgs[@]} -gt 0 ]; then
-        echo "  Installing inside '$DBOX_NAME': ${missing_pkgs[*]}"
-        distrobox enter "$DBOX_NAME" -- sudo dnf install -y "${missing_pkgs[@]}" \
-            && say "Optional dependencies installed in the container" \
-            || warn "Some did not install - those features will be unavailable"
-    fi
 elif [ "$PM_HOST" = none ]; then
     # rpm-ostree path. Not installed for them: every one of these is
     # optional, and each would add another layered package and another
@@ -648,31 +569,12 @@ say "Application package installed to ~/.local/lib/rogcontrol"
 # is the one thing a user, a .desktop file and the tray all need and none of
 # them should have to know. Flags are passed straight through, so
 # --minimized/--toggle/--self-test/--quit all still work.
-#
-# On the distrobox path the same line runs one level in. Nothing else about
-# the install moves: distrobox shares $HOME, so ~/.local/lib/rogcontrol, the
-# settings file and the log are the same files seen from both sides, and the
-# .desktop entry, the PATH entry and every flag keep working unchanged.
-#
-# PYTHONPATH is handed over explicitly on the container path rather than
-# exported: `distrobox enter` starts the command through the container's own
-# init and does not carry an arbitrary exported variable across, so an export
-# out here would arrive unset in there and the import would fail.
-if [ "$USE_DISTROBOX" = 1 ]; then
-cat > "$HOME/.local/bin/rogcontrol" <<EOF
-#!/usr/bin/env bash
-# ROG Control launcher - generated by install.sh, edits will be overwritten.
-exec distrobox enter $DBOX_NAME -- \\
-    env PYTHONPATH="$HOME/.local/lib" python3 -m rogcontrol "\$@"
-EOF
-else
 cat > "$HOME/.local/bin/rogcontrol" <<EOF
 #!/usr/bin/env bash
 # ROG Control launcher - generated by install.sh, edits will be overwritten.
 export PYTHONPATH="$HOME/.local/lib\${PYTHONPATH:+:\$PYTHONPATH}"
 exec python3 -m rogcontrol "\$@"
 EOF
-fi
 chmod 755 "$HOME/.local/bin/rogcontrol"
 say "Launcher installed: ~/.local/bin/rogcontrol"
 
@@ -682,32 +584,6 @@ for s in rogcontrol-tray rogcontrol-cycle-profile.py rogcontrol-cycle-kbdlight.p
     install -m 755 "$SCRIPT_DIR/$s" "$HOME/.local/bin/$s"
 done
 say "Tray and shortcut scripts installed to ~/.local/bin"
-
-# The tray is the one other thing that needs GTK (GTK3 plus AppIndicator),
-# so on the distrobox path it has to run inside the container too. Its
-# service calls ~/.local/bin/rogcontrol-tray, so the real script moves aside
-# and that name becomes a wrapper -- the unit file, and anyone who runs the
-# command by hand, stay exactly as they are.
-#
-# The rest of the scripts just installed above are standard library only and
-# reach the hardware through the helper, so they stay on the host where they
-# already work. So do the enforcer and apply services: containerising them
-# would buy nothing and put a container start between a resume and the fans
-# coming back.
-if [ "$USE_DISTROBOX" = 1 ]; then
-    mkdir -p "$HOME/.local/libexec/rogcontrol"
-    install -m 755 "$SCRIPT_DIR/rogcontrol-tray" \
-        "$HOME/.local/libexec/rogcontrol/rogcontrol-tray"
-    cat > "$HOME/.local/bin/rogcontrol-tray" <<EOF
-#!/usr/bin/env bash
-# ROG Control tray wrapper - generated by install.sh, edits will be overwritten.
-exec distrobox enter $DBOX_NAME -- \\
-    env PYTHONPATH="$HOME/.local/lib" \\
-    python3 "$HOME/.local/libexec/rogcontrol/rogcontrol-tray" "\$@"
-EOF
-    chmod 755 "$HOME/.local/bin/rogcontrol-tray"
-    say "Tray wrapped to run inside '$DBOX_NAME'"
-fi
 
 # The GTK3 application this replaces. Removed so that nothing -- an old
 # autostart entry a desktop has already cached, a hotkey the user bound by
@@ -817,21 +693,16 @@ fi
 # `import rogcontrol.app` needs none either -- GTK/Adw classes are defined
 # at import time, not realized against a display until something is shown.
 #
-# Run wherever the window will run: inside the container on the distrobox
-# path, and skipped entirely when packages have been layered but not yet
-# rebooted into, where a failure would mean nothing except that the reboot
-# has not happened yet.
+# Skipped entirely when packages have been layered but not yet rebooted
+# into, where a failure would mean nothing except that the reboot has not
+# happened yet.
 if [ "$PENDING_REBOOT" = 1 ]; then
     warn "Skipping the import check until after the reboot"
-elif eval "${PROBE}env PYTHONPATH=\"$HOME/.local/lib\" python3 -c \"import rogcontrol.app\"" >/dev/null 2>&1; then
-    if [ "$USE_DISTROBOX" = 1 ]; then
-        say "Application package imports inside '$DBOX_NAME'"
-    else
-        say "Application package imports from ~/.local/lib"
-    fi
+elif eval "env PYTHONPATH=\"$HOME/.local/lib\" python3 -c \"import rogcontrol.app\"" >/dev/null 2>&1; then
+    say "Application package imports from ~/.local/lib"
 else
     warn "The installed package does not import - the window will not start."
-    warn "Run this to see why: ${PROBE}PYTHONPATH=~/.local/lib python3 -c 'import rogcontrol.app'"
+    warn "Run this to see why: PYTHONPATH=~/.local/lib python3 -c 'import rogcontrol.app'"
 fi
 
 # Exec=rogcontrol in the .desktop file resolves through PATH, and the launcher
@@ -947,11 +818,8 @@ mkdir -p "$STATE_DIR"
 {
     echo "version=$VERSION"
     echo "installed_at=$(date -Is)"
-    # So the uninstaller knows whether there is a container to take away,
-    # and so the run after the reboot below can tell it is finishing an
-    # install rather than starting one.
-    echo "distrobox=$USE_DISTROBOX"
-    [ "$USE_DISTROBOX" = 1 ] && echo "distrobox_name=$DBOX_NAME"
+    # So the run after the reboot below can tell it is finishing an install
+    # rather than starting one.
     echo "pending_reboot=$PENDING_REBOOT"
     printf '%s' "$CAP_STATE"
 } > "$STATE_FILE"
@@ -1023,10 +891,6 @@ if [ "$PENDING_REBOOT" = 1 ]; then
     echo "  hardware is under control in the meantime either way."
 else
     echo "Done."
-    if [ "$USE_DISTROBOX" = 1 ]; then
-        echo "  The window and tray run inside the '$DBOX_NAME' container;"
-        echo "  the helper, services and settings are on the system itself."
-    fi
     echo "  Launch from the app grid ('ROG Control'), or just: rogcontrol"
     echo "  The tray icon is running now (see above) and starts at every login;"
     echo "  the window opens from it."

@@ -29,13 +29,6 @@ prev_get() {
     grep -E "^$1=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2-
 }
 
-# On an atomic system the GUI packages may live in a container this app made
-# for itself. Removed with everything else, but only when the installer says
-# it was the one that made it.
-DBOX_USED="$(prev_get distrobox)"
-DBOX_NAME="$(prev_get distrobox_name)"
-[ -n "$DBOX_NAME" ] || DBOX_NAME=rogcontrol
-
 echo "== ROG Control uninstaller =="
 echo
 [ "$(id -u)" -ne 0 ] || die "Do NOT run this as root. It uses sudo only where needed."
@@ -70,9 +63,6 @@ echo "  /usr/local/bin/rogcontrol-helper        (needs sudo)"
 echo "  $SUDOERS                                (needs sudo)"
 echo "  $SLEEP_HOOK  (needs sudo)"
 echo "  $SLEEP_UNIT  (needs sudo)"
-if [ "$DBOX_USED" = 1 ]; then
-    echo "  the '$DBOX_NAME' distrobox container    (created by the installer)"
-fi
 if [ "$PURGE" -eq 1 ]; then
     echo
     warn "--purge: settings, logs and install state will ALSO be deleted"
@@ -167,29 +157,6 @@ if sudo test -e "$SLEEP_HOOK" 2>/dev/null || sudo test -e "$SLEEP_UNIT" 2>/dev/n
     say "Sleep hook removed"
 else
     say "Nothing to remove (already gone)"
-fi
-
-if [ "$DBOX_USED" = 1 ]; then
-    step "Removing the distrobox container"
-    # The wrapper scripts that pointed into it went with the rest of
-    # ~/.local/bin above; this is the container itself. Only ever the one
-    # the installer created and recorded -- a container of the user's own
-    # that happens to share the name is not something this can tell apart,
-    # which is why it is asked rather than assumed.
-    rm -rf "$HOME/.local/libexec/rogcontrol"
-    if command -v distrobox >/dev/null 2>&1 \
-       && distrobox list 2>/dev/null | grep -q "[[:space:]]$DBOX_NAME[[:space:]]"; then
-        read -rp "  Delete the '$DBOX_NAME' container and everything in it? [y/N] " a
-        if [[ "${a:-N}" =~ ^[Yy] ]]; then
-            distrobox rm -f "$DBOX_NAME" >/dev/null 2>&1 \
-                && say "Container '$DBOX_NAME' removed" \
-                || warn "Could not remove the container - 'distrobox rm -f $DBOX_NAME' by hand"
-        else
-            say "Container kept - remove it later with: distrobox rm -f $DBOX_NAME"
-        fi
-    else
-        say "Nothing to remove (already gone)"
-    fi
 fi
 
 if [ "$PURGE" -eq 1 ]; then

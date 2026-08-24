@@ -16,7 +16,6 @@ the mock rather than the path.
 import glob
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -25,8 +24,6 @@ from . import kbdcolor
 from .profiles import PROFILE_TO_PPD_MODE
 
 HELPER = "/usr/local/bin/rogcontrol-helper"
-HOST_EXEC = "distrobox-host-exec"
-CONTAINERENV = "/run/.containerenv"
 ASUS_WMI_DIR = "/sys/devices/platform/asus-nb-wmi"
 HWMON_DIR = "/sys/class/hwmon"
 POWER_SUPPLY_DIR = "/sys/class/power_supply"
@@ -182,36 +179,9 @@ def helper_error_message(result):
     return (NO_ERROR_TEXT if had_noise else "unknown error") + suffix
 
 
-def in_container(root=None):
-    """True when this process is running inside a container.
-
-    Podman writes ``/run/.containerenv`` into every container it starts, and
-    a distrobox is a podman container, so this is the same check whether the
-    box was made by distrobox or toolbox. A file rather than the ``container``
-    environment variable: the tray and the enforcer inherit their environment
-    from ``systemd --user``, not from a login shell, so the variable is not
-    reliably there even when the file always is."""
-    return os.path.exists(_under(root, CONTAINERENV))
-
-
 def helper_command(args, root=None):
-    """The argv that reaches the helper from wherever this process is running.
-
-    On the host that is a plain ``sudo -n``, which is every install except
-    one. On an atomic system (Bazzite and the rest of Fedora Atomic) the
-    window can be running inside a distrobox instead, because that is where
-    GTK4/libadwaita had to be installed -- and a container has its own /usr,
-    so the helper at /usr/local/bin, the sudoers rule that makes it
-    passwordless, and the hardware it writes to are all on the other side of
-    the boundary. ``distrobox-host-exec`` runs the call on the host, where
-    all three exist.
-
-    Without this the failure is silent rather than loud: sliders move, the
-    window reports success, and nothing reaches the hardware."""
-    argv = ["sudo", "-n", HELPER, *[str(a) for a in args]]
-    if in_container(root) and shutil.which(HOST_EXEC):
-        return [HOST_EXEC, *argv]
-    return argv
+    """The argv that reaches the privileged helper via a passwordless ``sudo -n``."""
+    return ["sudo", "-n", HELPER, *[str(a) for a in args]]
 
 
 def run_helper(*args, timeout=10):
@@ -356,8 +326,9 @@ def read_asusd_state(timeout=5):
     """
     def ask(*args):
         try:
-            result = subprocess.run(["systemctl", *args], capture_output=True,
-                                    text=True, timeout=timeout)
+            result = subprocess.run(["systemctl", *args],
+                                    capture_output=True, text=True,
+                                    timeout=timeout)
         except Exception:
             return ""
         # The return code is deliberately ignored: is-active exits non-zero
@@ -433,8 +404,7 @@ def start_tray():
     Failure is silent: a machine running this from a checkout has no unit
     installed, and that is not a reason to fail to open the window."""
     try:
-        subprocess.run(["systemctl", "--user", "start",
-                        "rogcontrol-tray.service"],
+        subprocess.run(["systemctl", "--user", "start", "rogcontrol-tray.service"],
                        capture_output=True, text=True, timeout=5)
     except Exception:
         pass
@@ -1261,8 +1231,8 @@ def parse_supergfx_modes(text):
 def read_gpu_mode(timeout=5):
     """The graphics mode in force, as supergfxctl spells it, or None."""
     try:
-        result = subprocess.run(["supergfxctl", "-g"], capture_output=True,
-                                text=True, timeout=timeout)
+        result = subprocess.run(["supergfxctl", "-g"],
+                                capture_output=True, text=True, timeout=timeout)
     except Exception:
         return None
     if result.returncode != 0:
@@ -1284,8 +1254,8 @@ def dgpu_available(timeout=5):
 def read_supported_gpu_modes(timeout=5):
     """The modes this machine can actually be switched to, or []."""
     try:
-        result = subprocess.run(["supergfxctl", "-s"], capture_output=True,
-                                text=True, timeout=timeout)
+        result = subprocess.run(["supergfxctl", "-s"],
+                                capture_output=True, text=True, timeout=timeout)
     except Exception:
         return []
     if result.returncode != 0:
@@ -1373,7 +1343,8 @@ def mode_needs_hybrid_first(current, target, root=None):
 
 def _run_reboot(extra_args, timeout=10):
     try:
-        result = subprocess.run(["systemctl", "reboot", *extra_args],
+        result = subprocess.run(["systemctl", "reboot",
+                                             *extra_args],
                                 capture_output=True, text=True,
                                 timeout=timeout)
     except Exception as e:
@@ -1578,8 +1549,8 @@ def read_power_mode(timeout=5):
         path = "/" + name.replace(".", "/")
         try:
             result = subprocess.run(
-                ["busctl", "--system", "get-property", name, path, name,
-                 "ActiveProfile"],
+                ["busctl", "--system", "get-property", name,
+                 path, name, "ActiveProfile"],
                 capture_output=True, text=True, timeout=timeout)
         except Exception:
             continue
@@ -1610,8 +1581,8 @@ def set_power_mode(mode, timeout=5):
     path = "/" + service.replace(".", "/")
     try:
         result = subprocess.run(
-            ["busctl", "--system", "set-property", service, path, service,
-             "ActiveProfile", "s", str(mode)],
+            ["busctl", "--system", "set-property", service,
+             path, service, "ActiveProfile", "s", str(mode)],
             capture_output=True, text=True, timeout=timeout)
     except Exception as e:
         return False, str(e)

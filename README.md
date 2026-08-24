@@ -114,18 +114,9 @@ One command on every supported distro. The installer reads `/etc/os-release`, so
 
 ### On Bazzite and other atomic systems
 
-Fedora Atomic images (Bazzite, Silverblue, Kinoite — GNOME and KDE Plasma spins alike) have a read-only `/usr` and no `dnf`, so the GTK4 libraries can't simply be installed. The installer detects this and asks you once which way you'd rather have them:
+Fedora Atomic images (Bazzite, Silverblue, Kinoite — GNOME and KDE Plasma spins alike) have a read-only `/usr` and no `dnf`, so the GTK4 libraries can't simply be installed. The installer detects this and layers them onto the system itself with `rpm-ostree`, then tells you to reboot and run `./install.sh` once more — the second run finishes automatically and asks nothing.
 
-| | **Distrobox** (default) | **rpm-ostree** |
-|---|---|---|
-| GTK libraries live | in a Fedora container | on the system itself |
-| Reboot needed | no | yes, one |
-| Base image changed | no | yes, layered packages |
-| OS updates | unaffected | slower; can occasionally break |
-
-Everything else — the privileged helper, the sudoers rule, the background services, the suspend hook and your settings — installs onto the real system identically either way, and hardware control works the same in both. The choice only decides where the window's GTK libraries come from.
-
-Distrobox is the default because it's what [Bazzite's own documentation](https://docs.bazzite.gg/Installing_and_Managing_Software/) recommends, and because it needs no reboot. If you pick rpm-ostree, the installer layers the packages, does everything else it normally would, and tells you to reboot and run `./install.sh` once more — the second run finishes automatically and asks nothing.
+Everything else — the privileged helper, the sudoers rule, the background services, the suspend hook and your settings — installs onto the real system exactly as it does everywhere else. The one cost is the reboot, and layered packages can make future OS updates slower and occasionally break them.
 
 ### On CachyOS and other Arch systems
 
