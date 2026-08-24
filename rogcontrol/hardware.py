@@ -14,6 +14,7 @@ the mock rather than the path.
 """
 
 import glob
+import json
 import os
 import re
 import subprocess
@@ -1741,6 +1742,122 @@ def read_fan_curve_enabled(root=None):
     return state
 
 
+# -- Fan boost ---------------------------------------------------------------
+#
+# A temporary flat override: every channel held at one percentage regardless
+# of temperature, for a fixed time, then the active profile's own curve back.
+#
+# WHY THE STATE IS A FILE AND NOT A VARIABLE IN THE WINDOW.
+#
+# It used to be a GLib countdown inside the System page, and the page also
+# stopped the enforcer so nothing would fight the flat curve. Both halves of
+# the undo therefore lived in the window -- so closing the window during the
+# hold destroyed the timer, and the machine was left with all three fans
+# pinned at 85% and the enforcer switched off until the next login. Nothing
+# said so, and nothing put it back.
+#
+# A deadline on disk fixes it by moving the ownership rather than by adding a
+# second timer: the enforcer is already running, already re-asserts fan
+# curves, and already outlives every window. While a boost is in force it
+# pushes the flat curve instead of the profile's (so it maintains the boost
+# rather than fighting it, which is why the enforcer no longer has to be
+# stopped at all), and the moment the deadline passes it clears the file and
+# the profile's real curve goes back on -- window open or not, and after a
+# reboot too.
+#
+# Wall clock rather than time.monotonic(), which is the one thing that
+# cannot be got wrong here: two processes have to read the same deadline,
+# and monotonic clocks are per boot and not comparable between them.
+FAN_BOOST_STATE_PATH = os.path.expanduser(
+    "~/.local/share/rogcontrol/fan-boost")
+
+# The temperatures the flat curve is written at. Eight points, strictly
+# increasing, all carrying the same percentage -- which is what makes it flat
+# regardless of what the EC is reading. Same shape as the calibration steps in
+# pages/fans.py.
+FAN_BOOST_TEMPS = (30, 40, 50, 55, 60, 65, 70, 90)
+
+
+def fan_boost_curves(pct, channels=FAN_CHANNELS):
+    """``{channel: [(temp, pct), ...]}`` holding every fan flat at ``pct``.
+
+    In the config's own curve shape, so it can be handed straight to
+    fancurve.curve_to_flat and to the same comparison every other curve goes
+    through."""
+    points = [[temp, int(pct)] for temp in FAN_BOOST_TEMPS]
+    return {channel: [list(point) for point in points] for channel in channels}
+
+
+def read_fan_boost(path=None):
+    """The boost on record, or None when there is not one.
+
+    ``{"until": <epoch seconds>, "pct": 85, "profile": "Quiet"}``. Returns
+    the record whether or not it has expired -- telling those two apart is
+    :func:`fan_boost_active`, because the caller that has to notice a boost
+    ENDING needs to see the expired record rather than nothing at all.
+
+    Anything unreadable or unparseable is None: a corrupt state file must
+    read as "no boost", never as a boost with no deadline."""
+    try:
+        with open(FAN_BOOST_STATE_PATH if path is None else path) as f:
+            state = json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(state, dict):
+        return None
+    try:
+        until = float(state.get("until"))
+        pct = int(state.get("pct"))
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= pct <= 100:
+        return None
+    return {"until": until, "pct": pct, "profile": state.get("profile")}
+
+
+def fan_boost_active(state, now=None):
+    """True while ``state``'s deadline is still ahead of us."""
+    if not state:
+        return False
+    return state["until"] > (time.time() if now is None else now)
+
+
+def write_fan_boost(pct, seconds, profile_name=None, path=None):
+    """Record a boost that ends ``seconds`` from now. Returns the state.
+
+    Written BEFORE the flat curve reaches the hardware, deliberately: the
+    record is what stops the enforcer from putting the profile's curve back
+    on its next pass, and what puts the profile's curve back if this process
+    dies in the middle of the write. A boost the hardware took but nothing
+    recorded is exactly the stuck-fans case this file exists to prevent.
+
+    Temp file plus rename, like every other state this app keeps, so a reader
+    landing mid-write sees the old record or the new one and never half of
+    one."""
+    path = FAN_BOOST_STATE_PATH if path is None else path
+    state = {"until": time.time() + float(seconds), "pct": int(pct),
+             "profile": profile_name}
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(state, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        log(f"could not record the fan boost: {e}", "WARN", dedupe_key="boost")
+    return state
+
+
+def clear_fan_boost(path=None):
+    """Forget the boost. Missing is success -- the other process got there
+    first, which is the ordinary race between the window and the enforcer
+    both noticing the same deadline pass."""
+    try:
+        os.remove(FAN_BOOST_STATE_PATH if path is None else path)
+    except OSError:
+        pass
+
+
 # -- Battery -----------------------------------------------------------------
 
 def read_battery(root=None):
@@ -2011,9 +2128,18 @@ def find_aura_keyboard(root=None):
 
 # -- Capabilities ------------------------------------------------------------
 
-def have_cmd(name):
-    return subprocess.run(["sh", "-c", f"command -v {name}"],
-                          capture_output=True).returncode == 0
+def have_cmd(name, timeout=10):
+    """True when ``name`` is on the PATH of the machine this app drives.
+
+    A timeout so a capability probe cannot hang the window's startup. A probe
+    that cannot answer reports "absent", which is the same answer it gave
+    before this could fail at all."""
+    try:
+        return subprocess.run(["sh", "-c", f"command -v {name}"],
+                              capture_output=True,
+                              timeout=timeout).returncode == 0
+    except Exception:
+        return False
 
 
 def detect_capabilities(root=None):
