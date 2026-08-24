@@ -72,6 +72,7 @@ from rogcontrol import config as config_mod  # noqa: E402
 from rogcontrol import fancurve  # noqa: E402
 from rogcontrol import hardware  # noqa: E402
 from rogcontrol import kbdcolor  # noqa: E402
+from rogcontrol import profiles as profiles_mod  # noqa: E402
 
 # One copy of the curve maths, in the package. See rogcontrol-apply.py.
 interpolate_curve = fancurve.interpolate_curve
@@ -144,26 +145,23 @@ _last_self_apply_time = 0.0
 # another profile's colour by whatever happened while this service was down.
 _last_kbd_color_args = None
 
-# Our profile name -> power-profiles-daemon's fixed mode names. PPD only
-# ever has exactly these three modes; anything else is invalid to set. More
-# than one profile may map to the same mode -- the two Balanced profiles
-# differ in EPP, which PPD has no concept of.
-PROFILE_TO_PPD_MODE = {
-    "Performance": "performance",
-    "Balanced Performance": "balanced",
-    "Balanced Power": "balanced",
-    "Quiet": "power-saver",
-}
-
-# The same mapping backwards, for adopting a power-mode change made outside
-# this app (GNOME's power menu, a keyboard key, powerprofilesctl).
+# Which OS power mode each profile means, and the same mapping backwards for
+# adopting a mode change made outside this app (GNOME's power menu, a
+# keyboard key, powerprofilesctl).
 #
-# First name wins, so "balanced" from the OS resolves to "Balanced
-# Performance". A plain dict comprehension would have silently made it
-# "Balanced Power", since the later key overwrites the earlier one.
-PPD_MODE_TO_PROFILE = {}
-for _name, _mode in PROFILE_TO_PPD_MODE.items():
-    PPD_MODE_TO_PROFILE.setdefault(_mode, _name)
+# THE PACKAGE'S, not a second copy. These two tables were duplicated here --
+# the same four names, written out again -- and profiles.py's own docstring
+# named the consequence: rename a profile or change a mapping there and this
+# service goes on believing the old one, so the window and the enforcer
+# disagree about which OS mode a profile means. The enforcer treats a mode it
+# does not expect as the OS asking for a different profile, so that
+# disagreement does not sit there quietly; it switches the profile back and
+# re-pushes all three fan curves to do it.
+#
+# Imported rather than re-derived, and imported by name so the rest of this
+# file reads exactly as it did.
+PROFILE_TO_PPD_MODE = profiles_mod.PROFILE_TO_PPD_MODE
+PPD_MODE_TO_PROFILE = profiles_mod.PPD_MODE_TO_PROFILE
 
 
 LOG_PATH = os.path.expanduser("~/.local/share/rogcontrol/rogcontrol.log")
@@ -241,50 +239,83 @@ def run_helper(*args):
     return True
 
 
+# -- power-profiles-daemon ----------------------------------------------------
+#
+# These three were hand-copied from the package and then diverged from it, in
+# the one way that mattered: the package wraps every busctl call in a
+# try/except and these did not.
+#
+# What that cost. get_ppd_service_name() runs `busctl` to ask which of the two
+# names PPD answers on, and it is called from main() ABOVE the loop's own
+# try/except -- so the two ways that call can raise both killed the service
+# outright rather than being logged:
+#
+#   * busctl not installed          -> FileNotFoundError
+#   * the system bus not answering
+#     within the 5s timeout         -> subprocess.TimeoutExpired
+#
+# and the unit is Restart=always with RestartSec=5, so the result was not a
+# crash but a crash LOOP: start, raise, die, restart five seconds later,
+# forever. Nothing on screen says so; what the user sees is fan curves that
+# stop being re-asserted and AC/battery switching that silently stops working.
+# The second case is the realistic one -- the bus can be slow to come up at
+# login, which is exactly when this service starts.
+#
+# So the lookup and the read now delegate to the package, which has handled
+# this correctly all along. Only the write below is still done here, and only
+# because it has something of its own to do first.
+
+
 def get_ppd_service_name():
-    """power-profiles-daemon has shipped under two D-Bus names across
-    distro versions (net.hadess.PowerProfiles is the long-standing one,
-    org.freedesktop.UPower.PowerProfiles is the newer canonical name it's
-    migrating to). Try both rather than assuming."""
-    for name in ("net.hadess.PowerProfiles", "org.freedesktop.UPower.PowerProfiles"):
-        result = subprocess.run(
-            ["busctl", "--system", "introspect", name, f"/{name.replace('.', '/')}"],
-            capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            return name
-    return None
+    """Which bus name power-profiles-daemon is answering on, or None.
+
+    hardware.ppd_service_name's answer: same two names, same order, same
+    introspect -- and a try/except round it, so "no busctl" and "the bus did
+    not answer" come back as None instead of taking this service down."""
+    return hardware.ppd_service_name()
 
 
 def get_ppd_active_profile(service_name):
+    """The OS power mode, or None.
+
+    ``service_name`` is kept in the signature -- every caller has one to
+    hand, and passing None still means "there is no daemon, do not ask" --
+    but the reading itself is the package's. That one tries
+    powerprofilesctl first and falls back to busctl on BOTH bus names, so it
+    answers in strictly more cases than the single get-property this
+    replaced, as well as never raising."""
     if not service_name:
         return None
-    path = "/" + service_name.replace(".", "/")
-    result = subprocess.run(
-        ["busctl", "--system", "get-property", service_name, path,
-         service_name, "ActiveProfile"],
-        capture_output=True, text=True, timeout=5)
-    if result.returncode != 0:
-        return None
-    # busctl prints: s "balanced"
-    parts = result.stdout.strip().split(None, 1)
-    if len(parts) == 2:
-        return parts[1].strip('"')
-    return None
+    return hardware.read_power_mode()
 
 
 def set_ppd_active_profile(service_name, mode):
+    """Set the OS power mode. Failure is not reported: PPD is optional.
+
+    The one of the three still written out here, because the write is not
+    the whole of what it does: our own set-property comes back as a
+    PropertiesChanged signal that is indistinguishable from the user
+    changing the mode in GNOME's menu, so it has to be stamped first for the
+    adoption gate to recognise the echo.
+
+    It also keeps using the service name the caller already resolved rather
+    than hardware.set_power_mode, which looks the name up again on every
+    call: on a bus too slow to answer that lookup, this would quietly stop
+    setting the mode at all, where using the name already in hand still
+    works. The try/except is the part that was actually missing."""
     if not service_name:
         return
-    # Our own write comes back as a PropertiesChanged signal that is
-    # indistinguishable from a user changing the mode. Stamp it so the
-    # adoption gate can ignore the echo.
     global _last_self_apply_time
     _last_self_apply_time = time.monotonic()
     path = "/" + service_name.replace(".", "/")
-    subprocess.run(
-        ["busctl", "--system", "set-property", service_name, path,
-         service_name, "ActiveProfile", "s", mode],
-        capture_output=True, text=True, timeout=5)
+    try:
+        subprocess.run(
+            ["busctl", "--system", "set-property", service_name, path,
+             service_name, "ActiveProfile", "s", mode],
+            capture_output=True, text=True, timeout=5)
+    except Exception as e:
+        log(f"could not set the OS power mode to '{mode}': {e}", "WARN",
+            dedupe_key="ppdset")
 
 
 def boost_control_available():
