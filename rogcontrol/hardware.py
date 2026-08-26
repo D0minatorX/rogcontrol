@@ -1021,24 +1021,38 @@ def detect_gpu_limits(timeout=5):
                 limits["min_w"], limits["max_w"] = found
     except Exception:
         pass
+    mhz = detect_gpu_max_clock(timeout)
+    if mhz:
+        limits["clock_limit_max"] = mhz
+    return limits
+
+
+def detect_gpu_max_clock(timeout=5):
+    """The card's top clock in MHz, or None when it could not be asked.
+
+    Separate from detect_gpu_limits because the difference between "the card
+    says 2100" and "the card did not answer" is exactly what that one throws
+    away by falling back, and gpu_clock_limit_max needs it."""
     try:
         result = subprocess.run(["nvidia-smi", "-q", "-d", "CLOCK"],
                                 capture_output=True, text=True, timeout=timeout)
         if result.returncode == 0:
-            mhz = parse_gpu_max_clock(result.stdout)
-            if mhz:
-                limits["clock_limit_max"] = mhz
+            return parse_gpu_max_clock(result.stdout)
     except Exception:
         pass
-    return limits
+    return None
 
 
-# Filled in by gpu_clock_limit_max on first use.
+# A real answer from the card, kept for the life of the process. The
+# monotonic stamp beside it is when the last *failed* probe ran; see
+# gpu_clock_limit_max.
 _gpu_clock_limit_max = None
+_gpu_clock_limit_failed_at = None
+GPU_CLOCK_RETRY_S = 300
 
 
 def gpu_clock_limit_max(timeout=5):
-    """The card's own top lockable clock, detected once per process.
+    """The card's own top lockable clock.
 
     For the three scripts that apply a profile with no window open -- the
     boot apply, the hotkey cycler and the enforcer. The window already has
@@ -1049,15 +1063,32 @@ def gpu_clock_limit_max(timeout=5):
     a little below maximum -- pinning the clock, which is the exact opposite
     of the "no ceiling" the top of the slider means.
 
-    Cached because the enforcer applies profiles for the life of the
-    session, and two nvidia-smi calls per apply is real cost for an answer
-    that cannot change while the machine is running. Cached even when
-    detection failed and the fallback came back: a machine with no NVIDIA
-    card would otherwise pay for two failed execs on every single apply."""
-    global _gpu_clock_limit_max
-    if _gpu_clock_limit_max is None:
-        _gpu_clock_limit_max = detect_gpu_limits(timeout)["clock_limit_max"]
-    return _gpu_clock_limit_max
+    A real answer is cached for good: the enforcer applies profiles for the
+    life of the session, and an nvidia-smi call per apply is real cost for
+    something that cannot change while the machine is running.
+
+    A *failed* probe is not cached for good, only rate-limited to one every
+    GPU_CLOCK_RETRY_S. Caching the fallback was the bug: on hybrid graphics
+    the card is routinely asleep at boot, so the first probe of the session
+    -- the boot apply's -- fails, and the process that made it (the enforcer
+    runs all session) then used a 3090's ceiling for every profile it applied
+    afterwards, long after the card had woken up and could have answered. The
+    rate limit keeps the original reason for caching the failure: a machine
+    with no NVIDIA card at all still pays one failed exec per five minutes,
+    not one per apply."""
+    global _gpu_clock_limit_max, _gpu_clock_limit_failed_at
+    if _gpu_clock_limit_max is not None:
+        return _gpu_clock_limit_max
+    now = time.monotonic()
+    if (_gpu_clock_limit_failed_at is not None
+            and now - _gpu_clock_limit_failed_at < GPU_CLOCK_RETRY_S):
+        return CLOCK_LIMIT_FALLBACK_MAX
+    mhz = detect_gpu_max_clock(timeout)
+    if mhz:
+        _gpu_clock_limit_max = mhz
+        return mhz
+    _gpu_clock_limit_failed_at = now
+    return CLOCK_LIMIT_FALLBACK_MAX
 
 
 def gpu_clock_limit_arg(mhz, max_mhz):
