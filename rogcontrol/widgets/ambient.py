@@ -303,6 +303,26 @@ class AmbientSampler:
         stride = len(data) // height if height else width * 3
         return kbdcolor.zones_from_frame(data, width, height, stride)
 
+    def stop_async(self):
+        """stop(), off the caller's thread.
+
+        For the callers on the GTK main loop: switching the Effect away from
+        Ambient, and quitting. stop() joins a sampler that can be a full
+        second inside try-pull-sample, then takes the pipeline to NULL and
+        closes the portal session over D-Bus -- so the window froze for up to
+        two seconds every time the user picked another effect. Every other
+        slow thing this app does is already off the main loop for exactly
+        this reason; this was the one that was not.
+
+        Safe to hand to a thread because everything stop() touches belongs to
+        the sampler alone, and the caller drops its reference to the sampler
+        before calling this -- so nothing else will look at it again.
+
+        Deliberately not a daemon thread: at quit the interpreter waits for
+        it, and the portal session gets closed properly instead of being
+        abandoned halfway through."""
+        threading.Thread(target=self.stop, daemon=False).start()
+
     def stop(self):
         """Tear the capture down. Safe to call twice, and safe to call while
         the sampler is mid-frame.
