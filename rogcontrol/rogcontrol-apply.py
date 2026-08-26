@@ -96,7 +96,29 @@ CHANNEL_GAP_S = 5
 
 
 
-def apply_gpu_clock_offsets(gpu):
+def _offset_worth_writing(gpu, key, profile_only):
+    """Whether this clock offset has to be sent to the card at all.
+
+    A profile switch always writes it: 0 there is a real instruction, the
+    one that takes the previous profile's overclock back off.
+
+    At login it is skipped when it is 0, because the card has just been
+    initialised and every offset on it is 0 already -- so the write cannot
+    change anything, and it costs an nvidia-settings launch (a second of
+    it) per offset on every single boot. This is also the pair of calls that
+    used to fail before the session had a display and put two ERROR lines in
+    the log at every login for a write that would have been a no-op."""
+    if key not in gpu:
+        return False
+    if profile_only:
+        return True
+    try:
+        return int(gpu[key]) != 0
+    except (TypeError, ValueError):
+        return True
+
+
+def apply_gpu_clock_offsets(gpu, profile_only=False):
     # Through hardware.set_nvidia_clock_offset, not a hand-built command
     # line. Both copies of this ran nvidia-settings with NO timeout, in a
     # service that is a single loop: one hung call and the enforcer stops
@@ -104,7 +126,7 @@ def apply_gpu_clock_offsets(gpu):
     # auto-switch path it hangs while holding _ac_lock. The package's call
     # has a timeout and turns a failure into (ok, message) rather than an
     # exception, which is what every other subprocess in this tree does.
-    if "clock_offset" in gpu:
+    if _offset_worth_writing(gpu, "clock_offset", profile_only):
         ok, message = hardware.set_nvidia_clock_offset(
             "core", gpu["clock_offset"])
         if not ok:
@@ -121,7 +143,7 @@ def apply_gpu_clock_offsets(gpu):
         run_helper("nvboost", gpu["dyn_boost"])
     if "temp_target" in gpu:
         run_helper("nvtemp", gpu["temp_target"])
-    if "mem_clock_offset" in gpu:
+    if _offset_worth_writing(gpu, "mem_clock_offset", profile_only):
         ok, message = hardware.set_nvidia_clock_offset(
             "memory", gpu["mem_clock_offset"])
         if not ok:
@@ -175,7 +197,7 @@ def apply_once(config, profile_only=False):
             # guarded this; the three background copies did not.
             if "watts" in gpu:
                 run_helper("gpu", gpu["watts"])
-            apply_gpu_clock_offsets(gpu)
+            apply_gpu_clock_offsets(gpu, profile_only=profile_only)
 
         # Only the channels whose curve is not already the one the
         # controller is running. Each write costs a CHANNEL_GAP_S gap before

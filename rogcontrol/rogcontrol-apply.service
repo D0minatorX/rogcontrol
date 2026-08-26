@@ -1,5 +1,15 @@
 [Unit]
 Description=Reapply saved ROG Control profile at login (with retries)
+# Ordering only, deliberately without a Wants= or a WantedBy= on this target.
+# The GPU clock offsets go through nvidia-settings, which needs the DISPLAY
+# the compositor publishes when it reaches graphical-session.target -- this
+# service used to start about three seconds before that and every offset
+# write failed. After= makes it wait when the target is part of the same
+# startup, and does nothing at all when it is not, so a session that never
+# reaches it (a tty login, a compositor with no systemd integration) still
+# gets its profile applied rather than nothing at all. Depending on the
+# target would have traded one silent failure for a worse one.
+After=graphical-session.target
 
 [Service]
 Type=oneshot
