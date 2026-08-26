@@ -321,6 +321,17 @@ fi
 # separate GTK3 process (AppIndicator has no GTK4 binding, and one process
 # cannot load both toolkits) -- the window itself no longer touches GTK3.
 #
+# tuned-ppd is what Bazzite ships for the same job and it answers on the same
+# D-Bus name (see hardware.py's PPD_BUS_NAMES / read_power_mode) -- the app
+# already works against it with no powerprofilesctl installed. dnf/rpm-ostree
+# refuse power-profiles-daemon outright while tuned-ppd is on the system
+# (both provide ppd-service), so this has to be checked before that package
+# is ever offered, not just left for the app to cope with at runtime.
+have_ppd_or_equiv() {
+    command -v powerprofilesctl >/dev/null 2>&1 && return 0
+    rpm -q tuned-ppd >/dev/null 2>&1
+}
+
 # name|check-command|pacman|dnf|apt
 DEPS=(
   "python-gobject|python3 -c 'import gi'|python-gobject|python3-gobject|python3-gi"
@@ -330,7 +341,7 @@ DEPS=(
   "nvidia-settings|command -v nvidia-settings|nvidia-settings|nvidia-settings|nvidia-settings"
   "supergfxctl|command -v supergfxctl|supergfxctl|supergfxctl|"
   "python-cairo (fan curve graphs)|python3 -c 'import cairo'|python-cairo|python3-cairo|python3-cairo"
-  "power-profiles-daemon (OS power-mode sync)|command -v powerprofilesctl|power-profiles-daemon|power-profiles-daemon|power-profiles-daemon"
+  "power-profiles-daemon (OS power-mode sync)|have_ppd_or_equiv|power-profiles-daemon|power-profiles-daemon|power-profiles-daemon"
 )
 
 missing_pkgs=(); missing_names=()
@@ -359,19 +370,47 @@ except ValueError: gi.require_version('AyatanaAppIndicator3','0.1')
     esac
 fi
 
+# supergfxctl is not in Fedora's own repos at all (official or
+# updates-archive) -- it only ever comes from the asus-linux COPR. Without
+# this, `rpm-ostree install supergfxctl` (and plain `dnf install` on
+# traditional Fedora) fails with "Packages not found" even on a correctly
+# imaged Bazzite box, which looks like a missing package but is really a
+# missing repo.
+ensure_asus_linux_copr() {
+    local relver repo_file
+    relver="$(rpm -E %fedora 2>/dev/null)"
+    [ -n "$relver" ] || return 1
+    repo_file="/etc/yum.repos.d/lukenukem-asus-linux-fedora-$relver.repo"
+    [ -f "$repo_file" ] && return 0
+    step "Adding asus-linux COPR (supergfxctl lives there, not in Fedora's repos)"
+    sudo curl -fsSL \
+        "https://copr.fedorainfracloud.org/coprs/lukenukem/asus-linux/repo/fedora-$relver/lukenukem-asus-linux-fedora-$relver.repo" \
+        -o "$repo_file" \
+        && say "asus-linux COPR added" \
+        || { warn "Could not add the asus-linux COPR - supergfxctl install will fail"; return 1; }
+}
+
 step "Checking dependencies"
 if [ ${#missing_names[@]} -eq 0 ]; then
     say "All repository dependencies already present - nothing to install"
 elif [ "$PM_HOST" = none ]; then
-    # rpm-ostree path. Not installed for them: every one of these is
-    # optional, and each would add another layered package and another
-    # reboot to a system where both have a real cost. Named instead, as one
-    # command they can run if they want the feature.
+    # rpm-ostree path. Every one of these is optional, so a failure here
+    # costs a feature, not the install -- attempted automatically rather than
+    # just printed, same as the GTK4 layering above, but errors are warned
+    # past instead of fatal.
     warn "Missing: ${missing_names[*]}"
     if [ ${#missing_pkgs[@]} -gt 0 ]; then
-        warn "All optional - skipping one only costs the feature that needs it."
-        warn "To add them (layered, needs a reboot):"
-        warn "  sudo rpm-ostree install ${missing_pkgs[*]}"
+        case " ${missing_pkgs[*]} " in *" supergfxctl "*) ensure_asus_linux_copr ;; esac
+        step "Layering optional packages with rpm-ostree"
+        echo "  ${missing_pkgs[*]}"
+        if sudo rpm-ostree install --idempotent -y "${missing_pkgs[@]}"; then
+            PENDING_REBOOT=1
+            say "Layered - they become usable after a reboot"
+        else
+            warn "rpm-ostree could not layer some of these - the features they"
+            warn "cover will stay unavailable. To retry by hand:"
+            warn "  sudo rpm-ostree install ${missing_pkgs[*]}"
+        fi
     fi
 else
     warn "Missing: ${missing_names[*]}"
@@ -552,7 +591,7 @@ fi
 
 LIBDIR="$HOME/.local/lib/rogcontrol"
 rm -rf "$LIBDIR"
-mkdir -p "$LIBDIR/pages" "$LIBDIR/widgets"
+mkdir -p "$LIBDIR/pages" "$LIBDIR/widgets" "$LIBDIR/icons"
 for f in "$SCRIPT_DIR"/*.py; do
     # rogcontrol-*.py are the standalone executables sitting in the same
     # directory. They are not part of the package (and are not even importable
@@ -563,6 +602,9 @@ done
 for sub in pages widgets; do
     install -m 644 "$SCRIPT_DIR/$sub"/*.py "$LIBDIR/$sub/"
 done
+# app.py's sidebar icons -- bundled so the sidebar looks the same regardless
+# of the desktop's icon theme (see the add_search_path call in app.py).
+install -m 644 "$SCRIPT_DIR"/icons/*.svg "$LIBDIR/icons/"
 say "Application package installed to ~/.local/lib/rogcontrol"
 
 # The launcher. `python3 -m rogcontrol` with ~/.local/lib on the path, which
