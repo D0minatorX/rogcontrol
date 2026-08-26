@@ -97,6 +97,17 @@ class MainWindow(Adw.ApplicationWindow):
         # would fire an apply for every control on screen.
         self._loading = True
 
+        # The sidebar icons are looked up by name, and the system icon theme
+        # is not guaranteed to have all seven -- Adwaita is missing
+        # speedometer-symbolic and computer-chip-symbolic outright, and a
+        # fresh install may not even have Adwaita active (KDE ships Breeze).
+        # Bundling them here and adding this as a search path means the
+        # sidebar looks the same regardless of what theme the desktop is
+        # running, with the system theme still preferred if it has its own.
+        icon_theme = Gtk.IconTheme.get_for_display(self.get_display())
+        icons_dir = os.path.join(os.path.dirname(__file__), "icons")
+        icon_theme.add_search_path(icons_dir)
+
         self.set_title("ROG Control")
         width, height = 960, 720
         saved = config.get("window_size")
