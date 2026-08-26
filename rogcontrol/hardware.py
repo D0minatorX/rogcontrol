@@ -1118,10 +1118,55 @@ def nvidia_settings_args(kind, mhz):
     return ["nvidia-settings", "-a", f"[gpu:0]/{attribute}={int(mhz)}"]
 
 
+# The two variables nvidia-settings needs to find the user's display. Read
+# from the session manager when they are missing from this process, which is
+# what session_display_env is for.
+DISPLAY_VARS = ("DISPLAY", "XAUTHORITY")
+
+
+def session_display_env(timeout=5):
+    """This process's environment, with DISPLAY/XAUTHORITY filled in from the
+    user's session manager when they are missing.
+
+    The boot apply is a systemd user service wanted by default.target, and
+    it can start BEFORE the compositor imports those two variables into the
+    user manager -- measured at three seconds early on this machine. A
+    process's environment is fixed when it execs, so every retry inside that
+    one process then ran without a display and nvidia-settings answered "The
+    control display is undefined" to all of them. Asking the manager at the
+    moment of the call gets the variables it has imported since.
+
+    ``systemctl --user show-environment`` needs no display of its own -- it
+    talks to the manager over its socket -- so this is safe to call from a
+    service that may have started before there was one."""
+    env = os.environ.copy()
+    if all(env.get(name) for name in DISPLAY_VARS):
+        return env
+    try:
+        result = subprocess.run(["systemctl", "--user", "show-environment"],
+                                capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return env
+    if result.returncode != 0:
+        return env
+    for line in result.stdout.splitlines():
+        name, sep, value = line.partition("=")
+        if sep and name in DISPLAY_VARS and not env.get(name):
+            env[name] = value
+    return env
+
+
 def set_nvidia_clock_offset(kind, mhz, timeout=10):
     """Apply one clock offset, returning ``(ok, message)`` like run_helper."""
+    env = session_display_env()
+    if not env.get("DISPLAY"):
+        # Said plainly rather than left to nvidia-settings, whose own answer
+        # ("The control display is undefined") reads like a broken driver
+        # rather than a graphical session that is not up yet.
+        return False, ("no graphical session yet -- nvidia-settings needs "
+                       "DISPLAY, which the session had not published")
     try:
-        result = subprocess.run(nvidia_settings_args(kind, mhz),
+        result = subprocess.run(nvidia_settings_args(kind, mhz), env=env,
                                 capture_output=True, text=True, timeout=timeout)
     except Exception as e:
         return False, str(e)
