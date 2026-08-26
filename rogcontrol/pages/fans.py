@@ -436,6 +436,15 @@ class FansPage(Gtk.Box):
         self.apply_button.set_sensitive(not busy)
         self.calibrate_button.set_sensitive(not busy)
 
+    def set_hardware_busy(self, busy):
+        """Something else is writing the machine -- see app.claim_hardware.
+
+        This page cares most: its writes are the CHANNEL_GAP_S-paced ones the
+        EC drops when a second writer interleaves with them."""
+        if not self._working:
+            self.apply_button.set_sensitive(not busy)
+            self.calibrate_button.set_sensitive(not busy)
+
     # -- applying ------------------------------------------------------------
 
     def _on_apply_clicked(self, _widget):
@@ -453,6 +462,8 @@ class FansPage(Gtk.Box):
         # config.deferred_save_target.
         target = self.window.current_profile_name()
 
+        if not self.window.claim_hardware("writing the fan curves"):
+            return
         self._set_busy(True)
         self._show_banner("Writing the curves to the fan controller…")
         self._start_progress(total, "Starting…")
@@ -490,6 +501,7 @@ class FansPage(Gtk.Box):
         self._stop_progress()
         self._set_busy(False)
         if error is not None:
+            self.window.release_hardware()
             self._show_banner(f"Applying the fan curves failed: {error}",
                               button="Apply")
             self.window.toast(f"Fan curves failed: {error}")
@@ -517,6 +529,10 @@ class FansPage(Gtk.Box):
         else:
             self.banner.set_revealed(False)
             self.window.toast(f"Fan curves applied and saved to {target}.")
+        # After the save, which uses the target captured when Apply was
+        # pressed: an earlier release lets a deferred reload_pages redraw the
+        # editors underneath this callback.
+        self.window.release_hardware()
         # The driver's cached points have just changed underneath the last
         # sample, so re-read rather than leaving the banner deciding from
         # stale data.
@@ -569,6 +585,11 @@ class FansPage(Gtk.Box):
         per_step_estimate = CHANNEL_GAP_S * (len(channels) - 1) + 60
         total = len(CAL_PERCENTS) * per_step_estimate + CHANNEL_GAP_S * (len(channels) - 1)
 
+        # Stopping the enforcer (in _calibration_worker) keeps the *other*
+        # process off the fans for the couple of minutes this runs; this
+        # keeps the window's own profile apply off them too.
+        if not self.window.claim_hardware("calibrating the fans"):
+            return
         self._set_busy(True)
         self._show_banner("Calibrating the fans — this takes a couple of "
                           "minutes and they will be audible.")
@@ -671,6 +692,10 @@ class FansPage(Gtk.Box):
     def _on_calibrated(self, data, error):
         self._stop_progress()
         self._set_busy(False)
+        # Nothing below this line reads a value captured before the run --
+        # the fits come out of ``data`` -- so the machine goes back now,
+        # whichever way this ended.
+        self.window.release_hardware()
         if error is not None:
             self._show_banner(f"Calibration failed: {error}. The previous "
                               "figures are unchanged.")

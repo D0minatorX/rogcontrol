@@ -135,11 +135,14 @@ class MainWindow(Adw.ApplicationWindow):
         # so it is a floor and not a promise; see MIN_WIDTH below.
         self.set_size_request(MIN_WIDTH, MIN_HEIGHT)
 
-        # True while a whole profile is being pushed at the hardware. The
-        # fan portion alone takes ~10 seconds (see CHANNEL_GAP_S), so the
-        # window has to be able to say "still working" rather than start a
-        # second, overlapping apply.
-        self._applying_profile = False
+        # Which slow hardware write owns the machine right now, or None. The
+        # fan portion of a profile apply alone takes ~10 seconds (see
+        # CHANNEL_GAP_S), so the window has to be able to say "still working"
+        # rather than start a second, overlapping write. See claim_hardware.
+        self._hw_owner = None
+        # A page reload asked for while a write was in flight, run once it
+        # ends. See reload_pages.
+        self._reload_after_apply = False
 
         self.pages = {}
         self._build_ui()
@@ -425,6 +428,16 @@ class MainWindow(Adw.ApplicationWindow):
         self.apply_profile_async(name)
 
     def reload_pages(self):
+        # Not underneath a write in flight: reload() repoints every row at the
+        # profile as it stands now, while the worker is still writing values
+        # captured before that, and the worker's own callback then saves and
+        # restores against the older ones. The rows ended up showing neither
+        # the write that had just happened nor the profile just reloaded.
+        # Deferred rather than dropped -- they do have to catch up, just after
+        # the write rather than during it. release_hardware runs it.
+        if self._hw_owner is not None:
+            self._reload_after_apply = True
+            return
         for page in self.pages.values():
             reload_fn = getattr(page, "reload", None)
             if reload_fn is not None:
@@ -688,16 +701,12 @@ class MainWindow(Adw.ApplicationWindow):
         Off the main loop is not optional: the fan channels need 8 seconds
         between them, so this takes about twenty seconds start to finish and
         doing it inline would freeze the window for all of it."""
-        if self._applying_profile:
-            self.toast("Still applying the last profile…")
+        # Nothing else may write the hardware underneath this. The drop-down
+        # is one way in, deleting the active profile is another, and every
+        # page's own Apply is a third -- claim_hardware shuts all of them.
+        if not self.claim_hardware(f"applying {name}"):
             return
         profile = (self.config.get("profiles") or {}).get(name) or {}
-        self._applying_profile = True
-        # Nothing else may start a second apply underneath this one. The
-        # drop-down is one way in; deleting the active profile is the other,
-        # so the menu goes with it.
-        self.profile_drop.set_sensitive(False)
-        self.profile_menu.set_sensitive(False)
         self._set_apply_banner(f"Applying {name}…")
         self.apply_async(
             lambda: self._apply_profile_worker(name, profile),
@@ -836,9 +845,7 @@ class MainWindow(Adw.ApplicationWindow):
         return failures
 
     def _on_profile_applied(self, name, failures, error):
-        self._applying_profile = False
-        self.profile_drop.set_sensitive(True)
-        self.profile_menu.set_sensitive(True)
+        self.release_hardware()
         self.apply_banner.set_revealed(False)
         if error is not None:
             self.toast(f"Applying {name} failed: {error}")
@@ -987,6 +994,55 @@ class MainWindow(Adw.ApplicationWindow):
         self.toast_overlay.add_toast(Adw.Toast.new(text))
         return GLib.SOURCE_REMOVE
 
+    def claim_hardware(self, owner):
+        """Take the machine for one slow write, or refuse and say why.
+
+        One writer at a time is a hardware requirement, not tidiness. The
+        asus-wmi EC silently drops fan-curve writes fired too close together,
+        which is why every fan write in this app is paced by CHANNEL_GAP_S --
+        and two paced sequences running at once interleave and defeat the
+        pacing that exists to stop exactly that. Before this, pressing Apply
+        on the CPU, GPU or Fans page and then switching profile (or letting
+        the enforcer switch it on AC/battery) ran both, and channels went
+        missing.
+
+        Main thread only: every caller is a signal handler or an idle
+        callback, so the check and the set cannot interleave and no lock is
+        needed. Returns True when the caller may go ahead; when it returns
+        False it has already told the user."""
+        if self._hw_owner is not None:
+            self.toast(f"Still {self._hw_owner} — try again in a moment.")
+            return False
+        self._hw_owner = owner
+        self._sync_hardware_busy()
+        return True
+
+    def release_hardware(self):
+        """Hand the machine back. Safe to call when nothing is held."""
+        if self._hw_owner is None:
+            return
+        self._hw_owner = None
+        self._sync_hardware_busy()
+        if self._reload_after_apply:
+            self._reload_after_apply = False
+            self.reload_pages()
+
+    def hardware_busy(self):
+        return self._hw_owner is not None
+
+    def _sync_hardware_busy(self):
+        """Grey out every other way into the hardware while one write runs.
+
+        The drop-down and the profile menu are two ways in; each page's own
+        Apply is another, which is what set_hardware_busy is for."""
+        busy = self._hw_owner is not None
+        self.profile_drop.set_sensitive(not busy)
+        self.profile_menu.set_sensitive(not busy)
+        for page in self.pages.values():
+            hook = getattr(page, "set_hardware_busy", None)
+            if hook is not None:
+                hook(busy)
+
     def apply_async(self, fn, on_done=None):
         """Run ``fn()`` on a worker thread; call ``on_done(result, error)``
         back on the main loop.
@@ -1036,6 +1092,20 @@ class MainWindow(Adw.ApplicationWindow):
             if self.lookup_action(name) is None:
                 raise RuntimeError(f"the profile menu's {name} action is "
                                    f"missing")
+        # One writer at a time. Nothing else covers it: both ways in are
+        # signal handlers, and the thing it prevents -- two paced fan-curve
+        # sequences interleaving -- shows up as dropped channels on real
+        # hardware rather than as an error anywhere.
+        if not self.claim_hardware("a self test"):
+            raise RuntimeError("claim_hardware refused an idle machine")
+        if self.claim_hardware("a second self test"):
+            raise RuntimeError("claim_hardware allowed a second writer in")
+        if self.profile_drop.get_sensitive():
+            raise RuntimeError("the profile switcher stayed live during a "
+                               "hardware write")
+        self.release_hardware()
+        if self.hardware_busy() or not self.profile_drop.get_sensitive():
+            raise RuntimeError("release_hardware left the window busy")
 
 
 class RogControlApp(Adw.Application):

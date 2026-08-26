@@ -797,6 +797,12 @@ class GpuPage(Gtk.Box):
         self.apply_button.set_sensitive(not busy)
         self.revert_button.set_sensitive(not busy)
 
+    def set_hardware_busy(self, busy):
+        """Something else is writing the machine -- see app.claim_hardware."""
+        if not self._applying:
+            self.apply_button.set_sensitive(not busy)
+            self.revert_button.set_sensitive(not busy)
+
     def _on_apply_clicked(self, _widget):
         if self._applying:
             return
@@ -804,6 +810,8 @@ class GpuPage(Gtk.Box):
         if not wanted:
             self.window.toast("Nothing on this page can be set on this "
                               "machine.")
+            return
+        if not self.window.claim_hardware("writing the GPU settings"):
             return
         # Which profile these settings belong to, captured now: the write
         # runs off the main loop, and the enforcer switches profile on
@@ -848,6 +856,7 @@ class GpuPage(Gtk.Box):
     def _on_applied(self, target, results, error):
         self._set_busy(False)
         if error is not None:
+            self.window.release_hardware()
             self._show_banner(f"Applying the GPU settings failed: {error}",
                               button="Apply")
             self.window.toast(f"GPU settings failed: {error}")
@@ -879,6 +888,10 @@ class GpuPage(Gtk.Box):
             self._update_banner()
             self.window.toast(
                 f"GPU settings applied and saved to {target}.")
+        # Last, after everything above has finished with the target captured
+        # when Apply was pressed: releasing sooner lets a deferred
+        # reload_pages repoint the rows underneath this callback.
+        self.window.release_hardware()
 
     def _save(self, target, applied):
         """Write what reached the card into profile ``target``.

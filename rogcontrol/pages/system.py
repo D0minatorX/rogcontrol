@@ -1047,8 +1047,23 @@ class SystemPage(Adw.PreferencesPage):
     # here is the button, the countdown label, and an immediate restore while
     # the window happens to be open -- none of which the feature depends on.
 
+    def set_hardware_busy(self, busy):
+        """Something else is writing the machine -- see app.claim_hardware.
+
+        Never re-enables the button during a hold: the boost owns it until
+        the deadline passes, long after the write that started it released
+        the hardware."""
+        if not hasattr(self, "fan_boost_button"):
+            return
+        self.fan_boost_button.set_sensitive(not busy and not self._boost_active)
+
     def _on_fan_boost_clicked(self, _button):
         if self._boost_active or not self.window.caps.get("fan_curve"):
+            return
+        # Only the write is claimed, not the whole two-minute hold: once the
+        # flat curves are down the enforcer maintains them, and a profile
+        # switch mid-hold is a thing the user is allowed to do.
+        if not self.window.claim_hardware("boosting the fans"):
             return
         # Captured now, not read back when the hold ends: the profile can
         # switch itself mid-hold (the enforcer does it on AC/battery), and
@@ -1096,6 +1111,10 @@ class SystemPage(Adw.PreferencesPage):
         return {"results": results, "until": state["until"]}
 
     def _on_fan_boost_written(self, data, error):
+        # Before either branch: both _fan_boost_abort and the countdown that
+        # follows a success are done writing, and the abort path goes on to
+        # ask for a profile apply, which needs the machine free to claim.
+        self.window.release_hardware()
         if error is not None:
             self._fan_boost_abort(f"Fan boost failed: {error}")
             return
@@ -1182,7 +1201,10 @@ class SystemPage(Adw.PreferencesPage):
     def _finish_fan_boost(self):
         self._boost_active = False
         self._boost_deadline = None
-        self.fan_boost_button.set_sensitive(True)
+        # Not unconditionally back on: the hold usually ends with a profile
+        # re-apply started immediately after this, and the button has to stay
+        # out while that runs.
+        self.fan_boost_button.set_sensitive(not self.window.hardware_busy())
         self.fan_boost_row.set_subtitle(FAN_BOOST_SUBTITLE)
 
     def _fan_boost_abort(self, message):

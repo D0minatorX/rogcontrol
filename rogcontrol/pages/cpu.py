@@ -806,6 +806,16 @@ class CpuPage(Gtk.Box):
         self.apply_button.set_sensitive(not busy)
         self.revert_button.set_sensitive(not busy)
 
+    def set_hardware_busy(self, busy):
+        """Something else is writing the machine -- see app.claim_hardware.
+
+        Not folded into _set_busy: that one owns this page's own state, and
+        the two can disagree (a profile switch greys these buttons without
+        this page applying anything)."""
+        if not self._applying:
+            self.apply_button.set_sensitive(not busy)
+            self.revert_button.set_sensitive(not busy)
+
     def _on_apply_clicked(self, _widget):
         if self._applying:
             return
@@ -848,6 +858,11 @@ class CpuPage(Gtk.Box):
                 self.window.toast("Nothing on this page can be set on this "
                                   "machine.")
             return
+        # After the empty-plan path above, which writes nothing at all: a
+        # save that touches only the config has no reason to wait for
+        # whatever else is on the hardware.
+        if not self.window.claim_hardware("writing the CPU settings"):
+            return
         self._set_busy(True)
         self._show_banner("Writing the CPU settings…")
         self.window.apply_async(lambda: self._apply_worker(plan),
@@ -871,6 +886,7 @@ class CpuPage(Gtk.Box):
     def _on_applied(self, target, values, snapshot, results, error):
         self._set_busy(False)
         if error is not None:
+            self.window.release_hardware()
             self._show_banner(f"Applying the CPU settings failed: {error}",
                               button="Apply")
             self.window.toast(f"CPU settings failed: {error}")
@@ -910,6 +926,12 @@ class CpuPage(Gtk.Box):
             self.window.toast(
                 f"CPU settings applied and saved to {target}.")
 
+        # Released only here, after everything above has finished reading the
+        # target and snapshot captured when Apply was pressed -- releasing
+        # earlier lets a deferred reload_pages repoint the rows underneath
+        # this callback. And the firmware-reset re-apply below needs the
+        # machine free to claim it.
+        self.window.release_hardware()
         if "fwreset" in applied_steps:
             self._reapply_profile_after_firmware_reset()
 
