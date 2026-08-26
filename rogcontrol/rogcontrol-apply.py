@@ -39,10 +39,10 @@ losing it is something the user sees all day and has no way to connect back
 to the BIOS update that caused it.
 """
 
-import json
 import os
 import sys
 import time
+import traceback
 
 # The shared modules sit beside this script's package in the repo, and under
 # ~/.local/lib once installed -- this script is installed into ~/.local/bin,
@@ -55,6 +55,7 @@ for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
             sys.path.insert(0, _candidate)
         break
 
+from rogcontrol import config as config_mod  # noqa: E402
 from rogcontrol import fancurve  # noqa: E402
 from rogcontrol import hardware  # noqa: E402
 
@@ -253,11 +254,23 @@ def main(argv=None):
     attempts = 1 if profile_only else RETRIES
     for attempt in range(attempts):
         try:
-            with open(CONFIG_PATH) as f:
-                config = json.load(f)
-            apply_once(config, profile_only=profile_only)
-        except Exception:
-            pass
+            # config.load_config, not a bare json.load: a config that will
+            # not parse used to raise here and take the whole login apply
+            # down with it, silently and on every boot after. load_config
+            # keeps the unreadable file as a .corrupt-<timestamp> copy and
+            # hands back a migrated default, so the machine at least comes up
+            # configured.
+            apply_once(config_mod.load_config(), profile_only=profile_only)
+        except Exception as e:  # noqa: BLE001 - logged, then retried
+            # Logged rather than swallowed. This runs at login with nothing
+            # on screen: a broken config, a missing dependency or a bug in
+            # apply_once left no trace anywhere at all -- not even in the log
+            # this app tells users to check -- so "my profile did not come
+            # back after a reboot" had nothing to go on. Every other script
+            # in this tree logs its unexpected exceptions; this one did not.
+            hardware.log(f"apply failed: {e}", "ERROR", source="apply",
+                         dedupe_key="applyfail")
+            traceback.print_exc()
         if attempt < attempts - 1:
             time.sleep(DELAY_SECONDS)
 

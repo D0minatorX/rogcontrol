@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import time
+import traceback
 
 # The shared modules sit beside this script's package in the repo, and under
 # ~/.local/lib once installed -- this script is installed into ~/.local/bin,
@@ -171,7 +172,22 @@ def main():
     # and writes nothing unless the saved lighting mode is Profile Color.
     hardware.set_profile_kbd_color(config, next_name)
 
-    apply_profile(config["profiles"][next_name])
+    # Guarded, because the config already says this profile is current --
+    # it is saved above so the enforcer does not switch it straight back --
+    # and an exception here would leave that claim standing over a machine
+    # the settings never finished reaching, with a bare traceback on a
+    # stderr no one is reading and no notification at all. The empty-gpu
+    # KeyError that used to do exactly that is fixed, but it was only ever
+    # one way in.
+    try:
+        apply_profile(config["profiles"][next_name])
+    except Exception as e:  # noqa: BLE001 - reported, not swallowed
+        hardware.log(f"cycle to {next_name} failed: {e}", "ERROR",
+                     source="cycle-profile", dedupe_key="cyclefail")
+        traceback.print_exc()
+        notify("ROG Control",
+               f"Profile {next_name} was only partly applied — {e}")
+        return
     notify("ROG Control", f"Profile switched to {next_name}")
 
 
