@@ -167,6 +167,16 @@ NO_ROGAURACORE_HINT = (
 )
 
 
+def _clamp_level(level):
+    """A backlight level from anywhere -- the LED class, the config -- as an
+    int inside the range the hardware accepts."""
+    try:
+        level = int(level)
+    except (TypeError, ValueError):
+        return kbdcolor.KBD_MIN
+    return max(kbdcolor.KBD_MIN, min(kbdcolor.KBD_MAX, level))
+
+
 class _LevelRow(SliderRow):
     """A SliderRow whose readout is a word rather than a number.
 
@@ -203,6 +213,11 @@ class KeyboardPage(Adw.PreferencesPage):
         self._color_timer = None
         self._busy = False
         self._live_busy = False
+        # What the LED class last said, filled in by _refresh_brightness off
+        # the main loop. None until the first read comes back, when the
+        # config's own value stands in. See _current_brightness.
+        self._brightness = None
+        self._brightness_busy = False
         # The colour a live mode last put on the keys, so the refresh tick can
         # skip the USB write when the reading maps to the same colour again.
         self._last_live_color = None
@@ -339,30 +354,49 @@ class KeyboardPage(Adw.PreferencesPage):
         self.mode_row.connect("notify::selected", self._on_mode_changed)
 
     def _current_brightness(self):
-        """What the LED class is holding, falling back to the config.
+        """The level the LED class last reported, or the config's.
+
+        No hardware read of its own. Every caller is on the GTK main loop --
+        reload, a failed write's toast, the periodic tick -- and this used to
+        run read_kbd_brightness (and a config save) inline on all three,
+        which is the one thing app.py's apply_async exists to stop. The read
+        happens in _refresh_brightness now and leaves its answer here."""
+        level = self._brightness
+        if level is None:
+            level = self.window.config.get("kbd_brightness", kbdcolor.KBD_MIN)
+        return _clamp_level(level)
+
+    def _refresh_brightness(self):
+        """Ask the LED class what it is holding, off the main loop.
 
         Read back rather than trusted, because the level can be changed from
         outside this app -- the keyboard's own Fn keys, the desktop's quick
         settings, this project's own shortcut script -- and a slider set once
         at startup would show a stale value for the rest of the session."""
-        level = hardware.read_kbd_brightness()
-        if level is None:
-            level = self.window.config.get("kbd_brightness",
-                                           kbdcolor.KBD_MIN)
-        try:
-            level = int(level)
-        except (TypeError, ValueError):
-            level = kbdcolor.KBD_MIN
-        level = max(kbdcolor.KBD_MIN, min(kbdcolor.KBD_MAX, level))
+        if self._brightness_busy:
+            return
+        self._brightness_busy = True
+        self.window.apply_async(hardware.read_kbd_brightness,
+                                self._brightness_refreshed)
+
+    def _brightness_refreshed(self, level, error):
+        self._brightness_busy = False
+        if error is not None or level is None:
+            return
+        self._brightness = _clamp_level(level)
         # Keep the config honest with whatever the LED is actually holding.
         # Without this, a Fn-key change is only ever shown on screen -- the
         # saved kbd_brightness stays at its old value, and the login-time
         # apply service reasserts that stale value and undoes the Fn-key
         # change the next time the user logs in.
-        if level != self.window.config.get("kbd_brightness"):
-            self.window.config["kbd_brightness"] = level
+        if self._brightness != self.window.config.get("kbd_brightness"):
+            self.window.config["kbd_brightness"] = self._brightness
             config_mod.save_config(self.window.config)
-        return level
+        self._loading = True
+        try:
+            self.brightness_row.set_value(self._brightness)
+        finally:
+            self._loading = False
 
     def _select_mode(self, name):
         """Select a mode by name, falling back to the first entry.
@@ -723,9 +757,12 @@ class KeyboardPage(Adw.PreferencesPage):
         return GLib.SOURCE_REMOVE
 
     def stop_ambient(self):
+        # The reference is dropped before the teardown starts, which is what
+        # makes running it off the main loop safe -- nothing here will look
+        # at that sampler again. See AmbientSampler.stop_async.
         sampler, self._ambient = self._ambient, None
         if sampler is not None:
-            sampler.stop()
+            sampler.stop_async()
 
     def start_saved_ambient(self):
         """Restart Ambient at launch if it is the saved mode.
@@ -751,11 +788,7 @@ class KeyboardPage(Adw.PreferencesPage):
         # The brightness readout is only worth refreshing while it is being
         # looked at; the stack unmaps the pages nobody is on.
         if self.get_mapped():
-            self._loading = True
-            try:
-                self.brightness_row.set_value(self._current_brightness())
-            finally:
-                self._loading = False
+            self._refresh_brightness()
         # The recolour is not gated on that: the keys stay lit whichever page
         # is open, and a temperature mode that only tracked while its own page
         # was visible would be wrong everywhere else.
