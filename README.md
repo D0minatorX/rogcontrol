@@ -105,18 +105,27 @@ Debian/Ubuntu  sudo apt install libgtk-4-1 libadwaita-1-0 python3-gi
 ## 📦 Installing
 
 ```
+cd ~
 git clone https://github.com/D0minatorX/rogcontrol.git
 cd rogcontrol/rogcontrol
 ./install.sh
 ```
 
+The `cd ~` first matters: `git clone` puts the `rogcontrol` folder wherever your terminal currently is, and on some setups that's `~/Downloads` (a file manager's "Open Terminal Here", or a terminal that starts there by default) rather than your home folder — then `cd rogcontrol/rogcontrol` still works, it just leaves the clone sitting in Downloads instead of somewhere sensible.
+
+If you used GitHub's green **Code → Download ZIP** button instead of `git clone`, the extracted folder is named `rogcontrol-main` (or `rogcontrol-gtk4-ui`), not `rogcontrol` — `cd rogcontrol/rogcontrol` will fail with "No such file or directory" in that case. Either extract and `cd` into that folder's own `rogcontrol` subfolder instead (e.g. `cd rogcontrol-main/rogcontrol`), or just use `git clone` as above.
+
 One command on every supported distro. The installer reads `/etc/os-release`, so derivatives are handled by family rather than by name — CachyOS is treated as Arch, Bazzite as Fedora — and it detects your desktop (GNOME or KDE Plasma) to tell you whether the tray needs anything extra.
 
 ### On Bazzite and other atomic systems
 
-Fedora Atomic images (Bazzite, Silverblue, Kinoite — GNOME and KDE Plasma spins alike) have a read-only `/usr` and no `dnf`, so the GTK4 libraries can't simply be installed. The installer detects this and layers them onto the system itself with `rpm-ostree`, then tells you to reboot and run `./install.sh` once more — the second run finishes automatically and asks nothing.
+Fedora Atomic images (Bazzite, Silverblue, Kinoite — GNOME and KDE Plasma spins alike) have a read-only `/usr` and no `dnf`, so packages can't simply be installed the normal way. The installer handles all of this itself, automatically:
 
-Everything else — the privileged helper, the sudoers rule, the background services, the suspend hook and your settings — installs onto the real system exactly as it does everywhere else. The one cost is the reboot, and layered packages can make future OS updates slower and occasionally break them.
+- **GTK4/libadwaita** (required) are layered onto the system with `rpm-ostree`, then it tells you to reboot and run `./install.sh` once more — the second run finishes automatically and asks nothing.
+- **supergfxctl** (optional, GPU mode switching) isn't in Fedora's own repos at all — the installer adds the `lukenukem/asus-linux` COPR itself before layering it, so you don't have to find or add that repo by hand.
+- **power-profiles-daemon** (optional, OS power-mode sync) is skipped automatically if Bazzite's `tuned-ppd` is already on the system — the two packages conflict (both provide the same service), and the app already talks to `tuned-ppd` just as well, so there's nothing to install or resolve yourself.
+
+Everything else — the privileged helper, the sudoers rule, the background services, the suspend hook and your settings — installs onto the real system exactly as it does everywhere else. The one cost is the reboot(s) for whatever got layered, and layered packages can make future OS updates slower and occasionally break them.
 
 ### On CachyOS and other Arch systems
 
