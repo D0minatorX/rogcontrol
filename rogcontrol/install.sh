@@ -8,7 +8,7 @@ warn() { printf '%s %s\n' "$WARN" "$*"; }
 die()  { printf '%s %s\n' "$ERR" "$*" >&2; exit 1; }
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
-VERSION=1.0.0.5
+VERSION=1.0.0.6
 STATE_DIR="$HOME/.local/share/rogcontrol"
 STATE_FILE="$STATE_DIR/install-state"
 APP_CONFIG="$HOME/.config/rogcontrol.json"
