@@ -53,7 +53,7 @@ find_hwmon_by_name() {
 }
 
 usage() {
-    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|cpuminclock|cpufwlimits|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|bootsound|panelod|psr|asusd_status|asusd_disable|asusd_enable> ..." >&2
+    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|cpuminclock|cpufwlimits|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|bootsound|panelod|psr|asusd_status|asusd_disable|asusd_enable|supergfxd_enable> ..." >&2
     exit 1
 }
 
@@ -966,6 +966,26 @@ case "$1" in
         shift
         no_args asusd_enable "$@"
         systemctl enable --now asusd.service
+        ;;
+
+    supergfxd_enable)
+        # Turn on the daemon the graphics-mode picker needs. Some
+        # distributions ship the supergfxctl package with its unit installed
+        # but not enabled, which leaves the window able to see supergfxctl on
+        # PATH while nothing answers -- indistinguishable, from the GPU page,
+        # from a broken daemon.
+        #
+        # Enable-only, on purpose. This app WANTS supergfxd running: without
+        # it the mode picker can neither read nor switch. There is no
+        # supergfxd_disable to match asusd's, because nothing here would ever
+        # ask for one, and a disable primitive sitting in a passwordless
+        # helper is worth not having.
+        #
+        # Same shape as asusd_enable: no arguments at all, and the unit name
+        # is written here rather than taken from the caller.
+        shift
+        no_args supergfxd_enable "$@"
+        systemctl enable --now supergfxd.service
         ;;
 
     # There is deliberately no action that removes the asusctl package.

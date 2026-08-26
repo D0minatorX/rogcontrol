@@ -113,6 +113,23 @@ SUPERGFX_SILENT = (
 
 SUPERGFX_OK = "The picker on the GPU page can switch modes."
 
+SUPERGFX_STOPPED = (
+    "supergfxctl is installed but its supergfxd service is not running, so "
+    "the mode cannot be read and nothing can be switched. Enabling it starts "
+    "it now and brings it back at every boot."
+)
+
+SUPERGFX_ENABLE_SUBTITLE = (
+    "Runs systemctl enable --now supergfxd. The graphics-mode picker on the "
+    "GPU page needs this daemon; without it the mode can be neither read nor "
+    "changed."
+)
+
+SUPERGFX_ENABLE_TOOLTIP = (
+    "Some distributions install supergfxctl without switching its service "
+    "on. This turns it on and starts it, and it stays on across reboots."
+)
+
 ASUSD_DESCRIPTION = (
     "asusd is asusctl's background daemon, and it drives the same hardware "
     "as this app: the same asus-wmi platform knobs, the same three custom "
@@ -271,6 +288,10 @@ class SystemPage(Adw.PreferencesPage):
         # systemd has been asked what actually happened, so the two buttons
         # cannot be pressed again mid-flight.
         self._asusd_busy = False
+        # The same, for the supergfxd enable button. Its own flag rather than
+        # sharing the asusd one: the two rows are about different daemons and
+        # a single flag would grey out one while the other was working.
+        self._supergfx_busy = False
         # Same idea for the boot sound: true while the helper is being asked
         # to change it, so a sample that lands mid-write cannot put the
         # switch back to the value the firmware has not been given yet.
@@ -335,6 +356,26 @@ class SystemPage(Adw.PreferencesPage):
         self.add(group)
         self.supergfx_row, self.supergfx_value = self._value_row(
             group, "supergfxd", SUPERGFX_SUBTITLE, strong=True)
+
+        # Only ever shown when there is something to do with it: the package
+        # is here and the daemon is not running. Offering "Enable" on a
+        # machine with no supergfxctl would be a button that cannot work, and
+        # offering it while the daemon already answers would be a button that
+        # does nothing.
+        self.supergfx_enable_row = Adw.ActionRow(
+            title="Enable and start supergfxd",
+            subtitle=SUPERGFX_ENABLE_SUBTITLE)
+        self.supergfx_enable_row.set_subtitle_lines(0)
+        self.supergfx_enable_row.set_tooltip_text(SUPERGFX_ENABLE_TOOLTIP)
+        self.supergfx_enable_button = Gtk.Button(label="Enable")
+        self.supergfx_enable_button.set_valign(Gtk.Align.CENTER)
+        self.supergfx_enable_button.connect("clicked",
+                                            self._on_supergfx_enable)
+        self.supergfx_enable_row.add_suffix(self.supergfx_enable_button)
+        self.supergfx_enable_row.set_activatable_widget(
+            self.supergfx_enable_button)
+        self.supergfx_enable_row.set_visible(False)
+        group.add(self.supergfx_enable_row)
 
     def _build_asusd(self):
         """Whether the other daemon for this hardware is on the machine."""
@@ -639,13 +680,22 @@ class SystemPage(Adw.PreferencesPage):
 
     def _sample(self):
         """Worker thread: a handful of subprocesses, no widgets."""
+        # Sampled every cycle, like the asusd state below: supergfxd can be
+        # started or stopped under a running window, and a row latched on the
+        # answer it gave at startup would be wrong for the rest of the
+        # session.
+        gpu_mode = (hardware.read_gpu_mode()
+                    if self.caps.get("supergfxctl") else None)
+        # Asked ONLY when the mode did not come back. It is three more
+        # subprocesses per tick, and the one thing it is used for -- telling
+        # "installed but switched off" apart from "installed and broken" --
+        # cannot arise while the daemon is answering.
+        supergfxd = (hardware.read_supergfxd_state()
+                     if self.caps.get("supergfxctl") and gpu_mode is None
+                     else None)
         return {
-            # Sampled every cycle, like the asusd state below: supergfxd can
-            # be started or stopped under a running window, and a row latched
-            # on the answer it gave at startup would be wrong for the rest of
-            # the session.
-            "gpu_mode": (hardware.read_gpu_mode()
-                         if self.caps.get("supergfxctl") else None),
+            "gpu_mode": gpu_mode,
+            "supergfxd": supergfxd,
             "power_mode": hardware.read_power_mode(),
             # Read every cycle rather than once at startup: asusd can be
             # installed, started or stopped while this window is open, and a
@@ -683,7 +733,9 @@ class SystemPage(Adw.PreferencesPage):
             self._render(data)
 
     def _render(self, data):
-        self._render_supergfx(data.get("gpu_mode"), data.get("gpu_mode_error"))
+        self._render_supergfx(data.get("gpu_mode"),
+                              data.get("gpu_mode_error"),
+                              data.get("supergfxd"))
         self._render_asusd(data.get("asusd") or {})
         self._render_sync(data.get("power_mode"))
         self._render_boot_sound(data.get("boot_sound"))
@@ -691,23 +743,44 @@ class SystemPage(Adw.PreferencesPage):
         self._render_psr(data.get("psr_pending"), data.get("psr_live"),
                          data.get("psr_foreign"))
 
-    def _render_supergfx(self, mode, error):
-        """Three states, said apart: absent, present but silent, working.
+    def _render_supergfx(self, mode, error, state=None):
+        """Four states, said apart: absent, installed but switched off,
+        present but silent, working.
 
-        "Not installed" and "installed but not answering" are different
-        problems with different fixes, and collapsing them into one dash is
-        what makes a greyed-out picker look like a missing feature."""
+        "Not installed", "installed but not answering" and "installed and
+        simply not switched on" are three different problems with three
+        different fixes, and collapsing them into one dash is what makes a
+        greyed-out picker look like a missing feature. Only the third of them
+        is something this window can fix by pressing a button, so only that
+        one shows the button."""
         if not self.caps.get("supergfxctl"):
+            self.supergfx_enable_row.set_visible(False)
             self.supergfx_value.set_text("not installed")
             self.supergfx_row.set_subtitle(SUPERGFX_ABSENT)
             self._supergfx_css("warning")
             return
         if mode is None:
-            self.supergfx_value.set_text("not answering")
+            # The daemon is not answering. Whether that is because it was
+            # never switched on or because it is broken decides both what
+            # the row says and whether there is anything to press.
+            # has_unit, not installed: without a unit file there is nothing
+            # for systemctl to enable, and a button whose command is certain
+            # to fail is worse than no button. That case -- the binary built
+            # by hand, no unit installed -- falls through to "not answering",
+            # which is what it is.
+            stopped = bool(state and state.get("has_unit")
+                           and not state.get("active"))
+            self.supergfx_enable_row.set_visible(stopped)
+            self.supergfx_enable_button.set_sensitive(
+                stopped and not self._supergfx_busy)
+            self.supergfx_value.set_text(
+                "stopped" if stopped else "not answering")
             self.supergfx_row.set_subtitle(
-                SUPERGFX_SILENT + (f"\n\n{error}" if error else ""))
+                (SUPERGFX_STOPPED if stopped else SUPERGFX_SILENT)
+                + (f"\n\n{error}" if error else ""))
             self._supergfx_css("warning")
             return
+        self.supergfx_enable_row.set_visible(False)
         self.supergfx_value.set_text("running")
         self.supergfx_row.set_subtitle(
             f"Answering, and reporting {mode}. " + SUPERGFX_OK)
@@ -963,6 +1036,34 @@ class SystemPage(Adw.PreferencesPage):
     def _on_check_asusd(self, _button):
         self._refresh_now()
         self.window.toast("Checked asusd.")
+
+    def _on_supergfx_enable(self, _button):
+        """Switch supergfxd on, through the helper.
+
+        Off the main loop: this is systemctl enable --now, which does not
+        return until the daemon has actually started."""
+        if self._supergfx_busy:
+            return
+        self._supergfx_busy = True
+        self.supergfx_enable_button.set_sensitive(False)
+        self.window.toast("Enabling supergfxd…")
+        self.window.apply_async(hardware.set_supergfxd_running,
+                                self._on_supergfx_enabled)
+
+    def _on_supergfx_enabled(self, result, error):
+        self._supergfx_busy = False
+        ok, message = (False, str(error)) if error is not None else result
+        if ok:
+            self.window.toast("supergfxd enabled and started — the graphics "
+                              "mode picker on the GPU page can switch now.")
+            # The GPU page's picker was built against a daemon that was not
+            # answering; it has to be rebuilt to become usable, which is what
+            # the profile-switch path does after it moves the hardware.
+            self.window.reload_pages()
+        else:
+            self.window.toast(f"Could not enable supergfxd: {message}")
+        # Ask systemd rather than assuming the button worked.
+        self._refresh_now()
 
     def _on_asusd_disable(self, _button):
         self._set_asusd_running(False)

@@ -276,27 +276,29 @@ UNINSTALL_COMMANDS = (
 )
 
 
-def parse_asusd_state(unit_files="", is_active="", is_enabled="",
-                      binary_found=False):
-    """What asusd is doing, from three systemctl answers plus PATH.
+def parse_service_state(unit_files="", is_active="", is_enabled="",
+                        binary_found=False, service=ASUSD_SERVICE):
+    """What a systemd unit is doing, from three systemctl answers plus PATH.
 
-    Pure, so the states can be tested without a machine that has asusctl on
-    it -- which this one does not.
+    Pure, so the states can be tested without a machine that has the package
+    on it. Shared by asusd and supergfxd rather than written twice: the
+    question ("installed? running? will it come back at boot?") and all four
+    answers are the same for both, and the only difference is the unit name.
 
-    ``unit_files`` is the output of ``systemctl list-unit-files
-    asusd.service``, ``is_active`` and ``is_enabled`` the one-word answers
-    from the matching subcommands, and ``binary_found`` whether asusd or
-    asusctl is on PATH.
+    ``unit_files`` is the output of ``systemctl list-unit-files <service>``,
+    ``is_active`` and ``is_enabled`` the one-word answers from the matching
+    subcommands, and ``binary_found`` whether the package's binary is on
+    PATH.
 
     Installed is decided from the unit file *or* the binary, because the two
     can disagree in both directions: a package installed but never enabled
     still ships the unit, and a build installed by hand may put the binary in
-    /usr/local/bin with no unit at all. Either one means asusctl is on this
-    machine and can take the hardware.
+    /usr/local/bin with no unit at all. Either one means the package is on
+    this machine.
     """
     active = (is_active or "").strip()
     enabled = (is_enabled or "").strip()
-    has_unit = ASUSD_SERVICE in (unit_files or "")
+    has_unit = service in (unit_files or "")
     installed = bool(has_unit or binary_found)
     state = {
         "installed": installed,
@@ -317,6 +319,14 @@ def parse_asusd_state(unit_files="", is_active="", is_enabled="",
     else:
         state["state"] = ASUSD_STOPPED_DISABLED
     return state
+
+
+def parse_asusd_state(unit_files="", is_active="", is_enabled="",
+                      binary_found=False):
+    """:func:`parse_service_state` for asusd. Kept as its own name because
+    that is what the page and the tests ask for."""
+    return parse_service_state(unit_files, is_active, is_enabled,
+                               binary_found, ASUSD_SERVICE)
 
 
 def read_asusd_state(timeout=5):
@@ -1266,6 +1276,56 @@ def read_panel_od(root=None):
 
 
 # -- Graphics mode (supergfxctl) ---------------------------------------------
+
+SUPERGFXD_SERVICE = "supergfxd.service"
+
+
+def read_supergfxd_state(timeout=5):
+    """What supergfxd is doing, in the same shape as read_asusd_state.
+
+    The difference from the asusd version is what it is FOR. asusd is a
+    daemon this app would rather was not running; supergfxd is one it needs,
+    so the interesting state here is "installed but not running" -- which is
+    what the package leaves behind on a distribution that ships the unit
+    without enabling it, and which looked from the window like the daemon
+    was simply broken.
+
+    Nothing here needs root and nothing here writes: three read-only queries
+    plus a PATH lookup."""
+    def ask(*args):
+        try:
+            result = subprocess.run(["systemctl", *args],
+                                    capture_output=True, text=True,
+                                    timeout=timeout)
+        except Exception:
+            return ""
+        # Return code ignored for the same reason as read_asusd_state:
+        # is-active exits non-zero for a stopped unit and is-enabled for a
+        # disabled one, and the word on stdout is the answer either way.
+        return result.stdout or ""
+
+    return parse_service_state(
+        unit_files=ask("list-unit-files", SUPERGFXD_SERVICE),
+        is_active=ask("is-active", SUPERGFXD_SERVICE),
+        is_enabled=ask("is-enabled", SUPERGFXD_SERVICE),
+        binary_found=have_cmd("supergfxd") or have_cmd("supergfxctl"),
+        service=SUPERGFXD_SERVICE)
+
+
+def set_supergfxd_running(timeout=30):
+    """Enable and start supergfxd, returning ``(ok, message)``.
+
+    Through the privileged helper, which takes no argument and names the
+    unit itself -- there is no route from here to systemctl with a unit name
+    of anyone's choosing.
+
+    There is deliberately no "stop supergfxd" counterpart. This app wants
+    that daemon running: without it the graphics-mode picker cannot read or
+    switch anything. Turning it off is not something the window should offer
+    a button for, and a disable primitive in a passwordless helper is worth
+    not having."""
+    return run_helper("supergfxd_enable", timeout=timeout)
+
 
 # The three modes this app offers, always, in the order a user thinks about
 # them: least power, both, most power. Same list the GTK3 app had.
