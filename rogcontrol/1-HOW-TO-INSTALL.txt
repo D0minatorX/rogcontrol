@@ -104,10 +104,13 @@ The installer will:
   * check GTK4 and libadwaita, and stop if they are absent
   * confirm the machine is an ASUS
   * install missing optional dependencies, with your permission
-  * build ryzenadj and rogauracore from source if your distro has no
-    package for them -- Arch/CachyOS only, via an AUR helper; on Fedora and
-    Debian/Ubuntu these two are not packaged and the installer only warns,
-    since it does not carry a source build for those toolchains
+  * build ryzenadj and rogauracore from the AUR if your distro has no
+    package for them -- Arch/CachyOS only, via an AUR helper
+  * install rogauracore from upstream's own prebuilt binary anywhere else,
+    with your permission, since no other distro packages it at all. This is
+    a download rather than a build: it needs no compiler and no reboot, not
+    even on an atomic system. ryzenadj stays Arch-only, and the installer
+    still only warns about it elsewhere
   * install the app to ~/.local/lib/rogcontrol and a launcher on your PATH
   * install the tray, the background services, the icon and the menu entry
   * on a FRESH install, write the default settings and apply them

@@ -136,6 +136,13 @@ it works whether or not the window is open.
 
 SYSTEM
 
+Whether supergfxd — the daemon the graphics-mode picker needs — is installed
+and answering. Some distributions ship the supergfxctl package with its
+service switched off, which looks from the GPU page like a broken or missing
+feature; when that is what has happened, this row says so and offers a button
+to enable and start it. There is no button to turn it off again: without it
+the graphics mode can be neither read nor changed.
+
 Whether asusctl's daemon, asusd, is installed and running. It matters because
 it drives the same hardware as this app — the same platform knobs, fan curves
 and keyboard lighting — so with both running they fight over the fans and the
