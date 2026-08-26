@@ -18,6 +18,30 @@ fi
 is_int() { [[ "$1" =~ ^[0-9]+$ ]]; }
 is_signed_int() { [[ "$1" =~ ^-?[0-9]+$ ]]; }
 
+# Where rogauracore actually is, as seen by root.
+#
+# `command -v` alone was not enough. This script runs under sudo, whose
+# secure_path decides root's PATH, and on some distributions that path does
+# NOT include /usr/local/bin -- which is exactly where the installer puts
+# rogauracore when it comes from upstream's prebuilt release rather than from
+# a distribution package (there is no package for it outside the AUR). The
+# binary was installed, present and executable, and the keyboard still
+# answered "rogauracore is not installed".
+find_rogauracore() {
+    local found
+    if found=$(command -v rogauracore 2>/dev/null); then
+        echo "$found"
+        return 0
+    fi
+    for found in /usr/local/bin/rogauracore /usr/bin/rogauracore; do
+        if [ -x "$found" ]; then
+            echo "$found"
+            return 0
+        fi
+    done
+    return 1
+}
+
 find_hwmon_by_name() {
     for d in /sys/class/hwmon/hwmon*; do
         if [ -f "$d/name" ] && [ "$(cat "$d/name")" == "$1" ]; then
@@ -550,7 +574,7 @@ case "$1" in
         # sysfs write to kbd_rgb_mode, which doesn't exist on this hardware.
         shift
         CMD="$1"; shift
-        ROGAURACORE=$(command -v rogauracore) || {
+        ROGAURACORE=$(find_rogauracore) || {
             echo "rogauracore is not installed" >&2
             exit 1
         }
@@ -691,7 +715,7 @@ case "$1" in
         # not interpret.
         shift
         LEVEL="$1"
-        ROGAURACORE=$(command -v rogauracore) || {
+        ROGAURACORE=$(find_rogauracore) || {
             echo "rogauracore is not installed" >&2
             exit 1
         }

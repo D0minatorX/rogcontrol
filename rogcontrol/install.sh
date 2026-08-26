@@ -390,6 +390,74 @@ ensure_asus_linux_copr() {
         || { warn "Could not add the asus-linux COPR - supergfxctl install will fail"; return 1; }
 }
 
+# rogauracore is the one dependency with no package outside the AUR: it is not
+# in Fedora's repos, not in the asus-linux COPR, and no COPR anywhere carries
+# it. Until now that meant every non-Arch machine simply went without keyboard
+# RGB and was told so at the end of the install.
+#
+# Upstream publishes a prebuilt x86_64 binary with each release, and that is
+# what this installs. Building from source instead would need autoconf,
+# automake, gcc, make and libusb's headers -- and on an atomic system layering
+# those costs a REBOOT before the build could even start, which a one-shot
+# installer cannot do.
+#
+# Pinned to a version and a checksum rather than following "latest": this
+# lands in root's PATH and the privileged helper executes it, so what arrives
+# has to be exactly what was reviewed, not whatever the release page happens
+# to hold that day. Bump the two together.
+ROGAURACORE_VERSION=1.6.2
+ROGAURACORE_SHA256=e8ebd6b5d5009a492e83d34d27cc9ad1130448a306ff048a96297878f4e28393
+ROGAURACORE_URL="https://github.com/Syndelis/rogauracore/releases/download/$ROGAURACORE_VERSION/rogauracore_amd64.tar.gz"
+
+install_rogauracore_prebuilt() {
+    local tmp
+    # The only architecture upstream builds -- and every laptop this app
+    # targets is x86_64 anyway.
+    if [ "$(uname -m)" != x86_64 ]; then
+        warn "No rogauracore build published for $(uname -m)"
+        return 1
+    fi
+    command -v curl >/dev/null 2>&1 || {
+        warn "curl is missing - cannot fetch rogauracore"; return 1; }
+    step "Installing rogauracore $ROGAURACORE_VERSION (keyboard RGB)"
+    tmp="$(mktemp -d)" || return 1
+    if ! curl -fsSL -o "$tmp/rogauracore.tar.gz" "$ROGAURACORE_URL"; then
+        warn "Could not download rogauracore from $ROGAURACORE_URL"
+        rm -rf "$tmp"; return 1
+    fi
+    # Checked before it is unpacked, never after: this is a binary that is
+    # about to be run as root by the helper.
+    if ! printf '%s  %s\n' "$ROGAURACORE_SHA256" "$tmp/rogauracore.tar.gz" \
+         | sha256sum -c --status; then
+        warn "rogauracore download did not match its expected checksum"
+        warn "NOT installed. Expected sha256 $ROGAURACORE_SHA256"
+        rm -rf "$tmp"; return 1
+    fi
+    if ! tar xzf "$tmp/rogauracore.tar.gz" -C "$tmp" \
+       || [ ! -f "$tmp/rogauracore_amd64/usr/bin/rogauracore" ]; then
+        warn "rogauracore archive did not contain the expected binary"
+        rm -rf "$tmp"; return 1
+    fi
+    # /usr/local/bin, not ~/.local/bin: the privileged helper resolves this
+    # binary as root, and root's PATH does not include a user's home
+    # directory. It is also where the helper itself goes, and on an atomic
+    # system it is /var/usrlocal, so it survives an rpm-ostree update.
+    #
+    # The udev rules in the tarball are deliberately NOT installed. They put
+    # MODE="0666" on the keyboard's USB device so that any user can drive it,
+    # and nothing here needs that -- every call goes through the helper, as
+    # root. Widening device permissions for a path this app never takes is
+    # not the installer's decision to make.
+    if sudo install -o root -g root -m 755 \
+            "$tmp/rogauracore_amd64/usr/bin/rogauracore" \
+            /usr/local/bin/rogauracore; then
+        say "rogauracore installed at /usr/local/bin/rogauracore"
+        rm -rf "$tmp"; return 0
+    fi
+    warn "Could not install rogauracore into /usr/local/bin"
+    rm -rf "$tmp"; return 1
+}
+
 step "Checking dependencies"
 if [ ${#missing_names[@]} -eq 0 ]; then
     say "All repository dependencies already present - nothing to install"
@@ -469,7 +537,28 @@ if [ "$PM" = pacman ]; then
     fi
 fi
 
-command -v rogauracore >/dev/null 2>&1 || warn "rogauracore missing - keyboard RGB colour/modes unavailable (brightness still works)"
+# Last resort, and on anything that is not Arch the ONLY one: there is no
+# rogauracore package for Fedora, Bazzite or Debian to have tried above. This
+# also catches an Arch machine whose owner declined to build an AUR helper --
+# the block above then installed nothing at all.
+if ! command -v rogauracore >/dev/null 2>&1 && [ ! -x /usr/local/bin/rogauracore ]; then
+    step "Keyboard RGB"
+    warn "rogauracore is missing - keyboard colours and effects need it"
+    echo "  Installs upstream's prebuilt binary (version $ROGAURACORE_VERSION,"
+    echo "  pinned to a checksum) into /usr/local/bin. Backlight brightness"
+    echo "  works without it; colours and effects do not."
+    # "|| a=" so that a run with nothing on stdin takes the [Y/n] default
+    # rather than dying here: read returns non-zero at EOF, and this script
+    # runs under set -e.
+    read -rp "  Install it now? [Y/n] " a || a=""
+    if [[ ! "${a:-Y}" =~ ^[Nn] ]]; then
+        install_rogauracore_prebuilt || true
+    else
+        warn "Skipped - keyboard colours and effects stay unavailable"
+    fi
+fi
+
+command -v rogauracore >/dev/null 2>&1 || [ -x /usr/local/bin/rogauracore ] || warn "rogauracore missing - keyboard RGB colour/modes unavailable (brightness still works)"
 command -v ryzenadj    >/dev/null 2>&1 || [ -x /usr/local/bin/ryzenadj ] || warn "ryzenadj missing - CPU power limit controls unavailable"
 
 # --------------------------------------------------------------- helper -----
@@ -801,7 +890,7 @@ command -v supergfxctl >/dev/null 2>&1     && f=1 || f=0
 cap "GPU mode switching" $f supergfxctl "supergfxctl missing"
 { command -v ryzenadj >/dev/null 2>&1 || [ -x /usr/local/bin/ryzenadj ]; } && f=1 || f=0
 cap "CPU power limits / undervolt" $f ryzenadj "ryzenadj missing (AMD Ryzen only)"
-command -v rogauracore >/dev/null 2>&1 && f=1 || f=0
+{ command -v rogauracore >/dev/null 2>&1 || [ -x /usr/local/bin/rogauracore ]; } && f=1 || f=0
 cap "Keyboard RGB colours/modes" $f rogauracore "rogauracore missing"
 [ -e /sys/class/leds/asus::kbd_backlight/brightness ] && f=1 || f=0
 cap "Keyboard backlight brightness" $f kbd_backlight "no asus::kbd_backlight LED"
