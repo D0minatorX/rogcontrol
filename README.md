@@ -85,10 +85,12 @@ A switch for the boot chime, remembered so a boot-apply service can restore it a
 **Required**, checked by the installer before it touches anything:
 
 ```
-Arch/CachyOS   sudo pacman -S gtk4 libadwaita python-gobject
-Fedora         sudo dnf install gtk4 libadwaita python3-gobject
-Debian/Ubuntu  sudo apt install libgtk-4-1 libadwaita-1-0 python3-gi
+Arch/CachyOS          sudo pacman -S gtk4 libadwaita python-gobject
+Fedora (traditional)  sudo dnf install gtk4 libadwaita python3-gobject
+Debian/Ubuntu         sudo apt install libgtk-4-1 libadwaita-1-0 python3-gi
 ```
+
+**On Bazzite or any other atomic/ostree Fedora system, don't run that Fedora line by hand** — there is no `dnf` there and it will fail with "command not found". Just run `./install.sh`; it detects the atomic system and layers these with `rpm-ostree` itself (see the Bazzite section below).
 
 **Optional**, each only costing the feature that needs it — the installer detects what's missing and offers to install it:
 
