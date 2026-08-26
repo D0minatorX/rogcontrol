@@ -5,12 +5,23 @@ Raises or lowers keyboard backlight brightness by one step (range 0-3),
 without needing the GUI open. Bind "up" and "down" to two separate
 keyboard shortcuts.
 """
-import json
 import os
 import subprocess
 import sys
 
-CONFIG_PATH = os.path.expanduser("~/.config/rogcontrol.json")
+# The shared modules sit beside this script's package in the repo, and under
+# ~/.local/lib once installed -- this script is installed into ~/.local/bin,
+# where there is no package next to it. Same probe the boot apply, the tray
+# and the enforcer do, repo first so a checkout tests the checkout.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
+    if os.path.isfile(os.path.join(_candidate, "rogcontrol", "__init__.py")):
+        if _candidate not in sys.path:
+            sys.path.insert(0, _candidate)
+        break
+
+from rogcontrol import config as config_mod  # noqa: E402
+
 KBD_MIN, KBD_MAX = 0, 3
 
 
@@ -35,15 +46,11 @@ def main():
         sys.exit(1)
     direction = sys.argv[1]
 
-    config = {}
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH) as f:
-                config = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            config = {}
-
-    current = config.get("kbd_brightness", 2)
+    # config.load_config, not a bare json.load with a fallback to {}. That
+    # fallback wrote its near-empty dict straight back over an unparseable
+    # config, destroying every profile in it; load_config keeps a
+    # .corrupt-<timestamp> copy instead and hands back a fresh default.
+    current = config_mod.load_config().get("kbd_brightness", 2)
     new_level = current + 1 if direction == "up" else current - 1
     new_level = max(KBD_MIN, min(KBD_MAX, new_level))
 
@@ -55,11 +62,12 @@ def main():
 
     ok = run_helper("kbd", new_level)
     if ok:
-        config["kbd_brightness"] = new_level
-        tmp = CONFIG_PATH + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(config, f, indent=2)
-        os.replace(tmp, CONFIG_PATH)
+        # Re-read and write in one step rather than saving the copy read
+        # above: the helper call between the two is long enough for the
+        # window, the tray or the enforcer to have written the file, and
+        # writing the older copy back threw away whatever they changed.
+        config_mod.update_config(
+            lambda cfg: cfg.update({"kbd_brightness": new_level}))
         notify("ROG Control", f"Keyboard brightness: {new_level}/{KBD_MAX}")
     else:
         notify("ROG Control", "Failed to change keyboard brightness")

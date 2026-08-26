@@ -9,11 +9,22 @@ resetting it. Bind this to a keyboard shortcut.
 Writes the applied state back to the same config file the main app reads,
 so the GUI reflects the change next time it's opened.
 """
-import json
 import os
 import subprocess
+import sys
 
-CONFIG_PATH = os.path.expanduser("~/.config/rogcontrol.json")
+# The shared modules sit beside this script's package in the repo, and under
+# ~/.local/lib once installed -- this script is installed into ~/.local/bin,
+# where there is no package next to it. Same probe the boot apply, the tray
+# and the enforcer do, repo first so a checkout tests the checkout.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
+    if os.path.isfile(os.path.join(_candidate, "rogcontrol", "__init__.py")):
+        if _candidate not in sys.path:
+            sys.path.insert(0, _candidate)
+        break
+
+from rogcontrol import config as config_mod  # noqa: E402
 
 # Same rotation as KBD_RGB_MODES in the main app, in the order to cycle
 # through. Modes that don't need a temperature reading come first so the
@@ -213,16 +224,22 @@ def apply_mode(mode_name, cfg_rgb):
     return run_helper("kbdrgb", "single_static", r, g, b)
 
 
-def main():
-    config = {}
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH) as f:
-                config = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            config = {}
+def _mode_setter(mode):
+    def mutate(cfg):
+        block = cfg.get("kbd_rgb")
+        if not isinstance(block, dict):
+            block = {}
+            cfg["kbd_rgb"] = block
+        block["mode"] = mode
+    return mutate
 
-    cfg_rgb = config.get("kbd_rgb", {})
+
+def main():
+    # config.load_config, not a bare json.load with a fallback to {}. That
+    # fallback wrote its near-empty dict straight back over an unparseable
+    # config, destroying every profile in it; load_config keeps a
+    # .corrupt-<timestamp> copy instead and hands back a fresh default.
+    cfg_rgb = config_mod.load_config().get("kbd_rgb", {})
     current_mode = cfg_rgb.get("mode", "Static")
     modes = available_modes()
     try:
@@ -234,12 +251,11 @@ def main():
     ok, msg = apply_mode(next_mode, cfg_rgb)
 
     if ok:
-        cfg_rgb["mode"] = next_mode
-        config["kbd_rgb"] = cfg_rgb
-        tmp = CONFIG_PATH + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(config, f, indent=2)
-        os.replace(tmp, CONFIG_PATH)
+        # The mode key on its own, in a freshly read config -- not the whole
+        # kbd_rgb block read above. The helper call in between is long enough
+        # for the speed hotkey or the Keyboard page to have written that
+        # block, and putting the older copy back reverted their change.
+        config_mod.update_config(_mode_setter(next_mode))
         notify("ROG Control", f"Keyboard light mode: {next_mode}")
     else:
         notify("ROG Control", f"Failed to change keyboard mode: {msg}")

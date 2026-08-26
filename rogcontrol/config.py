@@ -595,6 +595,29 @@ def load_config(path=None, gpu_min_w=1, gpu_max_w=140):
     return migrate_config({}, gpu_min_w=gpu_min_w, gpu_max_w=gpu_max_w)
 
 
+def update_config(mutate, path=None):
+    """Read the config, apply ``mutate`` to it, write it back.
+
+    For everything that changes ONE setting: the hotkey scripts, the tray,
+    anything that is not the window holding the whole config in memory. What
+    it buys over load-mutate-save spelled out by hand is that the read
+    happens immediately before the write, so the only gap another process
+    can land in is the ``mutate`` call itself.
+
+    That gap used to be a whole hardware write wide. The keyboard scripts
+    read the config, spent a second or two in the helper, then wrote their
+    whole stale copy back -- so a profile switch, a charge limit or a curve
+    saved in between was silently thrown away. The enforcer already re-read
+    before saving for exactly this reason; this is that, in one place.
+
+    ``mutate`` is called with the config dict and edits it in place; its
+    return value is ignored. Returns the config that was written."""
+    cfg = load_config(path=path)
+    mutate(cfg)
+    save_config(cfg, path=path)
+    return cfg
+
+
 def save_config(cfg, path=None):
     """Write the config out atomically.
 
