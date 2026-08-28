@@ -4,7 +4,7 @@ A control panel for ASUS ROG laptops on Linux — without needing `asusctl`. One
 
 > **Tested only on an ASUS ROG Strix G16 (G614PR)** — Ryzen 9 8940HX, RTX 5070 Ti — on Arch/CachyOS with GNOME on Wayland. It may well work on other ROG models with the same embedded-controller family, but nothing beyond the G614PR has been verified. If you try it on different hardware, please open an issue with what worked and what didn't.
 >
-> **AMD CPU + NVIDIA GPU only.** Intel CPUs and Intel or AMD GPUs are not supported — CPU power limits go through `ryzenadj` (AMD-only), and GPU controls go through `nvidia-smi`/`nvidia-settings` (NVIDIA-only). On unsupported hardware those pages just won't do anything.
+> **NVIDIA GPU only.** GPU controls go through `nvidia-smi`/`nvidia-settings`, so Intel and AMD GPUs are not supported. CPU support depends on the vendor: on AMD, power limits and the Curve Optimizer go through `ryzenadj`; on Intel, PL1/PL2, turbo boost, the energy preference and the clock ceiling and floor work where the model's firmware exposes them (no undervolt, no temperature target — neither has an Intel equivalent). A CPU with none of those firmware nodes gets a notice on the CPU page instead of a control that would only fail.
 
 ![Overview page](docs/screenshots/overview.png)
 
@@ -131,7 +131,7 @@ Everything else — the privileged helper, the sudoers rule, the background serv
 
 ### On CachyOS and other Arch systems
 
-Nothing special: `./install.sh` follows the normal pacman path, and builds `ryzenadj` and `rogauracore` from the AUR. CachyOS's default Plasma desktop shows tray icons natively, so there's no extra step for the tray there.
+Nothing special: `./install.sh` follows the normal pacman path, and builds `ryzenadj` (AMD CPUs only) and `rogauracore` from the AUR. CachyOS's default Plasma desktop shows tray icons natively, so there's no extra step for the tray there.
 
 ### The tray icon on GNOME
 
@@ -149,10 +149,11 @@ The installer will:
 - check GTK4 and libadwaita, and stop if they're absent
 - confirm the machine is an ASUS
 - install missing optional dependencies, with your permission
-- build `ryzenadj` and `rogauracore` from source if your distro has no package for them — Arch/CachyOS only, via an AUR helper; on Fedora and Debian/Ubuntu it only warns, since it carries no source build for those toolchains
+- build `ryzenadj` (AMD CPUs only) and `rogauracore` from source if your distro has no package for them — Arch/CachyOS only, via an AUR helper; on Fedora and Debian/Ubuntu it only warns, since it carries no source build for those toolchains
 - install the app to `~/.local/lib/rogcontrol` and a launcher on your PATH
 - install the tray, the background services, the icon and the menu entry
 - on a fresh install, write defaults and apply them; on an update, keep every setting and back the file up first
+- on a non-AMD CPU, write a hardware report to your Downloads folder and print the path
 - end by listing which features work on your machine and which don't, and why
 
 After installing:
@@ -187,6 +188,8 @@ The brightness and speed scripts take one argument, so each needs its own bindin
 **On GNOME:** Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts → **+**. Point the command at the full path, e.g. `/home/YOUR_USERNAME/.local/bin/rogcontrol-cycle-profile.py` (GNOME needs the full path, not `~`). For `--show`/`--hide`/`--toggle`, the command is just `rogcontrol --show` — it's already on your PATH.
 
 **On KDE Plasma:** System Settings → Keyboard → Shortcuts → **Add Command**. Same commands, same need for a full path rather than `~`. Plasma calls the entry a "Command/URL" shortcut; the trigger key is set on the same page once the command is in.
+
+Every one of these notifies when it fails, and says what went wrong — a missing helper, a controller that did not answer, a mode with nothing to read a colour from. The same failure is also written to `~/.local/share/rogcontrol/rogcontrol.log`, which is where to look if the notification has already gone.
 
 These bindings live in your desktop's own settings (GNOME stores them under dconf), not in the app — uninstalling or wiping `~/.config/rogcontrol.json` doesn't remove them, and a fresh install doesn't restore them either. Re-add them once after any clean install.
 

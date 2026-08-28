@@ -53,7 +53,7 @@ find_hwmon_by_name() {
 }
 
 usage() {
-    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|cpuminclock|cpufwlimits|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|bootsound|panelod|psr|asusd_status|asusd_disable|asusd_enable|supergfxd_enable> ..." >&2
+    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|cpuminclock|cpuppt|cpufwlimits|gpu|nvboost|nvtemp|gpuclocklimit|fan|kbd|kbdrgb|kbdrgb_brightness|charge|bootsound|panelod|psr|asusd_status|asusd_disable|asusd_enable|supergfxd_enable> ..." >&2
     exit 1
 }
 
@@ -214,10 +214,24 @@ case "$1" in
             echo "$VAL" > "$p"
             WROTE=1
         done
-        if [ "$WROTE" = 0 ]; then
-            echo "no cpufreq boost control on this machine" >&2
-            exit 1
+        if [ "$WROTE" = 1 ]; then
+            exit 0
         fi
+        # intel_pstate in active mode has neither of the above -- it
+        # publishes no_turbo instead, meaning the opposite: 1 turns turbo
+        # OFF. This is the last fallback, reached only when the two cpufreq
+        # switches above do not exist, so an AMD machine never gets here.
+        NO_TURBO=/sys/devices/system/cpu/intel_pstate/no_turbo
+        if [ -e "$NO_TURBO" ]; then
+            if [ "$VAL" = "1" ]; then
+                echo 0 > "$NO_TURBO"
+            else
+                echo 1 > "$NO_TURBO"
+            fi
+            exit 0
+        fi
+        echo "no cpufreq boost control on this machine" >&2
+        exit 1
         ;;
 
     cpuclock)
@@ -337,6 +351,68 @@ case "$1" in
             CUR_MAX=$(cat "$P0/scaling_max_freq")
             [ "$VAL" -le "$CUR_MAX" ] || echo \
                 "floor $VAL kHz is above the clock ceiling ($CUR_MAX kHz); held at the ceiling" >&2
+        fi
+        ;;
+
+    cpuppt)
+        # Intel's equivalent of the "cpu" action's four ryzenadj limits: PL1
+        # (sustained) and PL2 (short-term boost), in watts, through asus-wmi's
+        # ppt_pl1_spl/ppt_pl2_sppt when this firmware exposes them, or RAPL's
+        # constraint_0/1_power_limit_uw otherwise.
+        #
+        # No SMU lock here, unlike "cpu" above: both paths go through a
+        # kernel driver (asus-wmi's sysfs store, or the powercap subsystem),
+        # and a kernel driver already serialises writes to one file. The
+        # /dev/mem race the SMU lock exists for is specific to ryzenadj
+        # reaching the mailbox with no ryzen_smu module, which does not
+        # happen here.
+        shift
+        PL1="$1"; PL2="$2"
+        is_int "$PL1" || { echo "Invalid PL1: $PL1" >&2; exit 1; }
+        is_int "$PL2" || { echo "Invalid PL2: $PL2" >&2; exit 1; }
+        [ "$PL1" -ge 5 ] && [ "$PL1" -le 150 ] || { echo "PL1 out of safe range (5-150 W)" >&2; exit 1; }
+        [ "$PL2" -ge 5 ] && [ "$PL2" -le 150 ] || { echo "PL2 out of safe range (5-150 W)" >&2; exit 1; }
+        # A PL2 below PL1 is a pair the firmware rejects outright on every
+        # machine that has been checked against this, not a preference this
+        # helper is imposing -- refused here rather than sent to fail less
+        # legibly on the other side.
+        [ "$PL2" -ge "$PL1" ] || { echo "PL2 ($PL2 W) must be at least PL1 ($PL1 W)" >&2; exit 1; }
+        PL1_NODE=/sys/devices/platform/asus-nb-wmi/ppt_pl1_spl
+        PL2_NODE=/sys/devices/platform/asus-nb-wmi/ppt_pl2_sppt
+        if [ -w "$PL1_NODE" ] && [ -w "$PL2_NODE" ]; then
+            echo "$PL1" > "$PL1_NODE"
+            echo "$PL2" > "$PL2_NODE"
+            exit 0
+        fi
+        # RAPL fallback. ASUS firmware frequently locks the constraint
+        # files -- the write either errors outright or is silently reverted
+        # -- so unlike every sysfs write above, this one is verified by
+        # reading the value back rather than trusted on a zero exit.
+        RAPL_BASE=""
+        for z in /sys/class/powercap/intel-rapl:*; do
+            [ -d "$z" ] || continue
+            case "$z" in *:*:*) continue ;; esac   # a subzone, not the package
+            [ -f "$z/name" ] && [ "$(cat "$z/name" | cut -d- -f1)" = "package" ] || continue
+            RAPL_BASE="$z"
+            break
+        done
+        [ -n "$RAPL_BASE" ] || {
+            echo "no ppt_pl1_spl/ppt_pl2_sppt and no RAPL package zone on this machine" >&2
+            exit 1; }
+        PL1_UW=$((PL1 * 1000000))
+        PL2_UW=$((PL2 * 1000000))
+        RAPL_PL1="$RAPL_BASE/constraint_0_power_limit_uw"
+        RAPL_PL2="$RAPL_BASE/constraint_1_power_limit_uw"
+        [ -w "$RAPL_PL1" ] && [ -w "$RAPL_PL2" ] || {
+            echo "no writable RAPL power-limit constraints on this machine" >&2
+            exit 1; }
+        echo "$PL1_UW" > "$RAPL_PL1"
+        echo "$PL2_UW" > "$RAPL_PL2"
+        READ_PL1=$(cat "$RAPL_PL1")
+        READ_PL2=$(cat "$RAPL_PL2")
+        if [ "$READ_PL1" != "$PL1_UW" ] || [ "$READ_PL2" != "$PL2_UW" ]; then
+            echo "RAPL power limit write did not take: wrote ${PL1_UW}/${PL2_UW} uW, read back ${READ_PL1}/${READ_PL2} uW -- the firmware likely locks this control" >&2
+            exit 1
         fi
         ;;
 

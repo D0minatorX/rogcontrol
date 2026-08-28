@@ -13,15 +13,18 @@ without the hardware attached -- the alternative, patching ``open``, tests
 the mock rather than the path.
 """
 
+import fcntl
 import glob
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
+import threading
 import time
 
-from . import kbdcolor
+from . import APP_VERSION, kbdcolor
 from .profiles import PROFILE_TO_PPD_MODE
 
 HELPER = "/usr/local/bin/rogcontrol-helper"
@@ -31,6 +34,23 @@ POWER_SUPPLY_DIR = "/sys/class/power_supply"
 CPUFREQ_GLOB = "/sys/devices/system/cpu/cpufreq/policy*"
 POWERCAP_DIR = "/sys/class/powercap"
 
+# Guards every mutable module global in this file: the dedupe table below,
+# the RAPL history, and the cached GPU clock ceiling.
+#
+# None of these were shared state when this file was one process reading
+# sysfs on a timer. They are now: the enforcer runs a ppd watcher thread and
+# a power-supply watcher thread alongside its main loop, and all three log,
+# apply profiles and ask for the GPU ceiling. A dict is not corrupted by
+# concurrent writes in CPython, but the read-decide-write sequences built on
+# top of these are not atomic -- two threads can both pass the dedupe check
+# for the same key and log the same line twice, and two can both miss the
+# clock-ceiling cache and each pay an nvidia-smi exec.
+#
+# One lock rather than three: it is held for a dict lookup and a store, never
+# across I/O (the nvidia-smi probe in gpu_clock_limit_max runs outside it),
+# so there is nothing for finer-grained locks to win.
+_state_lock = threading.RLock()
+
 # Previous (energy_uj, monotonic timestamp) per RAPL package path, so
 # read_cpu_power_w() can turn the running energy counter into a power
 # figure. Keyed by path rather than a single slot so tests using a fake
@@ -39,6 +59,11 @@ _rapl_energy_history = {}
 
 LOG_PATH = os.path.expanduser("~/.local/share/rogcontrol/rogcontrol.log")
 LOG_MAX_BYTES = 256 * 1024
+# Separate from the log itself, and never rotated, so its inode is stable --
+# which is the whole point. Locking the log file would mean holding a
+# descriptor onto a file another process is about to rename out from under
+# it, and the lock would then be on the backup rather than on the live log.
+LOG_LOCK_PATH = LOG_PATH + ".lock"
 _last_logged = {}
 
 
@@ -50,19 +75,47 @@ def log(message, level="INFO", source="app", dedupe_key=None, dedupe_seconds=300
 
     dedupe_key suppresses an identical repeating message for a while. A
     failing helper call repeats every cycle, and without this a single
-    broken sudoers rule would fill the log with the same line forever."""
+    broken sudoers rule would fill the log with the same line forever. The
+    check and the stamp are one step under _state_lock, so two threads
+    racing on the same key produce one line rather than two.
+
+    Rotation is serialised across PROCESSES with an flock on a separate lock
+    file. Five things write this log -- the window, the tray, the boot apply,
+    the hotkey cycler and the enforcer -- and rotate-then-append is three
+    unsynchronised steps: two processes could both see an oversized log and
+    both rename it, the second one renaming a fresh log over the backup the
+    first had just made, which loses the older half of the history exactly
+    when someone is reading it to work out what went wrong. Appends are
+    single writes under LOG_MAX_BYTES and were already atomic on their own;
+    it is the rename they now share a lock with.
+
+    Every failure here is swallowed. Logging is what the rest of this file
+    does INSTEAD of raising, so it must never become a new way to raise --
+    and on a machine with no writable state directory, or a filesystem with
+    no flock, the app carries on without a log rather than not at all."""
     if dedupe_key is not None:
         now = time.monotonic()
-        if now - _last_logged.get(dedupe_key, -1e9) < dedupe_seconds:
-            return
-        _last_logged[dedupe_key] = now
+        with _state_lock:
+            if now - _last_logged.get(dedupe_key, -1e9) < dedupe_seconds:
+                return
+            _last_logged[dedupe_key] = now
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{stamp} [{level}] {source}: {message}\n"
     try:
         os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX_BYTES:
-            os.replace(LOG_PATH, LOG_PATH + ".1")
-        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        with open(LOG_PATH, "a") as f:
-            f.write(f"{stamp} [{level}] {source}: {message}\n")
+        with open(LOG_LOCK_PATH, "a") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                # No flock on this filesystem. Rotate anyway: an unlocked
+                # rotation is what this did before, and the race it loses is
+                # one backup file, not the log.
+                pass
+            if (os.path.exists(LOG_PATH)
+                    and os.path.getsize(LOG_PATH) > LOG_MAX_BYTES):
+                os.replace(LOG_PATH, LOG_PATH + ".1")
+            with open(LOG_PATH, "a") as f:
+                f.write(line)
     except OSError:
         pass
 
@@ -211,6 +264,55 @@ def run_helper(*args, timeout=10):
         print(f"rogcontrol: helper failed: {cmd} -> {msg}", file=sys.stderr)
         return False, msg
     return True, result.stdout.strip()
+
+
+def run_helper_logged(*args, source="app", timeout=30):
+    """``run_helper``, with the failure also written to the shared log.
+
+    Returns ``(ok, message)``, the same shape as run_helper -- not a bare
+    bool, even though most callers want only the bool. A tuple is always
+    truthy, so a caller that forgets to unpack fails loudly at the first
+    ``if not`` rather than quietly treating every failure as a success.
+
+    For the callers with nowhere to put a message on screen: the boot apply,
+    the hotkey scripts and the enforcer all run with no window, so a helper
+    call that fails silently there is a setting the user believes is applied
+    and is not. This existed as a hand-copied wrapper in each of them --
+    identical bodies differing only in the ``source`` string -- which is the
+    duplication that let the original silent-failure bug survive a release in
+    every copy but the one it was fixed in.
+
+    The dedupe key is the helper's subcommand, so a limit that fails on every
+    60-second enforcer cycle is one line in the log rather than a thousand.
+    The default timeout is 30s rather than run_helper's 10s: these callers
+    write fan curves and CPU limits, which are slow, and none of them has a
+    UI thread that a wait would block."""
+    ok, message = run_helper(*args, timeout=timeout)
+    if not ok:
+        cmd = " ".join(str(a) for a in args)
+        log(f"{cmd} failed: {message}", "ERROR", source=source,
+            dedupe_key=f"fail:{args[0]}")
+    return ok, message
+
+
+def notify(title, body):
+    """A desktop notification, best effort.
+
+    One copy for the five processes that run with no window: the enforcer,
+    the boot apply, the profile cycler and the two keyboard hotkeys. For all
+    of them this is the ONLY channel to the user -- a hotkey that changed
+    nothing and said nothing is indistinguishable from a hotkey that is not
+    bound.
+
+    Every failure is swallowed. There may be no notification daemon, no
+    session bus, or no notify-send at all, and none of those is a reason to
+    take a service down -- or even to fill the log, since it would repeat on
+    every event forever."""
+    try:
+        subprocess.run(["notify-send", "-a", "ROG Control", title, body],
+                       capture_output=True, timeout=5)
+    except Exception:
+        pass
 
 
 ENFORCER_SERVICE = "rogcontrol-enforcer.service"
@@ -421,21 +523,63 @@ def start_tray():
         pass
 
 
+# Where a CPU temperature can come from, best first. k10temp's temp1_input
+# is Tctl, which is what the embedded controller drives the fans from -- so
+# on AMD it is the number to show next to a fan curve even though it reads a
+# few degrees above the physical die sensor. coretemp is Intel's equivalent,
+# and the generic ACPI thermal zone (named "acpitz" on some kernels and
+# "acpitz_0" on others) is the last resort so the readout is not just blank.
+# detect_capabilities asks about this same list, so the note under the
+# reading and the reading itself cannot disagree.
+CPU_TEMP_HWMON_NAMES = ("k10temp", "coretemp", "acpitz_0", "acpitz")
+
+# What /proc/cpuinfo calls each vendor. ryzenadj talks to the Ryzen SMU
+# mailbox, so everything it drives -- the four power limits and the Curve
+# Optimizer -- exists on AMD and nowhere else. Intel's equivalents live
+# behind RAPL and are not wired up here yet.
+CPU_VENDOR_AMD = "AuthenticAMD"
+CPU_VENDOR_INTEL = "GenuineIntel"
+
+
+def read_cpu_vendor(root=None):
+    """The chip's vendor id, or None if /proc/cpuinfo cannot be read.
+
+    Returned raw ("AuthenticAMD", "GenuineIntel") rather than as a bool: the
+    CPU page says which vendor it found, and "not AMD" and "Intel" are not
+    the same statement on a machine whose cpuinfo has no vendor line at all.
+
+    First "vendor_id" wins, as with the model name: the file repeats both
+    once per logical core."""
+    try:
+        with open(_under(root, PROC_CPUINFO)) as f:
+            for line in f:
+                if line.startswith("vendor_id"):
+                    _, _, value = line.partition(":")
+                    return value.strip() or None
+    except OSError:
+        return None
+    return None
+
+
+def cpu_is_amd(root=None):
+    """True when ryzenadj has a chip it can actually talk to.
+
+    Unknown vendor counts as not-AMD: ryzenadj on a chip it does not
+    understand is a failed write at best, and the page hiding a control is
+    cheaper than an Apply that reports an error every time."""
+    return read_cpu_vendor(root=root) == CPU_VENDOR_AMD
+
+
 def read_cpu_temp(root=None):
     """Package temperature in C, or None.
 
-    k10temp's temp1_input is Tctl, which is what the embedded controller
-    drives the fans from -- so it is the number to show next to a fan curve,
-    even though it reads a few degrees above the physical die sensor."""
-    hw = find_hwmon_by_name("k10temp", root=root)
-    if not hw:
-        # Not an AMD machine (or the module is not loaded); fall back to the
-        # generic ACPI thermal zone so the readout is not simply blank. The
-        # node is named "acpitz" on some kernels and "acpitz_0" on others.
-        for name in ("coretemp", "acpitz_0", "acpitz"):
-            hw = find_hwmon_by_name(name, root=root)
-            if hw:
-                break
+    Whichever of CPU_TEMP_HWMON_NAMES this machine has, in that order --
+    see that list for why k10temp is the one to prefer on AMD."""
+    hw = None
+    for name in CPU_TEMP_HWMON_NAMES:
+        hw = find_hwmon_by_name(name, root=root)
+        if hw:
+            break
     if not hw:
         return None
     milli = read_int(os.path.join(hw, "temp1_input"))
@@ -529,8 +673,12 @@ def read_cpu_power_w(root=None):
     if energy is None:
         return read_package_power_w(root=root)
     now = time.monotonic()
-    previous = _rapl_energy_history.get(path)
-    _rapl_energy_history[path] = (energy, now)
+    # Read the previous sample and store this one as one step: the counter is
+    # a running total, so two threads interleaving here would each measure
+    # against the other's baseline and report half the real wattage.
+    with _state_lock:
+        previous = _rapl_energy_history.get(path)
+        _rapl_energy_history[path] = (energy, now)
     if previous is None:
         return None
     prev_energy, prev_time = previous
@@ -604,11 +752,24 @@ def read_current_cpu_clock_cap(root=None):
     return None
 
 
+
+# intel_pstate's own boost switch, checked only after the two cpufreq
+# locations above -- amd-pstate and acpi-cpufreq both keep priority, so an
+# AMD machine never reaches this branch. Meaning is INVERTED next to the
+# other two: 1 here means turbo is OFF. intel_pstate in active mode exposes
+# neither of the cpufreq switches above, so without this Intel turbo boost
+# had no control at all.
+INTEL_NO_TURBO_PATH = "/sys/devices/system/cpu/intel_pstate/no_turbo"
+
+
 def read_cpu_boost_enabled(root=None):
     """True/False if a cpufreq boost switch exists, else None.
 
     amd-pstate publishes one global switch; the other drivers put one under
-    each policy, so both locations have to be checked."""
+    each policy, so both locations have to be checked. intel_pstate in
+    active mode has neither -- it publishes ``no_turbo`` instead, meaning the
+    opposite of the other two, so that one is read and inverted rather than
+    just checked for existence."""
     val = read_int(_under(root, "/sys/devices/system/cpu/cpufreq/boost"))
     if val is not None:
         return bool(val)
@@ -616,6 +777,9 @@ def read_cpu_boost_enabled(root=None):
         val = read_int(path)
         if val is not None:
             return bool(val)
+    val = read_int(_under(root, INTEL_NO_TURBO_PATH))
+    if val is not None:
+        return not bool(val)
     return None
 
 
@@ -672,7 +836,9 @@ def cpu_apply_plan(values, caps=None):
     ``values`` uses the config's own units and names: ``stapm``/``fast``/
     ``slow`` in milliwatts, ``temp`` in degrees, ``coall``, ``boost`` as a
     bool, ``epp`` as a name, ``max_freq`` in kHz with 0 meaning "no ceiling",
-    and ``min_freq`` in kHz with 0 meaning "no floor".
+    and ``min_freq`` in kHz with 0 meaning "no floor". ``pl1``/``pl2`` are in
+    watts, Intel's equivalent of stapm/fast, sent only when
+    ``caps["cpu_power_limits"]`` is "ppt" or "rapl" rather than "ryzenadj".
 
     A step is left out when the machine cannot do it or the values say
     nothing about it -- a missing key means the caller has no opinion, and
@@ -730,6 +896,19 @@ def cpu_apply_plan(values, caps=None):
         plan.append(("limits", ("cpu", values["stapm"], values["fast"],
                                 values["slow"], values["temp"],
                                 values.get("coall", 0))))
+    # Intel: the same "limits" step, a different call. caps["cpu_power_limits"]
+    # only ever reads "ppt"/"rapl" here -- it resolves to "ryzenadj" first
+    # whenever that backend is available, so this branch is never reached on
+    # an AMD machine and the block above is untouched. Same step name as the
+    # ryzenadj branch, on purpose: CPU_APPLY_STEPS, STEP_ROWS, STEP_SAVES and
+    # STEP_LABELS all key on "limits" and need no branch of their own for it.
+    #
+    # pl1/pl2 rather than stapm/fast/slow/temp -- Intel has no equivalent of
+    # the fast/slow windows or the temperature target (that is an SMU
+    # setting), so only the two watts values are sent.
+    elif (caps.get("cpu_power_limits") in ("ppt", "rapl") and limits_enabled
+          and all(key in values for key in ("pl1", "pl2"))):
+        plan.append(("limits", ("cpuppt", values["pl1"], values["pl2"])))
     if "boost" in values and caps.get("cpu_boost"):
         plan.append(("boost", ("cpuboost", 1 if values["boost"] else 0)))
     if values.get("epp") and caps.get("cpu_epp"):
@@ -1087,17 +1266,25 @@ def gpu_clock_limit_max(timeout=5):
     with no NVIDIA card at all still pays one failed exec per five minutes,
     not one per apply."""
     global _gpu_clock_limit_max, _gpu_clock_limit_failed_at
-    if _gpu_clock_limit_max is not None:
-        return _gpu_clock_limit_max
     now = time.monotonic()
-    if (_gpu_clock_limit_failed_at is not None
-            and now - _gpu_clock_limit_failed_at < GPU_CLOCK_RETRY_S):
-        return CLOCK_LIMIT_FALLBACK_MAX
+    # The cache is read under the lock; the PROBE deliberately is not. An
+    # nvidia-smi call takes a couple of hundred milliseconds and can be made
+    # by any of the enforcer's three threads, and holding a lock across it
+    # would stall the others -- including the log() calls one of them is in
+    # the middle of. The cost is that two threads that miss together both
+    # probe, which wastes one exec and settles on the same answer.
+    with _state_lock:
+        if _gpu_clock_limit_max is not None:
+            return _gpu_clock_limit_max
+        if (_gpu_clock_limit_failed_at is not None
+                and now - _gpu_clock_limit_failed_at < GPU_CLOCK_RETRY_S):
+            return CLOCK_LIMIT_FALLBACK_MAX
     mhz = detect_gpu_max_clock(timeout)
-    if mhz:
-        _gpu_clock_limit_max = mhz
-        return mhz
-    _gpu_clock_limit_failed_at = now
+    with _state_lock:
+        if mhz:
+            _gpu_clock_limit_max = mhz
+            return mhz
+        _gpu_clock_limit_failed_at = time.monotonic()
     return CLOCK_LIMIT_FALLBACK_MAX
 
 
@@ -1205,6 +1392,108 @@ def _read_clamped(path, low, high, root):
     kernel's own range should still land on a usable number."""
     val = read_int(_under(root, path))
     return None if val is None else max(low, min(high, val))
+
+
+# -- CPU power limits on Intel (PL1/PL2 via asus-wmi, RAPL fallback) --------
+#
+# ryzenadj's four limits and the Curve Optimizer are AMD-only -- they talk to
+# the Ryzen SMU mailbox and nothing else has one. An Intel ASUS laptop's
+# nearest equivalent lives in the SAME platform driver as the two knobs
+# above: asus-nb-wmi creates ppt_pl1_spl/ppt_pl2_sppt (plus ppt_fppt and
+# ppt_apu_sppt, not used here) whenever the firmware answers for that WMI
+# device id -- the same firmware path G-Helper's "PL1 (CPU sustained)" and
+# "PL2 (CPU long boost)" sliders drive on Windows. The file existing IS the
+# capability, exactly as with nv_dynamic_boost/nv_temp_target.
+#
+# Two cautions, both found probing an AMD machine that happens to have these
+# nodes too (see docs/INTEL-SUPPORT-PLAN.txt): the driver's show() returns
+# its own cached value, not a firmware read, so read back is a starting hint
+# at best and the profile stays the source of truth, exactly as for
+# ryzenadj; and where the ppt_* nodes are simply absent, RAPL's
+# constraint_*_power_limit_uw is the fallback, and ASUS firmware frequently
+# locks those, so every write through them has to be verified by reading the
+# value back rather than trusted on a zero exit.
+PPT_PL1_PATH = f"{ASUS_WMI_DIR}/ppt_pl1_spl"
+PPT_PL2_PATH = f"{ASUS_WMI_DIR}/ppt_pl2_sppt"
+
+# The firmware clamps beyond this anyway; the helper range-checks
+# independently of what asus-wmi's own kernel-side NVIDIA_BOOST_MIN/MAX-style
+# constants happen to be, on the same "never trust one side alone" grounds as
+# every other range in this file.
+PL_MIN_W, PL_MAX_W = 5, 150
+
+
+def read_ppt_pl1(root=None):
+    """PL1 (sustained package power) the firmware is holding, watts, or None.
+
+    Same shape as read_nv_dynamic_boost -- a cached kernel value, clamped to
+    the range the helper accepts."""
+    return _read_clamped(PPT_PL1_PATH, PL_MIN_W, PL_MAX_W, root)
+
+
+def read_ppt_pl2(root=None):
+    """PL2 (short-term boost power) the firmware is holding, watts, or None."""
+    return _read_clamped(PPT_PL2_PATH, PL_MIN_W, PL_MAX_W, root)
+
+
+def find_rapl_constraints(root=None):
+    """``(pl1_path, pl2_path)`` of the package zone's RAPL constraint files,
+    each None if that constraint does not exist.
+
+    RAPL numbers its constraints by index, not by name -- constraint_0 is
+    conventionally the long-term (PL1-equivalent) limit and constraint_1 the
+    short-term (PL2-equivalent) one, and that is the order every RAPL tool
+    (turbostat, powercap-utils) assumes. Built on find_rapl_package, which
+    already knows how to tell the top-level package zone from a core/uncore
+    subzone."""
+    base = find_rapl_package(root=root)
+    if not base:
+        return None, None
+    pl1 = os.path.join(base, "constraint_0_power_limit_uw")
+    pl2 = os.path.join(base, "constraint_1_power_limit_uw")
+    return (pl1 if os.path.exists(pl1) else None,
+            pl2 if os.path.exists(pl2) else None)
+
+
+def cpu_power_limits_backend(root=None, ryzenadj=None, cpu_ppt=None,
+                             cpu_rapl_limits=None):
+    """Which CPU power-limit backend this machine has: "ryzenadj", "ppt",
+    "rapl" or None -- the single priority order cpu_apply_plan's "limits"
+    step branches on.
+
+    detect_capabilities() has already answered the three keyword questions
+    by the time it needs this, and passes them in rather than have this
+    re-probe the same paths a second time. rogcontrol-apply.py,
+    rogcontrol-cycle-profile.py and rogcontrol-enforcer.py have not run a
+    full detect_capabilities() at all -- that also probes nvidia-smi,
+    rogauracore and the keyboard controller, which cost a subprocess or a USB
+    round trip these scripts have no other reason to pay -- so for them the
+    three default to None and are computed here instead, exactly as
+    caps["ryzenadj"] itself is a direct cpu_is_amd()-plus-have_cmd() check in
+    every one of those scripts' own ALL_CPU_CAPS rather than a full probe.
+
+    ryzenadj wins whenever it is there, which is what keeps the AMD path
+    bit-for-bit unchanged; "ppt" next, since it is the real firmware knob and
+    RAPL is explicitly the fallback for a model whose firmware locks its RAPL
+    constraints; None means this machine gets no power-limit control at all
+    and the CPU page says so instead of offering one."""
+    if ryzenadj is None:
+        ryzenadj = (cpu_is_amd(root=root)
+                   and (have_cmd("ryzenadj")
+                        or os.path.exists("/usr/local/bin/ryzenadj")))
+    if ryzenadj:
+        return "ryzenadj"
+    if cpu_ppt is None:
+        cpu_ppt = (os.path.exists(_under(root, PPT_PL1_PATH))
+                  and os.path.exists(_under(root, PPT_PL2_PATH)))
+    if cpu_ppt:
+        return "ppt"
+    if cpu_rapl_limits is None:
+        pl1, pl2 = find_rapl_constraints(root=root)
+        cpu_rapl_limits = bool(pl1 and pl2)
+    if cpu_rapl_limits:
+        return "rapl"
+    return None
 
 
 # -- Firmware settings -------------------------------------------------------
@@ -2242,6 +2531,50 @@ def read_kbd_brightness(root=None):
     return read_int(_under(root, KBD_BACKLIGHT_PATH))
 
 
+# What to say when a live-colour mode has no reading to colour from. Keyed by
+# mode so the window, the enforcer and the hotkey cycler word the same
+# failure the same way -- they each had their own sentence for it.
+LIVE_READING_MISSING = {
+    "Battery Level": "no battery found on this machine",
+    "CPU Temp Color": "no CPU temperature reading yet",
+    "GPU Temp Color": "no GPU temperature reading yet",
+}
+
+
+def read_live_color_reading(mode):
+    """The sensor reading a live-colour mode needs, shaped for
+    :func:`kbdcolor.live_restore_color`, or None for a mode that has none.
+
+    Looked up by mode rather than read all at once on purpose: a GPU query is
+    a subprocess call, and taking it for a user on Battery Level would cost
+    that exec on every charger flash and every hotkey press for a number
+    nothing reads."""
+    if mode == "Battery Level":
+        return read_battery()
+    if mode == "CPU Temp Color":
+        return read_cpu_temp()
+    if mode == "GPU Temp Color":
+        return read_nvidia_stats()[0]
+    return None
+
+
+def read_live_color(mode):
+    """``(colour, reason)`` for a mode whose colour comes from a reading.
+
+    Exactly one of the two is set. This pairing -- take the reading, map it
+    to a colour -- existed three times over: the Keyboard page, the enforcer's
+    charger flash and the keyboard-mode hotkey each had their own chain of
+    ``if mode ==`` branches, so a mode added to one was silently unsupported
+    in the others. The mapping itself stays in kbdcolor, which is pure and
+    cannot read a sensor; this is the I/O half."""
+    reading = read_live_color_reading(mode)
+    color = kbdcolor.live_restore_color(mode, reading)
+    if color is None:
+        return None, LIVE_READING_MISSING.get(
+            mode, f"{mode} has no reading to colour from")
+    return color, None
+
+
 def find_aura_keyboard(root=None):
     """USB product ID of the ASUS Aura keyboard controller, or None.
 
@@ -2292,7 +2625,12 @@ def detect_capabilities(root=None):
     caps = {}
     caps["fan_curve"] = find_hwmon_by_name("asus_custom_fan_curve", root=root) is not None
     caps["fan_rpm"] = find_hwmon_by_name("asus", root=root) is not None
-    caps["cpu_temp"] = find_hwmon_by_name("k10temp", root=root) is not None
+    # The same sensor names read_cpu_temp falls back through, in the same
+    # order. Asking only about k10temp put an Intel machine in the state
+    # where the page showed a live temperature and a note underneath it
+    # saying no sensor had been found.
+    caps["cpu_temp"] = any(find_hwmon_by_name(name, root=root) is not None
+                           for name in CPU_TEMP_HWMON_NAMES)
     caps["pkg_power"] = (find_rapl_package(root=root) is not None
                           or find_hwmon_by_name("amdgpu", root=root) is not None)
     caps["nv_temp_target"] = os.path.exists(_under(root, f"{ASUS_WMI_DIR}/nv_temp_target"))
@@ -2331,10 +2669,36 @@ def detect_capabilities(root=None):
     caps["nvidia_settings"] = have_cmd("nvidia-settings")
     caps["supergfxctl"] = have_cmd("supergfxctl")
     caps["rogauracore"] = have_cmd("rogauracore")
-    caps["ryzenadj"] = have_cmd("ryzenadj") or os.path.exists("/usr/local/bin/ryzenadj")
+    # Which vendor made the chip, for the page and for the gate below.
+    caps["cpu_vendor"] = read_cpu_vendor(root=root)
+    # Two questions, and both have to answer yes. The binary being installed
+    # is not enough: the installer used to put ryzenadj on any Arch machine
+    # it ran on, so an Intel laptop ended up with the power limits and the
+    # Curve Optimizer on screen, driving a tool that only speaks to a Ryzen
+    # SMU. Vendor first, so the page hides those controls rather than
+    # offering an Apply that cannot work.
+    caps["ryzenadj"] = (cpu_is_amd(root=root)
+                        and (have_cmd("ryzenadj")
+                             or os.path.exists("/usr/local/bin/ryzenadj")))
+    # The Intel equivalent of ryzenadj's four limits: presence of the
+    # asus-wmi PL1/PL2 nodes, or, failing that, RAPL's own constraint files.
+    # Either is a real question on AMD too -- the nodes exist there as well
+    # -- but caps["cpu_power_limits"] below is what callers actually branch
+    # on, and it resolves to "ryzenadj" first whenever that is available, so
+    # these two never cause a write on an AMD machine.
+    caps["cpu_ppt"] = (os.path.exists(_under(root, PPT_PL1_PATH))
+                       and os.path.exists(_under(root, PPT_PL2_PATH)))
+    rapl_pl1, rapl_pl2 = find_rapl_constraints(root=root)
+    caps["cpu_rapl_limits"] = bool(rapl_pl1 and rapl_pl2)
+    # The one backend cpu_apply_plan actually reads -- see
+    # cpu_power_limits_backend for the priority order.
+    caps["cpu_power_limits"] = cpu_power_limits_backend(
+        root=root, ryzenadj=caps["ryzenadj"], cpu_ppt=caps["cpu_ppt"],
+        cpu_rapl_limits=caps["cpu_rapl_limits"])
     caps["cpu_boost"] = (
         os.path.exists(_under(root, "/sys/devices/system/cpu/cpufreq/boost"))
-        or bool(glob.glob(_under(root, CPUFREQ_GLOB) + "/boost")))
+        or bool(glob.glob(_under(root, CPUFREQ_GLOB) + "/boost"))
+        or os.path.exists(_under(root, INTEL_NO_TURBO_PATH)))
     # The preference names differ between amd-pstate and intel_pstate, so read
     # them from the kernel instead of hardcoding a list. "custom" is dropped:
     # it needs a raw 0-255 value written elsewhere, so offering it in a
@@ -2361,3 +2725,201 @@ def detect_capabilities(root=None):
     # widgets.ambient.ambient_available() the same way it fills in gpu_limits.
     caps["charge_limit"] = read_charge_limit(root=root) is not None
     return caps
+
+
+# -- Hardware report -----------------------------------------------------
+#
+# What an Intel tester sends back. There is no access to Intel hardware for
+# this release -- see docs/INTEL-SUPPORT-PLAN.txt -- so every Intel code
+# path is gated on a sysfs node actually existing, and this report is how a
+# real tester's machine gets checked against that assumption at all. Fully
+# read-only: nothing below writes to the hardware, and it is deliberately
+# unfiltered -- a section transcribed in full is something the developer can
+# read the raw values out of later; a summary would only be as good as the
+# question this release thought to ask.
+
+
+def _report_section(lines, title):
+    lines.append("")
+    lines.append(f"== {title} ==")
+
+
+def _report_asus_wmi(lines, root):
+    _report_section(lines, "asus-nb-wmi")
+    base = _under(root, ASUS_WMI_DIR)
+    try:
+        entries = sorted(os.listdir(base))
+    except OSError:
+        lines.append(f"{ASUS_WMI_DIR} does not exist on this machine")
+        return
+    # ppt_* first: they are the reason this report exists, and a tester
+    # skimming should not have to hunt for them among boot_sound and
+    # nv_dynamic_boost.
+    entries.sort(key=lambda name: (not name.startswith("ppt_"), name))
+    for name in entries:
+        path = os.path.join(base, name)
+        if not os.path.isfile(path):
+            continue
+        value = read_file(path)
+        lines.append(f"{name} = {value!r}")
+
+
+def _report_powercap(lines, root):
+    _report_section(lines, "powercap")
+    base = _under(root, POWERCAP_DIR)
+    try:
+        zones = sorted(os.listdir(base))
+    except OSError:
+        lines.append(f"{POWERCAP_DIR} does not exist on this machine")
+        return
+    for zone in zones:
+        zone_path = os.path.join(base, zone)
+        if not os.path.isdir(zone_path):
+            continue
+        name = read_file(os.path.join(zone_path, "name"))
+        lines.append(f"{zone} (name={name!r})")
+        for entry in sorted(os.listdir(zone_path)):
+            if "constraint_" not in entry:
+                continue
+            path = os.path.join(zone_path, entry)
+            value = read_file(path)
+            writable = os.access(path, os.W_OK)
+            lines.append(f"  {entry} = {value!r} (writable={writable})")
+
+
+def _report_cpufreq(lines, root):
+    _report_section(lines, "cpufreq")
+    policies = sorted(glob.glob(_under(root, CPUFREQ_GLOB)))
+    if not policies:
+        lines.append("no cpufreq policies found")
+        return
+    p0 = policies[0]
+    lines.append(f"scaling_driver = {read_file(os.path.join(p0, 'scaling_driver'))!r}")
+    lines.append(f"cpuinfo_min_freq = {read_file(os.path.join(p0, 'cpuinfo_min_freq'))!r}")
+    lines.append(f"cpuinfo_max_freq = {read_file(os.path.join(p0, 'cpuinfo_max_freq'))!r}")
+    lines.append(f"amd_pstate_lowest_nonlinear_freq = "
+                f"{read_file(os.path.join(p0, 'amd_pstate_lowest_nonlinear_freq'))!r}")
+    lines.append(f"global boost node = "
+                f"{os.path.exists(_under(root, '/sys/devices/system/cpu/cpufreq/boost'))}")
+    lines.append(f"per-policy boost node = "
+                f"{bool(glob.glob(os.path.join(p0, 'boost')))}")
+    lines.append(f"intel_pstate/no_turbo = "
+                f"{read_file(_under(root, INTEL_NO_TURBO_PATH))!r}")
+    lines.append(f"energy_performance_preference = "
+                f"{read_file(os.path.join(p0, 'energy_performance_preference'))!r}")
+    prefs = read_epp_preferences(root=root)
+    lines.append(f"energy_performance_available_preferences = {prefs!r}")
+
+
+def _report_hwmon(lines, root):
+    _report_section(lines, "hwmon")
+    for name in CPU_TEMP_HWMON_NAMES:
+        found = find_hwmon_by_name(name, root=root)
+        lines.append(f"{name}: {'found at ' + found if found else 'not found'}")
+
+
+def hardware_report_text(root=None):
+    """Everything a hardware report contains, as one string.
+
+    Read-only, and unfiltered on purpose -- see the module comment above.
+    ``root`` re-bases the sysfs reads for testing, exactly as everywhere
+    else in this file; asusd/supergfxd and the desktop session are asked for
+    directly regardless, since neither has a meaningful re-based form."""
+    lines = [
+        "ROG Control hardware report",
+        f"app version: {APP_VERSION}",
+        f"kernel: {platform.release()}",
+        f"machine: {platform.machine()}",
+    ]
+    os_release = read_file(_under(root, "/etc/os-release")) or ""
+    pretty = ""
+    for line in os_release.splitlines():
+        if line.startswith("PRETTY_NAME="):
+            pretty = line.partition("=")[2].strip().strip('"')
+            break
+    lines.append(f"distribution: {pretty or 'unknown'}")
+    lines.append(f"desktop session: "
+                 f"{os.environ.get('XDG_CURRENT_DESKTOP', 'unknown')} / "
+                 f"{os.environ.get('XDG_SESSION_TYPE', 'unknown')}")
+
+    _report_section(lines, "CPU")
+    lines.append(f"vendor: {read_cpu_vendor(root=root)!r}")
+    lines.append(f"name: {read_cpu_name(root=root)!r}")
+    lines.append(f"logical cores: {os.cpu_count()}")
+
+    _report_asus_wmi(lines, root)
+    _report_powercap(lines, root)
+    _report_cpufreq(lines, root)
+    _report_hwmon(lines, root)
+
+    _report_section(lines, "detect_capabilities()")
+    lines.append(json.dumps(detect_capabilities(root=root), indent=2,
+                            default=str, sort_keys=True))
+
+    _report_section(lines, "asusd / supergfxd")
+    lines.append(f"asusd: {read_asusd_state()}")
+    lines.append(f"supergfxd: {read_supergfxd_state()}")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _hardware_report_dir_candidates():
+    """Where write_hardware_report tries to save, in order.
+
+    xdg-user-dir first, since it is the one answer that reflects a Downloads
+    folder the user actually renamed or relocated; $XDG_DOWNLOAD_DIR next for
+    a session that sets it without the binary being installed; then the
+    plain default, then $HOME, which always exists and is always writable by
+    the user running this, so the chain always ends somewhere usable even on
+    a system with no Downloads folder at all."""
+    if have_cmd("xdg-user-dir"):
+        try:
+            result = subprocess.run(["xdg-user-dir", "DOWNLOAD"],
+                                    capture_output=True, text=True, timeout=5)
+            path = result.stdout.strip()
+            if result.returncode == 0 and path:
+                yield path
+        except Exception:
+            pass
+    env = os.environ.get("XDG_DOWNLOAD_DIR")
+    if env:
+        yield os.path.expanduser(env)
+    yield os.path.expanduser("~/Downloads")
+    yield os.path.expanduser("~")
+
+
+def hardware_report_path():
+    """Where write_hardware_report will save, without writing anything.
+
+    Named after the machine and the day, not the app version: a tester
+    re-running this a second time the same day overwrites their own report
+    rather than leaving a trail of near-identical files in Downloads, and a
+    second day's report is worth keeping separate from the first."""
+    hostname = platform.node() or "unknown-host"
+    stamp = time.strftime("%Y-%m-%d")
+    name = f"rogcontrol-hardware-report-{hostname}-{stamp}.txt"
+    for candidate in _hardware_report_dir_candidates():
+        try:
+            os.makedirs(candidate, exist_ok=True)
+        except OSError:
+            continue
+        if os.access(candidate, os.W_OK):
+            return os.path.join(candidate, name)
+    # Every candidate above failed outright (permissions, a read-only home
+    # during some unusual session) -- $HOME one more time, unconditionally,
+    # so this always returns a path rather than raising.
+    return os.path.join(os.path.expanduser("~"), name)
+
+
+def write_hardware_report(root=None):
+    """Write hardware_report_text() to hardware_report_path() and return the
+    path written.
+
+    Callers print the path themselves rather than this function doing it --
+    the CLI flag, the installer and the System page each want a different
+    sentence around it."""
+    path = hardware_report_path()
+    with open(path, "w") as f:
+        f.write(hardware_report_text(root=root))
+    return path

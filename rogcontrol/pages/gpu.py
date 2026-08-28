@@ -35,6 +35,7 @@ from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
 from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
+from ..sampling import SampleFailures  # noqa: E402
 from ..widgets.action_buttons import apply_revert_buttons  # noqa: E402
 from ..widgets.stat_row import StatCell, build_stat_row  # noqa: E402
 from ..widgets.slider_row import SliderRow, align_value_widths  # noqa: E402
@@ -202,6 +203,10 @@ class GpuPage(Gtk.Box):
         self._applying = False
         self._applied = {}
         self._sampling = False
+        # Consecutive failures of the sampler below, so a page whose
+        # readings have stopped coming back says so once instead of
+        # showing dashes forever. See sampling.py.
+        self._sample_failures = SampleFailures("GPU")
         self._timer_id = None
 
         # Graphics mode. ``modes`` is what the picker holds and
@@ -542,7 +547,10 @@ class GpuPage(Gtk.Box):
     def _on_sample(self, result, error):
         self._sampling = False
         if error is not None:
+            # A run of these is reported once; see sampling.py.
+            self._sample_failures.report(self.window, error, source="gpu")
             return
+        self._sample_failures.succeeded()
         self._render(result)
 
     def _render(self, data):

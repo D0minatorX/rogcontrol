@@ -557,21 +557,12 @@ class KeyboardPage(Adw.PreferencesPage):
 
     @staticmethod
     def _live_color(mode):
-        """``(colour, reason)`` for the modes driven by a reading."""
-        if mode == "Battery Level":
-            percent, charging = hardware.read_battery()
-            if percent is None:
-                return None, "no battery found on this machine"
-            return kbdcolor.battery_to_rgb(percent, charging), None
-        if mode == "CPU Temp Color":
-            temp = hardware.read_cpu_temp()
-        elif mode == "GPU Temp Color":
-            temp = hardware.read_nvidia_stats()[0]
-        else:
-            return None, f"{mode} has no reading to colour from"
-        if temp is None:
-            return None, "no temperature reading yet"
-        return kbdcolor.temp_to_rgb(temp), None
+        """``(colour, reason)`` for the modes driven by a reading.
+
+        The package's, not a third chain of ``if mode ==`` branches -- the
+        enforcer's charger flash and the keyboard-mode hotkey each had their
+        own, so a live mode added here was silently unsupported by both."""
+        return hardware.read_live_color(mode)
 
     def _applied(self, mode, color1, color2, speed, result, error):
         self._busy = False

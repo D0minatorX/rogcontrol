@@ -48,6 +48,14 @@ DEFAULT_CONFIG = {
     # a backup) must never be re-prompted just because fan_rpm_cal happens
     # to still be missing.
     "fan_calibration_prompted": False,
+    # The version stamp of the last hardware report written unasked on first
+    # launch (empty string means none yet). Not a bool: a report written by
+    # 1.0.0.7 says nothing about what 1.0.0.8 added to it, so an upgrade has
+    # to be able to tell "already written this version" from "written an
+    # older one" and write a fresh copy either way. Only ever consulted on a
+    # non-AMD CPU -- see app.py's first-launch check -- and only ever set by
+    # it, never read anywhere else.
+    "hardware_report_written": "",
     # The charger-connect flash: opt-in, and its colour. Top-level rather
     # than inside the kbd_rgb block because that block is rebuilt from the
     # keyboard page's widgets on every save (see kbdcolor.merge_kbd_rgb) and

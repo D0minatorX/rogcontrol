@@ -20,6 +20,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from .. import hardware  # noqa: E402
+from ..sampling import SampleFailures  # noqa: E402
 from ..fancurve import get_rpm_cal, interpolate_curve, pct_to_rpm  # noqa: E402
 
 REFRESH_SECONDS = 2
@@ -91,6 +92,10 @@ class OverviewPage(Adw.PreferencesPage):
         super().__init__()
         self.window = window
         self._sampling = False
+        # Consecutive failures of the sampler below, so a page whose
+        # readings have stopped coming back says so once instead of
+        # showing dashes forever. See sampling.py.
+        self._sample_failures = SampleFailures("Overview")
         self._timer_id = None
         self._build()
         self._timer_id = GLib.timeout_add_seconds(REFRESH_SECONDS, self._tick)
@@ -113,8 +118,16 @@ class OverviewPage(Adw.PreferencesPage):
     def _build(self):
         cpu = Adw.PreferencesGroup(title="CPU")
         self.add(cpu)
+        # Tctl is k10temp's name for the sensor the embedded controller
+        # drives the fans from, and it is AMD-only -- an Intel machine's
+        # reading comes from coretemp instead, which has no such alias. See
+        # pages/cpu.py's own vendor-aware temperature tooltip for the same
+        # distinction.
+        is_amd = self.window.caps.get("cpu_vendor") == hardware.CPU_VENDOR_AMD
         self.cpu_temp_row, self.cpu_temp_val = self._value_row(
-            cpu, "Temperature", "Tctl, the sensor the fan controller reads")
+            cpu, "Temperature",
+            "Tctl, the sensor the fan controller reads" if is_amd
+            else "The package temperature this machine reports")
         self.cpu_clock_row, self.cpu_clock_val = self._value_row(
             cpu, "Peak core clock", "Highest core, averaged by the hardware")
         self.cpu_power_row, self.cpu_power_val = self._value_row(
@@ -219,9 +232,15 @@ class OverviewPage(Adw.PreferencesPage):
     def _on_sample(self, data, error):
         self._sampling = False
         if error is not None:
-            # One failed sample is not worth a toast every two seconds; the
-            # traceback is already on stderr from apply_async.
+            # One failed sample is not worth a toast every two seconds, and
+            # a run of them is worth exactly one. See sampling.py: a page
+            # that only ever dropped the error showed the same dashes as a
+            # machine with no such sensor, with nothing but a traceback on a
+            # stderr nobody reads.
+            self._sample_failures.report(self.window, error,
+                                         source="overview")
             return
+        self._sample_failures.succeeded()
         self._render(data)
 
     def _render(self, data):

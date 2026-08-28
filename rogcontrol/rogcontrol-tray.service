@@ -1,6 +1,15 @@
 [Unit]
 Description=ROG Control tray icon
 After=graphical-session.target
+# Without this, logout only implies an ordering, not a stop: the compositor
+# can close the display before this unit ever gets a SIGTERM, which crashes
+# the tray on a broken pipe (GDK's fatal IO error handler exits 1) and, with
+# Restart=always below, sends it straight into a respawn against a session
+# slice that is already being torn down -- the "Failed to create cgroup"
+# spam. PartOf ties this unit's stop to graphical-session.target's, so it is
+# asked to quit, and answers through tray.stop()'s SIGTERM handler, before
+# the display underneath it goes away.
+PartOf=graphical-session.target
 
 [Service]
 Type=simple

@@ -5,7 +5,6 @@ Cycles to the next profile and applies it, without needing the GUI open.
 Bind this to a keyboard shortcut.
 """
 import os
-import subprocess
 import sys
 import time
 import traceback
@@ -32,18 +31,20 @@ pct_to_pwm255 = fancurve.pct_to_pwm255
 
 
 def run_helper(*args):
-    """Run a privileged action and REPORT failure."""
-    ok, message = hardware.run_helper(*args, timeout=30)
-    if not ok:
-        cmd = " ".join(str(a) for a in args)
-        hardware.log(f"{cmd} failed: {message}", "ERROR",
-                     source="cycle-profile", dedupe_key=f"fail:{args[0]}")
-    return ok
+    """Run a privileged action and REPORT failure. The package's, so this
+    hotkey cannot drift away from what the boot apply does."""
+    return hardware.run_helper_logged(*args, source="cycle-profile",
+                                      timeout=30)[0]
 
 # Every setting this machine has; the helper refuses anything it cannot
-# do, and this script has no capability probe of its own.
-ALL_CPU_CAPS = {"ryzenadj": True, "cpu_boost": True, "cpu_epp": True,
-                "cpu_clock": True}
+# do, and this script has no capability probe of its own. ryzenadj is the
+# exception -- see rogcontrol-apply: a chip it cannot talk to is a failed
+# call, not a refused one, so the vendor is checked here instead.
+# cpu_power_limits is asked about for the same reason and covers Intel's
+# ppt/RAPL backend too -- see hardware.cpu_power_limits_backend.
+ALL_CPU_CAPS = {"ryzenadj": hardware.cpu_is_amd(), "cpu_boost": True,
+                "cpu_epp": True, "cpu_clock": True,
+                "cpu_power_limits": hardware.cpu_power_limits_backend()}
 
 CONFIG_PATH = config_mod.CONFIG_PATH
 
@@ -51,13 +52,10 @@ CONFIG_PATH = config_mod.CONFIG_PATH
 # margin over the retested floor.
 CHANNEL_GAP_S = 5
 
-
-
-def notify(title, body):
-    try:
-        subprocess.run(["notify-send", title, body], timeout=5)
-    except Exception:
-        pass
+# The package's, so a hotkey that half-applied a profile is announced the
+# same way the enforcer announces an automatic switch -- and so this script
+# stops carrying a copy that had no -a flag and so showed up unattributed.
+notify = hardware.notify
 
 
 def apply_profile(profile):

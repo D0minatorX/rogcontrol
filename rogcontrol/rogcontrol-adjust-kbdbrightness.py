@@ -6,7 +6,6 @@ without needing the GUI open. Bind "up" and "down" to two separate
 keyboard shortcuts.
 """
 import os
-import subprocess
 import sys
 
 # The shared modules sit beside this script's package in the repo, and under
@@ -21,23 +20,20 @@ for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
         break
 
 from rogcontrol import config as config_mod  # noqa: E402
+from rogcontrol import hardware  # noqa: E402
+from rogcontrol import kbdcolor  # noqa: E402
 
-KBD_MIN, KBD_MAX = 0, 3
+# The package's range, not a second pair of numbers. The helper validates
+# against the same bounds; a script that clamped to a wider range would only
+# be sending calls that are refused.
+KBD_MIN, KBD_MAX = kbdcolor.KBD_MIN, kbdcolor.KBD_MAX
 
-
-def run_helper(*args):
-    result = subprocess.run(
-        ["sudo", "-n", "/usr/local/bin/rogcontrol-helper", *[str(a) for a in args]],
-        capture_output=True, text=True,
-    )
-    return result.returncode == 0
-
-
-def notify(title, body):
-    try:
-        subprocess.run(["notify-send", title, body], timeout=5)
-    except Exception:
-        pass
+# Both the package's. This script had its own copy of each: a run_helper with
+# no timeout at all -- so a wedged sudo left the keypress hanging forever
+# with nothing logged -- and a notify with no -a flag, which showed the
+# message unattributed. Neither difference was intended; they are what two
+# hand-copied functions drift into.
+notify = hardware.notify
 
 
 def main():
@@ -60,7 +56,9 @@ def main():
         notify("ROG Control", f"Keyboard brightness already at {'max' if direction == 'up' else 'min'}")
         return
 
-    ok = run_helper("kbd", new_level)
+    ok, message = hardware.run_helper_logged(
+        *kbdcolor.kbd_brightness_args(new_level),
+        source="adjust-kbdbrightness")
     if ok:
         # Re-read and write in one step rather than saving the copy read
         # above: the helper call between the two is long enough for the
@@ -70,7 +68,11 @@ def main():
             lambda cfg: cfg.update({"kbd_brightness": new_level}))
         notify("ROG Control", f"Keyboard brightness: {new_level}/{KBD_MAX}")
     else:
-        notify("ROG Control", "Failed to change keyboard brightness")
+        # With the reason, not just "failed". This is the only channel
+        # this script has, and a hotkey that says nothing but "failed" is
+        # one the user cannot act on.
+        notify("ROG Control",
+               f"Could not change keyboard brightness: {message}")
 
 
 if __name__ == "__main__":

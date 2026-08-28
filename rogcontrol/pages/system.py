@@ -59,6 +59,7 @@ from .. import APP_VERSION  # noqa: E402
 from .. import config as config_mod  # noqa: E402
 from .. import fancurve  # noqa: E402
 from .. import hardware  # noqa: E402
+from ..sampling import SampleFailures  # noqa: E402
 from .. import profiles as profiles_mod  # noqa: E402
 
 REFRESH_SECONDS = 5
@@ -283,6 +284,10 @@ class SystemPage(Adw.PreferencesPage):
         self.caps = window.caps
         self._loading = True
         self._sampling = False
+        # Consecutive failures of the sampler below, so a page whose
+        # readings have stopped coming back says so once instead of
+        # showing dashes forever. See sampling.py.
+        self._sample_failures = SampleFailures("System")
         self._timer_id = None
         # True from the moment an asusd enable/disable is asked for until
         # systemd has been asked what actually happened, so the two buttons
@@ -588,6 +593,24 @@ class SystemPage(Adw.PreferencesPage):
         hardware_row.set_subtitle_lines(0)
         group.add(hardware_row)
 
+        # A manual re-run of the same report the app writes unasked on first
+        # launch on a non-AMD CPU (see app.py and
+        # docs/INTEL-SUPPORT-PLAN.txt) -- for a second exchange after the
+        # first, or for an AMD machine that wants one too. Always shown,
+        # never gated on vendor: the report is useful evidence for any bug,
+        # not only an unsupported-CPU one.
+        report_row = Adw.ActionRow(
+            title="Hardware report",
+            subtitle="A .txt of everything this app detected, for a bug "
+                    "report or a hardware-support issue")
+        report_row.set_subtitle_lines(0)
+        self.report_button = Gtk.Button(label="Save")
+        self.report_button.set_valign(Gtk.Align.CENTER)
+        self.report_button.connect("clicked", self._on_save_report_clicked)
+        report_row.add_suffix(self.report_button)
+        report_row.set_activatable_widget(self.report_button)
+        group.add(report_row)
+
     def _value_row(self, group, title, subtitle="", strong=False):
         """A titled row whose suffix label carries the value.
 
@@ -631,6 +654,14 @@ class SystemPage(Adw.PreferencesPage):
         if clock:
             lines.append(f"CPU clock range: {clock[0] / 1e6:.1f}–"
                          f"{clock[1] / 1e6:.1f} GHz")
+        # Which backend the power limits actually go through, named plainly:
+        # "ryzenadj" is what this row always said, "ppt"/"rapl" are Intel's,
+        # and no line at all (rather than "None") is what a machine with
+        # neither gets -- the CPU page's own notice is where that case is
+        # explained, not this summary.
+        backend = caps.get("cpu_power_limits")
+        if backend:
+            lines.append(f"CPU power limits: {backend}")
         present = [name for name, ok in (
             ("custom fan curve", caps.get("fan_curve")),
             ("fan rpm", caps.get("fan_rpm")),
@@ -729,8 +760,12 @@ class SystemPage(Adw.PreferencesPage):
 
     def _on_sample(self, data, error):
         self._sampling = False
-        if error is None:
-            self._render(data)
+        if error is not None:
+            # A run of these is reported once; see sampling.py.
+            self._sample_failures.report(self.window, error, source="system")
+            return
+        self._sample_failures.succeeded()
+        self._render(data)
 
     def _render(self, data):
         self._render_supergfx(data.get("gpu_mode"),
@@ -1106,6 +1141,20 @@ class SystemPage(Adw.PreferencesPage):
             return
         display.get_clipboard().set(command)
         self.window.toast(f"Copied: {command}")
+
+    def _on_save_report_clicked(self, _button):
+        # No claim_hardware: this reads sysfs and writes one file of its own,
+        # it never touches a control another apply could be mid-write on.
+        self.report_button.set_sensitive(False)
+        self.window.apply_async(hardware.write_hardware_report,
+                                self._on_report_written)
+
+    def _on_report_written(self, path, error):
+        self.report_button.set_sensitive(True)
+        if error is not None:
+            self.window.toast(f"Could not save the hardware report: {error}")
+            return
+        self.window.toast(f"Hardware report saved to {path}")
 
     def _render_sync(self, power_mode):
         name = self.window.current_profile_name() or DASH

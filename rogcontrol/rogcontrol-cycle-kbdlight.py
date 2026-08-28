@@ -10,7 +10,6 @@ Writes the applied state back to the same config file the main app reads,
 so the GUI reflects the change next time it's opened.
 """
 import os
-import subprocess
 import sys
 
 # The shared modules sit beside this script's package in the repo, and under
@@ -25,203 +24,91 @@ for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
         break
 
 from rogcontrol import config as config_mod  # noqa: E402
+from rogcontrol import hardware  # noqa: E402
+from rogcontrol import kbdcolor  # noqa: E402
 
-# Same rotation as KBD_RGB_MODES in the main app, in the order to cycle
-# through. Modes that don't need a temperature reading come first so the
-# common case (Static/Breathing/Rainbow/etc) doesn't depend on hwmon/
-# nvidia-smi being reachable from a shortcut context.
-#
-# This must stay in step with KBD_RGB_MODES. A mode present there but missing
-# here makes the hotkey jump back to Static instead of advancing, because the
-# saved mode name is then not found in this list.
-MODE_ORDER = [
-    "Static", "Breathing", "Pulse", "Color Cycle",
-    "Rainbow", "Gradient Static",
-    "GPU Temp Color", "CPU Temp Color", "Battery Level",
-]
+# The package's, with a timeout and a failure the log records; this script's
+# own copies had neither, and its notify showed up unattributed for want of
+# the -a flag.
+notify = hardware.notify
 
-# Deliberately not in the rotation: Ambient needs a live screen-capture
-# session, so it only exists while the main window is running. Cycling into
-# it from a hotkey would set a mode nothing is driving.
+# The rotation is KBD_RGB_MODES in insertion order, minus the two modes that
+# are not effects a hotkey can cycle into.
 #
-# Profile Colour is out of the rotation too, for the opposite reason. It is
-# not a keyboard effect the user picks between -- it is the keyboard being
-# handed over to the profile switcher, which then owns it until the user
-# takes it back on the Keyboard page. Cycling INTO it from here would paint
+# It used to be a hand-written list here, with a comment saying it "must stay
+# in step with KBD_RGB_MODES" and nothing making it so -- and the stated
+# consequence was real: a mode present there and missing here makes the
+# hotkey jump back to Static instead of advancing, because the saved mode
+# name is then not found in this list.
+#
+# The order that list was written in is the order KBD_RGB_MODES already has,
+# including the property its comment claimed: the modes needing no
+# temperature reading come first, so the common case does not depend on
+# hwmon or nvidia-smi being reachable from a shortcut context.
+#
+# EXCLUSIVE_MODES is what comes out. Ambient needs a live screen-capture
+# session, so it only exists while the main window is running; cycling into
+# it from a hotkey would set a mode nothing is driving. Profile Colour is out
+# for the opposite reason -- it is not an effect the user picks between, it
+# is the keyboard being handed to the profile switcher, which owns it until
+# the user takes it back on the Keyboard page. Cycling INTO it would paint
 # one colour and look like Static; cycling OUT of it is exactly what should
 # happen, and does: the saved name is not in this list, so the next press
 # lands on Static and the profile switcher stops painting.
-
-# Kept in step with the same lists in the main app. Multi-zone effects need a
-# four-zone Aura controller; on anything else they light zone 1 and drop the
-# rest, so the hotkey skips over them rather than cycling into a mode that
-# does nothing visible.
-MULTI_ZONE_MODES = ("Gradient Static",)
-AURA_MULTI_ZONE_IDS = {"1854", "1866", "1869", "19b6", "1a30"}
-
-TEMP_COLOR_MIN_C = 40
-TEMP_COLOR_MAX_C = 90
-
-
-def find_aura_keyboard():
-    """USB product ID of the ASUS Aura keyboard controller, or None."""
-    base = "/sys/bus/usb/devices"
-    try:
-        for entry in sorted(os.listdir(base)):
-            path = f"{base}/{entry}"
-            if not os.path.exists(f"{path}/idVendor"):
-                continue
-            if open(f"{path}/idVendor").read().strip() != "0b05":
-                continue
-            if os.path.exists(f"{path}/idProduct"):
-                return open(f"{path}/idProduct").read().strip().lower()
-    except Exception:
-        pass
-    return None
+MODE_ORDER = [name for name in kbdcolor.KBD_RGB_MODES
+              if name not in kbdcolor.EXCLUSIVE_MODES]
 
 
 def available_modes():
-    aura_id = find_aura_keyboard()
-    zones = bool(aura_id) and aura_id in AURA_MULTI_ZONE_IDS
-    has_battery = read_battery()[0] is not None
-    modes = []
-    for name in MODE_ORDER:
-        if name in MULTI_ZONE_MODES and not zones:
-            continue
-        if name == "Battery Level" and not has_battery:
-            continue
-        modes.append(name)
+    """The rotation this machine can actually perform.
+
+    Through kbdcolor.supported_modes, the same gate the picker in the window
+    uses, rather than a second set of rules -- this script had its own copy
+    of MULTI_ZONE_MODES and of the Aura product-ID table, and a keyboard
+    added to one would have been missing from the other.
+
+    Only the two capabilities that cost a sysfs read are probed. Everything
+    supported_modes can also gate on (an NVIDIA card, the screen-capture
+    portal) is left at its default of "present", which keeps this script's
+    existing behaviour: GPU Temp Color stays in the rotation on a machine
+    with no card and reports what went wrong when it is reached, rather than
+    being silently withheld. See pages/keyboard.py for why that is the
+    doctrine."""
+    caps = {
+        "kbd_rgb_zones": (hardware.find_aura_keyboard()
+                          in hardware.AURA_MULTI_ZONE_IDS),
+        "kbd_battery": hardware.read_battery()[0] is not None,
+    }
+    modes = [name for name in kbdcolor.supported_modes(caps)
+             if name not in kbdcolor.EXCLUSIVE_MODES]
     return modes or list(MODE_ORDER)
 
 
-def run_helper(*args):
-    result = subprocess.run(
-        ["sudo", "-n", "/usr/local/bin/rogcontrol-helper", *[str(a) for a in args]],
-        capture_output=True, text=True,
-    )
-    return result.returncode == 0, (result.stderr or result.stdout).strip()
-
-
-def notify(title, body):
-    try:
-        subprocess.run(["notify-send", title, body], timeout=5)
-    except Exception:
-        pass
-
-
-def temp_to_rgb(temp_c, lo=TEMP_COLOR_MIN_C, hi=TEMP_COLOR_MAX_C):
-    t = max(0.0, min(1.0, (temp_c - lo) / max(1, (hi - lo))))
-    if t < 0.5:
-        frac = t / 0.5
-        return 0, round(255 * frac), round(255 * (1 - frac))
-    frac = (t - 0.5) / 0.5
-    return round(255 * frac), round(255 * (1 - frac)), 0
-
-
-def read_cpu_temp():
-    try:
-        for d in os.listdir("/sys/class/hwmon"):
-            path = f"/sys/class/hwmon/{d}"
-            name_path = f"{path}/name"
-            if os.path.exists(name_path) and open(name_path).read().strip() == "k10temp":
-                val = open(f"{path}/temp1_input").read().strip()
-                return int(val) / 1000
-    except Exception:
-        pass
-    return None
-
-
-def read_battery():
-    """(percent, charging) for the first real battery, or (None, None)."""
-    base = "/sys/class/power_supply"
-    try:
-        for entry in sorted(os.listdir(base)):
-            path = f"{base}/{entry}"
-            if not os.path.exists(f"{path}/type"):
-                continue
-            if open(f"{path}/type").read().strip() != "Battery":
-                continue
-            if not os.path.exists(f"{path}/capacity"):
-                continue
-            percent = int(open(f"{path}/capacity").read().strip())
-            status = ""
-            if os.path.exists(f"{path}/status"):
-                status = open(f"{path}/status").read().strip()
-            return percent, status == "Charging"
-    except Exception:
-        pass
-    return None, None
-
-
-def battery_to_rgb(percent, charging):
-    """Same mapping as the main app: green -> yellow -> red while draining,
-    blue -> green while charging."""
-    pct = max(0, min(100, percent))
-    if charging:
-        frac = pct / 100
-        return 0, round(255 * frac), round(255 * (1 - frac))
-    if pct >= 50:
-        frac = (100 - pct) / 50
-        return round(255 * frac), 255, 0
-    frac = (50 - pct) / 50
-    return 255, round(255 * (1 - frac)), 0
-
-
-def read_gpu_temp():
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5)
-        if result.returncode == 0 and result.stdout.strip():
-            return float(result.stdout.strip())
-    except Exception:
-        pass
-    return None
-
-
 def apply_mode(mode_name, cfg_rgb):
-    r, g, b = cfg_rgb.get("r", 255), cfg_rgb.get("g", 0), cfg_rgb.get("b", 0)
-    r2, g2, b2 = cfg_rgb.get("r2", 0), cfg_rgb.get("g2", 0), cfg_rgb.get("b2", 255)
-    speed = cfg_rgb.get("speed", 1)
+    """Put ``mode_name`` on the keyboard. Returns ``(ok, message)``.
 
-    if mode_name == "Rainbow":
-        return run_helper("kbdrgb", "rainbow", speed)
-    if mode_name == "Color Cycle":
-        return run_helper("kbdrgb", "single_colorcycle", speed)
-    if mode_name == "Breathing":
-        return run_helper("kbdrgb", "single_breathing", r, g, b, r2, g2, b2, speed)
-    if mode_name == "Pulse":
-        # rogauracore's real pulse effect -- a distinct sharp flash, not a
-        # breathing fade with a different color. Speed must be 1-3.
-        pulse_speed = speed if speed in (1, 2, 3) else 2
-        return run_helper("kbdrgb", "single_pulsing", r, g, b, pulse_speed)
-    if mode_name == "Gradient Static":
-        # Even ramp from colour 1 to colour 2 across the four zones, matching
-        # _get_gradient_zone_colors() in the main app.
-        zones = [tuple(max(0, min(255, round(a + (b - a) * (i / 3))))
-                       for a, b in zip((r, g, b), (r2, g2, b2)))
-                 for i in range(4)]
-        return run_helper("kbdrgb", "multi_static", *[c for z in zones for c in z])
-    if mode_name == "GPU Temp Color":
-        temp = read_gpu_temp()
-        if temp is None:
-            return False, "no GPU temperature reading available"
-        tr, tg, tb = temp_to_rgb(temp)
-        return run_helper("kbdrgb", "single_static", tr, tg, tb)
-    if mode_name == "CPU Temp Color":
-        temp = read_cpu_temp()
-        if temp is None:
-            return False, "no CPU temperature reading available"
-        tr, tg, tb = temp_to_rgb(temp)
-        return run_helper("kbdrgb", "single_static", tr, tg, tb)
-    if mode_name == "Battery Level":
-        percent, charging = read_battery()
-        if percent is None:
-            return False, "no battery found on this machine"
-        br, bg, bb = battery_to_rgb(percent, charging)
-        return run_helper("kbdrgb", "single_static", br, bg, bb)
-    # Static (default/fallback)
-    return run_helper("kbdrgb", "single_static", r, g, b)
+    Every argument comes from kbdcolor now. This function used to build each
+    call by hand -- the gradient ramp, the pulse speed clamp, the temperature
+    and battery colour maths were all transcribed here -- alongside its own
+    read_cpu_temp, read_battery and read_gpu_temp. Two of those transcriptions
+    had already drifted: the colours were taken from the config unclamped, so
+    a hand-edited config reached the helper as values it refused, and the
+    zone ramp rounded independently of gradient_zone_colors."""
+    args = kbdcolor.helper_args(
+        mode_name,
+        kbdcolor.saved_color(cfg_rgb),
+        kbdcolor.saved_color(cfg_rgb, "2", kbdcolor.DEFAULT_COLOR2),
+        cfg_rgb.get("speed", kbdcolor.DEFAULT_SPEED))
+    if args is None:
+        # A live-reading mode: the colour is not in the config, it has to be
+        # measured. read_live_color is the package's pairing of "take the
+        # reading" with "map it to a colour", shared with the Keyboard page
+        # and the enforcer's charger flash.
+        color, reason = hardware.read_live_color(mode_name)
+        if color is None:
+            return False, reason
+        args = kbdcolor.static_args(color)
+    return hardware.run_helper_logged(*args, source="cycle-kbdlight")
 
 
 def _mode_setter(mode):

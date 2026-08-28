@@ -23,6 +23,7 @@ from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
+from ..sampling import SampleFailures  # noqa: E402
 from ..widgets.slider_row import SliderRow  # noqa: E402
 from ..widgets.stat_row import StatCell, build_stat_row  # noqa: E402
 
@@ -87,6 +88,10 @@ class BatteryPage(Adw.PreferencesPage):
         self._timer = None
         self._busy = False
         self._sampling = False
+        # Consecutive failures of the sampler below, so a page whose
+        # readings have stopped coming back says so once instead of
+        # showing dashes forever. See sampling.py.
+        self._sample_failures = SampleFailures("Battery")
         self._timer_id = None
         self._applied = None
         self._pending_label = None
@@ -239,8 +244,15 @@ class BatteryPage(Adw.PreferencesPage):
 
     def _on_sample(self, data, error):
         self._sampling = False
-        if error is None:
-            self._render(data)
+        if error is not None:
+            # A run of these is reported once; see sampling.py. Five ticks
+            # is half a minute on this page rather than ten seconds, since
+            # it samples every five.
+            self._sample_failures.report(self.window, error,
+                                         source="battery")
+            return
+        self._sample_failures.succeeded()
+        self._render(data)
 
     def _render(self, data):
         self._render_health(data.get("health"))

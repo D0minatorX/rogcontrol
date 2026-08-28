@@ -8,7 +8,7 @@ warn() { printf '%s %s\n' "$WARN" "$*"; }
 die()  { printf '%s %s\n' "$ERR" "$*" >&2; exit 1; }
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
-VERSION=1.0.0.6
+VERSION=1.0.0.7
 STATE_DIR="$HOME/.local/share/rogcontrol"
 STATE_FILE="$STATE_DIR/install-state"
 APP_CONFIG="$HOME/.config/rogcontrol.json"
@@ -500,11 +500,41 @@ else
     fi
 fi
 
+# ------------------------------------------------------------- CPU vendor ---
+# ryzenadj drives the Ryzen SMU mailbox, so the power limits and the Curve
+# Optimizer are AMD-only. This script used to install it on every Arch
+# machine it ran on, which put those controls on screen on Intel laptops
+# driving a tool that could never work there. The app now hides them by
+# vendor; this stops the package being pulled in for nothing as well.
+CPU_IS_AMD=0
+grep -q AuthenticAMD /proc/cpuinfo 2>/dev/null && CPU_IS_AMD=1
+
+# Offer to take back what an earlier version installed here. Only offered,
+# never automatic, and only for a package this machine cannot use: removing
+# something from someone's system is their call, so the default is no.
+if [ "$CPU_IS_AMD" -eq 0 ] && [ "$PM" = pacman ] && pacman -Qq ryzenadj >/dev/null 2>&1; then
+    step "ryzenadj on a non-AMD CPU"
+    warn "ryzenadj is installed but only works on AMD Ryzen chips."
+    warn "ROG Control ignores it here - the CPU page hides the power limits"
+    warn "and the Curve Optimizer on this machine either way."
+    # "|| a=" so a run with nothing on stdin takes the [y/N] default rather
+    # than dying at EOF under set -e.
+    read -rp "  Remove it with pacman? [y/N] " a || a=""
+    if [[ "${a:-N}" =~ ^[Yy] ]]; then
+        sudo pacman -Rns --noconfirm ryzenadj && say "ryzenadj removed" || \
+            warn "pacman could not remove it - check the output above"
+    else
+        warn "Left in place - it is harmless, just unused"
+    fi
+fi
+
 # -------------------------------------------------------------- deps: AUR ---
 # rogauracore (keyboard RGB) and ryzenadj (CPU power limits) are not in the
-# normal repos. Only attempted on Arch-family systems.
+# normal repos. Only attempted on Arch-family systems, and ryzenadj only on
+# AMD -- see the CPU vendor block above.
 if [ "$PM" = pacman ]; then
-    if ! command -v rogauracore >/dev/null 2>&1 || ! command -v ryzenadj >/dev/null 2>&1; then
+    if ! command -v rogauracore >/dev/null 2>&1 || \
+       { [ "$CPU_IS_AMD" -eq 1 ] && ! command -v ryzenadj >/dev/null 2>&1; }; then
         step "AUR dependencies"
         AUR=""
         for h in yay paru; do command -v "$h" >/dev/null 2>&1 && { AUR="$h"; break; }; done
@@ -524,7 +554,9 @@ if [ "$PM" = pacman ]; then
         if [ -n "$AUR" ]; then
             aur_want=()
             command -v rogauracore >/dev/null 2>&1 || aur_want+=("rogauracore-git")
-            command -v ryzenadj    >/dev/null 2>&1 || aur_want+=("ryzenadj")
+            if [ "$CPU_IS_AMD" -eq 1 ]; then
+                command -v ryzenadj >/dev/null 2>&1 || aur_want+=("ryzenadj")
+            fi
             if [ ${#aur_want[@]} -gt 0 ]; then
                 echo "  Installing from AUR: ${aur_want[*]}"
                 "$AUR" -S --needed --noconfirm "${aur_want[@]}" || \
@@ -532,7 +564,7 @@ if [ "$PM" = pacman ]; then
             fi
         else
             warn "Skipping AUR packages. Keyboard RGB needs rogauracore;"
-            warn "CPU power limits need ryzenadj."
+            [ "$CPU_IS_AMD" -eq 1 ] && warn "CPU power limits need ryzenadj."
         fi
     fi
 fi
@@ -559,7 +591,22 @@ if ! command -v rogauracore >/dev/null 2>&1 && [ ! -x /usr/local/bin/rogauracore
 fi
 
 command -v rogauracore >/dev/null 2>&1 || [ -x /usr/local/bin/rogauracore ] || warn "rogauracore missing - keyboard RGB colour/modes unavailable (brightness still works)"
-command -v ryzenadj    >/dev/null 2>&1 || [ -x /usr/local/bin/ryzenadj ] || warn "ryzenadj missing - CPU power limit controls unavailable"
+if [ "$CPU_IS_AMD" -eq 1 ]; then
+    command -v ryzenadj >/dev/null 2>&1 || [ -x /usr/local/bin/ryzenadj ] || warn "ryzenadj missing - CPU power limit controls unavailable"
+else
+    # Not "not offered" outright any more: the app's own PL1/PL2 backend
+    # (through asus-wmi, or RAPL as a fallback) needs no package at all, only
+    # the firmware exposing the right sysfs nodes -- see
+    # docs/INTEL-SUPPORT-PLAN.txt. `rogcontrol --hardware-report` gives the
+    # full picture; this line is a same-session hint towards it.
+    if [ -e "$ASUS_DIR/ppt_pl1_spl" ] && [ -e "$ASUS_DIR/ppt_pl2_sppt" ]; then
+        say "Non-AMD CPU - PL1/PL2 firmware power limits found, no Curve Optimizer"
+    else
+        warn "Non-AMD CPU - no PL1/PL2 firmware nodes found; RAPL may still work"
+        warn "  as a fallback, or this model may have neither - the hardware"
+        warn "  report below is how to find out for certain."
+    fi
+fi
 
 # --------------------------------------------------------------- helper -----
 step "Installing privileged helper"
@@ -888,8 +935,19 @@ command -v nvidia-settings >/dev/null 2>&1 && f=1 || f=0
 cap "GPU clock offsets" $f nvidia_settings "nvidia-settings missing"
 command -v supergfxctl >/dev/null 2>&1     && f=1 || f=0
 cap "GPU mode switching" $f supergfxctl "supergfxctl missing"
-{ command -v ryzenadj >/dev/null 2>&1 || [ -x /usr/local/bin/ryzenadj ]; } && f=1 || f=0
-cap "CPU power limits / undervolt" $f ryzenadj "ryzenadj missing (AMD Ryzen only)"
+# Vendor first, exactly as hardware.detect_capabilities gates it: the binary
+# being installed on an Intel machine is not a capability, it is a leftover.
+if [ "$CPU_IS_AMD" -eq 1 ]; then
+    { command -v ryzenadj >/dev/null 2>&1 || [ -x /usr/local/bin/ryzenadj ]; } && f=1 || f=0
+    cap "CPU power limits / undervolt" $f ryzenadj "ryzenadj missing (AMD Ryzen only)"
+elif [ -e "$ASUS_DIR/ppt_pl1_spl" ] && [ -e "$ASUS_DIR/ppt_pl2_sppt" ]; then
+    # No Curve Optimizer either way -- there is no Intel equivalent -- so
+    # this reads as "PL1/PL2" rather than reusing the ryzenadj wording above.
+    cap "CPU power limits (PL1/PL2), no undervolt" 1 cpu_ppt ""
+else
+    cap "CPU power limits (PL1/PL2), no undervolt" 0 cpu_ppt \
+        "no PL1/PL2 firmware nodes found; RAPL may still work as a fallback"
+fi
 { command -v rogauracore >/dev/null 2>&1 || [ -x /usr/local/bin/rogauracore ]; } && f=1 || f=0
 cap "Keyboard RGB colours/modes" $f rogauracore "rogauracore missing"
 [ -e /sys/class/leds/asus::kbd_backlight/brightness ] && f=1 || f=0

@@ -78,7 +78,10 @@ from rogcontrol import profiles as profiles_mod  # noqa: E402
 interpolate_curve = fancurve.interpolate_curve
 pct_to_pwm255 = fancurve.pct_to_pwm255
 
-CONFIG_PATH = os.path.expanduser("~/.config/rogcontrol.json")
+# The package's path, not a fourth spelling of the same string. Three files
+# wrote it out by hand; a config that moved would have moved for the window
+# and stayed put for this service.
+CONFIG_PATH = config_mod.CONFIG_PATH
 # Upkeep cadence. Only the CPU limits and the fan-curve safety
 # re-check run on this interval now, so it can be far slower than
 # the old 15s without losing anything.
@@ -164,79 +167,40 @@ PROFILE_TO_PPD_MODE = profiles_mod.PROFILE_TO_PPD_MODE
 PPD_MODE_TO_PROFILE = profiles_mod.PPD_MODE_TO_PROFILE
 
 
-LOG_PATH = os.path.expanduser("~/.local/share/rogcontrol/rogcontrol.log")
-LOG_MAX_BYTES = 256 * 1024
-_last_logged = {}
-
-
 def log(message, level="INFO", dedupe_key=None, dedupe_seconds=300):
-    """Append one line to the shared app log.
+    """Append one line to the shared app log, tagged as the enforcer's.
 
-    dedupe_key suppresses an identical repeating message for a while. A
-    failing helper call repeats every cycle, and without this a single
-    broken sudoers rule would fill the log with the same line forever."""
-    if dedupe_key is not None:
-        now = time.monotonic()
-        if now - _last_logged.get(dedupe_key, -1e9) < dedupe_seconds:
-            return
-        _last_logged[dedupe_key] = now
-    try:
-        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX_BYTES:
-            os.replace(LOG_PATH, LOG_PATH + ".1")
-        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        with open(LOG_PATH, "a") as f:
-            f.write(f"{stamp} [{level}] enforcer: {message}\n")
-    except OSError:
-        pass
+    Delegates to the package's log rather than keeping a fourth copy of it.
+    Its own copy was written before this service grew threads and before the
+    log had five writers, and it had neither of the two things the shared one
+    now has: a lock around the dedupe table, which this service needs because
+    the ppd watcher, the power-supply watcher and the main loop all log; and
+    an flock around the rotation, which it needs because the window, the
+    tray, the boot apply and the hotkey cycler rotate the same file.
+
+    Kept as a wrapper rather than replaced call-for-call: ``source`` is the
+    only thing that was ever different, and there are some seventy calls."""
+    hardware.log(message, level, source="enforcer",
+                 dedupe_key=dedupe_key, dedupe_seconds=dedupe_seconds)
 
 
-def notify(title, body):
-    """A desktop notification, best effort.
-
-    The AC/battery switch is the only thing this service does that the user
-    did not ask for at that moment: the plug moves, and a minute later the
-    fans and the power limits are somewhere else. The GTK3 version showed a
-    notification for it and the rewrite lost it, which made an automatic
-    switch indistinguishable from the machine changing its mind on its own.
-
-    Every failure is swallowed. There may be no notification daemon, no
-    session bus, or no notify-send at all, and none of those are a reason to
-    take a service down -- or even to fill the log, since it would repeat on
-    every switch forever."""
-    try:
-        subprocess.run(["notify-send", "-a", "ROG Control", title, body],
-                       capture_output=True, timeout=5)
-    except Exception:
-        pass
+# The package's, for the same reason PROFILE_TO_PPD_MODE is: the AC/battery
+# switch is the only thing this service does that the user did not ask for at
+# that moment, so it is the one that most needs to say so -- and there is no
+# version of that argument that wants a second implementation of it.
+notify = hardware.notify
 
 
 def run_helper(*args):
     """Run a privileged action and REPORT failure.
 
-    This used to discard the exit code and both output streams, so the
-    enforcer could not tell anyone that anything had gone wrong. A broken
-    sudoers rule, a missing helper or a failing ryzenadj all looked exactly
-    like normal operation while nothing was actually being applied.
-
-    A non-zero exit code is the only thing counted as failure. ``cpu`` writes
-    to stderr on every run on this hardware, successful runs included, so
-    anything that treated output as failure would log nine successes an hour
-    as errors."""
-    cmd = " ".join(str(a) for a in args)
-    try:
-        result = subprocess.run(
-            ["sudo", "-n", "/usr/local/bin/rogcontrol-helper", *[str(a) for a in args]],
-            capture_output=True, text=True, timeout=30,
-        )
-    except Exception as e:
-        log(f"could not run helper: {cmd} -> {e}", "ERROR", dedupe_key=f"run:{args[0]}")
-        return False
-    if result.returncode != 0:
-        msg = hardware.helper_error_message(result)
-        log(f"{cmd} failed: {msg}", "ERROR", dedupe_key=f"fail:{args[0]}")
-        return False
-    return True
+    Now the package's run_helper_logged, which is this function -- it was
+    lifted out of here after the third copy of it appeared. It used to
+    discard the exit code and both output streams, so the enforcer could not
+    tell anyone that anything had gone wrong: a broken sudoers rule, a
+    missing helper or a failing ryzenadj all looked exactly like normal
+    operation while nothing was actually being applied."""
+    return hardware.run_helper_logged(*args, source="enforcer", timeout=30)[0]
 
 
 # -- power-profiles-daemon ----------------------------------------------------
@@ -319,9 +283,13 @@ def set_ppd_active_profile(service_name, mode):
 
 
 def boost_control_available():
-    """True if cpufreq exposes a boost switch, globally or per policy."""
+    """True if cpufreq exposes a boost switch, globally or per policy, or
+    intel_pstate's own inverted no_turbo -- see hardware.INTEL_NO_TURBO_PATH.
+    The two cpufreq switches keep priority, so an AMD machine never reaches
+    the third check."""
     return (os.path.exists("/sys/devices/system/cpu/cpufreq/boost")
-            or bool(glob.glob("/sys/devices/system/cpu/cpufreq/policy*/boost")))
+            or bool(glob.glob("/sys/devices/system/cpu/cpufreq/policy*/boost"))
+            or os.path.exists(hardware.INTEL_NO_TURBO_PATH))
 
 
 def epp_control_available():
@@ -401,10 +369,20 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
         cpu = profile.get("cpu")
         if cpu:
             caps = {
-                "ryzenadj": True,
+                # Vendor, not the binary: ryzenadj installed on an Intel
+                # machine still cannot reach a Ryzen SMU, and this pass
+                # runs every 60 seconds.
+                "ryzenadj": hardware.cpu_is_amd(),
                 "cpu_boost": boost_control_available(),
                 "cpu_epp": epp_control_available(),
                 "cpu_clock": clock_limit_available(),
+                # The Intel backend, kept in this periodic pass on the same
+                # grounds as ryzenadj above: an ASUS firmware that walks
+                # PL1/PL2 back on its own needs the same 60-second
+                # re-assert, and cpu_apply_plan's ryzenadj branch above
+                # already wins whenever it applies, so this never fires on
+                # an AMD machine.
+                "cpu_power_limits": hardware.cpu_power_limits_backend(),
             }
             for _step, args in hardware.cpu_apply_plan(cpu, caps):
                 run_helper(*args)
@@ -900,17 +878,13 @@ def charger_flash(config, event):
         return False
     # The one sensor read charger_flash_plan cannot take itself, because it
     # is pure. Looking at the saved mode costs nothing (a dict lookup, no
-    # I/O) and picks at most one of these -- a GPU query in particular is a
-    # subprocess call, not worth making for a Battery Level user.
+    # I/O) and picks at most one reading -- a GPU query in particular is a
+    # subprocess call, not worth making for a Battery Level user. The
+    # mode-to-reading mapping is the package's: this chain of branches also
+    # existed in the Keyboard page and the hotkey cycler, so a live mode
+    # added to one was silently unsupported by the other two.
     saved_mode = (config.get("kbd_rgb") or {}).get("mode")
-    if saved_mode == "Battery Level":
-        live_reading = hardware.read_battery()
-    elif saved_mode == "CPU Temp Color":
-        live_reading = hardware.read_cpu_temp()
-    elif saved_mode == "GPU Temp Color":
-        live_reading = hardware.read_nvidia_stats()[0]
-    else:
-        live_reading = None
+    live_reading = hardware.read_live_color_reading(saved_mode)
     plan = kbdcolor.charger_flash_plan(
         config, brightness=hardware.read_kbd_brightness(),
         live_reading=live_reading)

@@ -87,10 +87,17 @@ class MainWindow(Adw.ApplicationWindow):
     a single pane on a narrow window, which is what finally lets this window
     be resized freely -- the GTK3 version fought its own minimum width."""
 
-    def __init__(self, app, config, caps):
+    def __init__(self, app, config, caps, hardware_report_path=None):
         super().__init__(application=app)
         self.config = config
         self.caps = caps
+        # Set by the caller when the application's first-launch check just
+        # wrote one (see RogControlApp._ensure_window), before this window's
+        # pages are built below, so the CPU page's own-vendor notice can name
+        # the path. None means "nothing written this run" -- an existing
+        # report from a previous launch is not re-announced, since the CPU
+        # page's notice already tells the user --hardware-report exists.
+        self.hardware_report_path = hardware_report_path
         # Set while widgets are being populated from the config, so the
         # handlers that apply settings can tell "the user moved this" from
         # "we just loaded a profile into it". Without it, building the window
@@ -1151,7 +1158,9 @@ class RogControlApp(Adw.Application):
             # standard library only so the helper scripts and the tests can
             # import it: answering this needs GStreamer and a session bus.
             caps["kbd_ambient"] = ambient_available()
-            self.win = MainWindow(self, config, caps)
+            hardware_report_path = None
+            self.win = MainWindow(self, config, caps,
+                                  hardware_report_path=hardware_report_path)
             self.win.select_page("overview")
             if not self.self_test:
                 # Ambient is the only mode that needs a process behind it, so

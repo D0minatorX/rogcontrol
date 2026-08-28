@@ -70,23 +70,24 @@ pct_to_pwm255 = fancurve.pct_to_pwm255
 def run_helper(*args):
     """Run a privileged action and REPORT failure.
 
-    A thin wrapper over hardware.run_helper: the shared one knows how to run
-    the helper and how to read a failure out of it, and this adds only the
-    one thing that is specific to a headless script -- writing the failure
-    somewhere the user can find it afterwards."""
-    ok, message = hardware.run_helper(*args, timeout=30)
-    if not ok:
-        cmd = " ".join(str(a) for a in args)
-        hardware.log(f"{cmd} failed: {message}", "ERROR",
-                     source="apply", dedupe_key=f"fail:{args[0]}")
-    return ok
+    The package's run_helper_logged with this script's name on it. The body
+    used to live here, and identically in the cycler and the enforcer --
+    which is the shape the silent-failure bug hid in the first time."""
+    return hardware.run_helper_logged(*args, source="apply", timeout=30)[0]
 
 # Every setting this machine has; the helper refuses anything it cannot
-# do, and this script has no capability probe of its own.
-ALL_CPU_CAPS = {"ryzenadj": True, "cpu_boost": True, "cpu_epp": True,
-                "cpu_clock": True}
+# do, and this script has no capability probe of its own. ryzenadj is the
+# exception: it is asked about, because it does not refuse cleanly on a chip
+# it cannot talk to -- on an Intel machine with the binary installed it
+# fails, loudly, on every boot for a limit that was never applicable.
+# cpu_power_limits is asked about for the same reason and covers Intel's
+# ppt/RAPL backend too -- see hardware.cpu_power_limits_backend.
+ALL_CPU_CAPS = {"ryzenadj": hardware.cpu_is_amd(), "cpu_boost": True,
+                "cpu_epp": True, "cpu_clock": True,
+                "cpu_power_limits": hardware.cpu_power_limits_backend()}
 
-CONFIG_PATH = os.path.expanduser("~/.config/rogcontrol.json")
+# The package's path, not a second spelling of the same string.
+CONFIG_PATH = config_mod.CONFIG_PATH
 RETRIES = 3
 DELAY_SECONDS = 10
 

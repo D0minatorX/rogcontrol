@@ -47,6 +47,7 @@ from gi.repository import Adw, GLib, Gtk  # noqa: E402
 from .. import config as config_mod  # noqa: E402
 from .. import fancurve  # noqa: E402
 from .. import hardware  # noqa: E402
+from ..sampling import SampleFailures  # noqa: E402
 from ..widgets.action_buttons import make_action_buttons  # noqa: E402
 from ..widgets.curve_editor import CurveEditor  # noqa: E402
 
@@ -131,6 +132,10 @@ class FansPage(Gtk.Box):
         self.fan_groups = {}
         self.rpm_labels = {}
         self._sampling = False
+        # Consecutive failures of the sampler below, so a page whose
+        # readings have stopped coming back says so once instead of
+        # showing dashes forever. See sampling.py.
+        self._sample_failures = SampleFailures("Fan")
         self._working = False
         self._progress = None
         self._progress_source = None
@@ -316,8 +321,12 @@ class FansPage(Gtk.Box):
 
     def _on_sample(self, data, error):
         self._sampling = False
-        if error is None:
-            self._render(data)
+        if error is not None:
+            # A run of these is reported once; see sampling.py.
+            self._sample_failures.report(self.window, error, source="fans")
+            return
+        self._sample_failures.succeeded()
+        self._render(data)
 
     def _render(self, data):
         rpms = data.get("rpm") or {}

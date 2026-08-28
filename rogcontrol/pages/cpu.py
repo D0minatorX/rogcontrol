@@ -54,6 +54,7 @@ from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
+from ..sampling import SampleFailures  # noqa: E402
 from ..widgets.action_buttons import apply_revert_buttons  # noqa: E402
 from ..widgets.slider_row import SliderRow, align_value_widths  # noqa: E402
 from ..widgets.stat_row import StatCell, build_stat_row  # noqa: E402
@@ -100,6 +101,23 @@ LIMIT_ROWS = (
     ("temp", "Temperature target", "",
      "The Tctl temperature the chip throttles itself to hold. Lower backs "
      "off sooner and runs quieter.", 60, 100, "°C"),
+)
+
+# Intel's table, in the same (key, title, subtitle, tooltip, min, max, unit)
+# shape as LIMIT_ROWS above -- the two are never both on screen at once, see
+# _apply_capability_gating. Two rows rather than four: Intel has no
+# equivalent of the fast/slow windows (PL1/PL2 is the whole of what the
+# firmware exposes here) and no equivalent of the temperature target, which
+# is an SMU setting with nothing standing in for it on this platform.
+PL_ROWS = (
+    ("pl1", "PL1 limit", "Sustained package power",
+     "The ceiling the chip settles at once the short-term window has "
+     "expired — Intel's equivalent of STAPM.",
+     hardware.PL_MIN_W, hardware.PL_MAX_W, "W"),
+    ("pl2", "PL2 limit", "Short-burst ceiling",
+     "The ceiling for short bursts before PL1 takes over — Intel's "
+     "equivalent of the fast limit.",
+     hardware.PL_MIN_W, hardware.PL_MAX_W, "W"),
 )
 
 # The one warning on this page that stays on screen. See COALL_TOOLTIP.
@@ -172,6 +190,47 @@ LIMITS_ENABLED_TOOLTIP = (
     "exactly as changing the power mode does. They are re-applied for you."
 )
 
+# Said on a machine with no power-limit backend at all -- neither ryzenadj
+# nor the Intel ppt/RAPL path below found anything to write to. Not greyed
+# out there, gone -- see _apply_capability_gating -- so without this line the
+# page would simply be missing the whole "Power limits" group with nothing on
+# it saying why. Named per vendor: "Intel is not supported yet" would be a
+# false promise about this app once an Intel machine WITH the ppt/RAPL nodes
+# shows the sliders instead of this notice, so the title only fires for a
+# vendor this app genuinely has nothing for, and the subtitle below explains
+# the actual reason rather than assuming it is always "wrong vendor".
+UNSUPPORTED_CPU_TITLE = {
+    hardware.CPU_VENDOR_INTEL: "No CPU power limit control found",
+}
+UNSUPPORTED_CPU_TITLE_DEFAULT = "This CPU is not supported yet"
+
+# AMD with no ryzenadj: the vendor is right but the tool is missing.
+UNSUPPORTED_CPU_SUBTITLE_AMD = (
+    "The power limits and the Curve Optimizer go through ryzenadj, which "
+    "is not installed (or cannot reach this chip), so those controls are "
+    "not shown here. Turbo boost, the energy preference and the clock "
+    "ceiling and floor go through cpufreq and work on this machine as usual."
+)
+
+# Intel with neither the asus-wmi ppt_pl1_spl/ppt_pl2_sppt nodes nor a
+# writable RAPL constraint -- a real possibility per
+# docs/INTEL-SUPPORT-PLAN.txt: the ppt_* nodes may not exist on this model,
+# and ASUS firmware frequently locks the RAPL fallback.
+UNSUPPORTED_CPU_SUBTITLE_INTEL = (
+    "This machine has neither the asus-wmi PL1/PL2 firmware control nor a "
+    "writable RAPL power limit, so no CPU power limit control is shown. "
+    "There is no Curve Optimizer or temperature target on Intel either way "
+    "-- neither has an equivalent on this platform. Turbo boost, the energy "
+    "preference and the clock ceiling and floor go through cpufreq and work "
+    "on this machine as usual."
+)
+
+UNSUPPORTED_CPU_SUBTITLE_DEFAULT = (
+    "No CPU power limit control was found on this machine. Turbo boost, the "
+    "energy preference and the clock ceiling and floor go through cpufreq "
+    "and work as usual."
+)
+
 # Controls whose value is a bool, read with get_active() rather than
 # get_value(). Everything else in ``rows`` is a SliderRow.
 BOOL_ROWS = ("boost", LIMITS_KEY)
@@ -180,6 +239,13 @@ BOOL_ROWS = ("boost", LIMITS_KEY)
 # Optimizer, which travels in the same call. Insensitive while it is off, so
 # a slider that would not be written does not look live.
 GATED_ROWS = ("stapm", "fast", "slow", "temp", "coall")
+
+# The same checkbox's rows on the Intel backend -- PL1/PL2 and nothing else,
+# since there is no Curve Optimizer or temperature target to grey alongside
+# them. Chosen in __init__ as self.gated_rows, alongside self.step_rows and
+# self.step_saves below, all three keyed on which backend
+# caps["cpu_power_limits"] actually is.
+PPT_GATED_ROWS = ("pl1", "pl2")
 
 # The rows the turbo boost switch governs. Boost off pins every core at its
 # base clock, so the ceiling above it is not a limit this profile is
@@ -192,6 +258,12 @@ BOOST_GATED_ROWS = ("clock",)
 # Which controls each step of the apply owns, for saving what succeeded and
 # putting back what did not. "epp" owns no control: it comes from the profile
 # and there is no widget for it.
+#
+# This is the AMD shape of "limits" -- the four ryzenadj rows. __init__
+# copies this dict into self.step_rows and overwrites the "limits" entry with
+# PPT_GATED_ROWS on the ppt/rapl backend, or () with no backend at all, so
+# every other step (boost/epp/clock/minclock) is shared unchanged between
+# both CPU vendors.
 STEP_ROWS = {
     # Owns no control: it is the untick itself reaching the hardware, and
     # the checkbox is not put back when it fails -- see _save.
@@ -208,7 +280,9 @@ STEP_ROWS = {
 # branch per step, and a step added to the apply plan without one reached the
 # hardware on every Apply and was never saved -- the profile came back
 # without it every time the page reloaded. Keyed by every step in
-# hardware.CPU_APPLY_STEPS, checked by a test.
+# hardware.CPU_APPLY_STEPS, checked by a test. The AMD shape of "limits";
+# __init__ copies this into self.step_saves with "limits" overwritten the
+# same way as self.step_rows above.
 STEP_SAVES = {
     # The checkbox that caused this step is saved by _save on its own, on
     # the same "not a step" grounds it is not in STEP_ROWS.
@@ -235,6 +309,27 @@ STEP_LABELS = {
 }
 
 
+def resolve_power_backend(caps):
+    """Which power-limit backend a capability dict means: "ryzenadj", "ppt",
+    "rapl" or None.
+
+    A free function, not a method, so both __init__ and
+    _apply_capability_gating agree on the answer without either depending on
+    the other having run -- the gating tests build a page with
+    ``CpuPage.__new__`` and never call __init__ at all.
+
+    caps["cpu_power_limits"] is what a real hardware.detect_capabilities()
+    always sets, already resolved in this same priority order. The
+    caps.get("ryzenadj") fallback is for a hand-built dict that has never
+    heard of the newer key -- every test in this tree, and the other
+    scripts' ALL_CPU_CAPS -- which still means "ryzenadj" exactly as it did
+    before caps["cpu_power_limits"] existed."""
+    backend = caps.get("cpu_power_limits")
+    if backend is None and caps.get("ryzenadj"):
+        backend = "ryzenadj"
+    return backend
+
+
 class CpuPage(Gtk.Box):
     """A banner, the controls, and one Apply button.
 
@@ -247,6 +342,33 @@ class CpuPage(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.window = window
         self.caps = window.caps
+        # Whether ryzenadj has a chip to talk to at all. Read from the
+        # capabilities rather than the hardware, so a test can hand the page
+        # an Intel machine without one.
+        self._cpu_is_amd = (self.caps.get("cpu_vendor")
+                            == hardware.CPU_VENDOR_AMD)
+        # Which power-limit backend this machine actually has, if any --
+        # see resolve_power_backend just above this class.
+        self._power_backend = resolve_power_backend(self.caps)
+        # Which rows the checkbox governs, and which config keys the
+        # "limits" apply step reads and saves -- all three follow the
+        # backend above, so a Curve Optimizer key never gets greyed or saved
+        # on an Intel machine and pl1/pl2 never do on an AMD one. Copies of
+        # the module-level AMD-shaped tables, not the tables themselves, so
+        # multiple pages/instances never share (and one instance's Intel
+        # override never leaks into another's dict).
+        self.step_rows = dict(STEP_ROWS)
+        self.step_saves = dict(STEP_SAVES)
+        if self._power_backend in ("ppt", "rapl"):
+            self.gated_rows = PPT_GATED_ROWS
+            self.step_rows["limits"] = PPT_GATED_ROWS
+            self.step_saves["limits"] = PPT_GATED_ROWS
+        elif self._power_backend == "ryzenadj":
+            self.gated_rows = GATED_ROWS
+        else:
+            self.gated_rows = ()
+            self.step_rows["limits"] = ()
+            self.step_saves["limits"] = ()
         # True while values are being written into the widgets from the
         # profile, so loading a profile cannot look like the user turning a
         # dial and raise the banner for every row on the page.
@@ -256,6 +378,10 @@ class CpuPage(Gtk.Box):
         # unapplied and for putting a control back after a rejected apply.
         self._applied = {}
         self._sampling = False
+        # Consecutive failures of the sampler below, so a page whose
+        # readings have stopped coming back says so once instead of
+        # showing dashes forever. See sampling.py.
+        self._sample_failures = SampleFailures("CPU")
         self._timer_id = None
 
         self.rows = {}
@@ -293,10 +419,15 @@ class CpuPage(Gtk.Box):
         # Temperature first, then the fan answering it, side by side on one
         # row: the fan speed only means anything next to the temperature
         # that caused it. The GPU page shows the same two the same way.
+        # k10temp's Tctl is what the embedded controller drives the fans
+        # from, so on AMD it is worth naming; on anything else the reading
+        # comes from coretemp or the ACPI thermal zone and naming k10temp
+        # would be describing a sensor this machine does not have.
         self.temp_cell = StatCell(
             "Temperature",
             "k10temp Tctl — the reading the embedded controller drives the "
-            "fans from.")
+            "fans from." if self._cpu_is_amd
+            else "The package temperature this machine reports.")
         self.fan_cell = StatCell(hardware.FAN_LABELS[FAN_CHANNEL])
         build_stat_row(status, (self.temp_cell, self.fan_cell))
         self.temp_value = self.temp_cell.value
@@ -308,10 +439,30 @@ class CpuPage(Gtk.Box):
             self.fan_cell.set_note("No asus hwmon fan reading on this "
                                    "machine.")
 
+        if self._power_backend is None:
+            self._add_unsupported_cpu_notice(page)
+
+        # Which table this machine gets, if any: the four ryzenadj rows, the
+        # two Intel PL rows, or nothing at all -- see
+        # hardware.detect_capabilities' caps["cpu_power_limits"] for how the
+        # backend is chosen (ryzenadj first, then ppt, then rapl, then None).
+        if self._power_backend == "ryzenadj":
+            limit_rows, limits_description = (
+                LIMIT_ROWS,
+                "Sent to ryzenadj as one set — Apply re-sends all four "
+                "together.")
+        elif self._power_backend in ("ppt", "rapl"):
+            limit_rows, limits_description = (
+                PL_ROWS,
+                "Sent together, through the firmware's own PL1/PL2 control "
+                "on this machine." if self._power_backend == "ppt" else
+                "Sent together, through RAPL — verified by reading the "
+                "values back, since this firmware sometimes locks them.")
+        else:
+            limit_rows, limits_description = (), ""
+
         limits = Adw.PreferencesGroup(
-            title="Power limits",
-            description="Sent to ryzenadj as one set — Apply re-sends all "
-                        "four together.")
+            title="Power limits", description=limits_description)
         page.add(limits)
 
         # A checkbox, not a switch, and first in the group it governs: it is
@@ -335,16 +486,16 @@ class CpuPage(Gtk.Box):
         limits.add(enable_row)
         self.rows[LIMITS_KEY] = enable_check
 
-        for key, title, subtitle, tooltip, low, high, unit in LIMIT_ROWS:
+        for key, title, subtitle, tooltip, low, high, unit in limit_rows:
             row = SliderRow(title=title, subtitle=subtitle, tooltip=tooltip,
                             minimum=low, maximum=high, step=1, unit=unit,
                             settle_ms=SETTLE_MS)
             row.connect("changed", self._on_control_changed)
             limits.add(row)
             self.rows[key] = row
-        # One readout width across the group, so the four scales end in a
-        # column instead of stopping wherever "150 W" and "100 °C" happen to.
-        align_value_widths([self.rows[key] for key, *_ in LIMIT_ROWS])
+        # One readout width across the group, so the rows end in a column
+        # instead of stopping wherever "150 W" and "100 °C" happen to.
+        align_value_widths([self.rows[key] for key, *_ in limit_rows])
 
         tuning = Adw.PreferencesGroup(title="Tuning")
         page.add(tuning)
@@ -405,6 +556,44 @@ class CpuPage(Gtk.Box):
         self._build_actions_group()
         self._apply_capability_gating(limits, tuning)
 
+    def _add_unsupported_cpu_notice(self, page):
+        """One row saying why half of this page is not here.
+
+        A row rather than the page's banner: the banner is the "not applied
+        yet" line, it is revealed and hidden as the user edits, and a second
+        permanent message fighting it for the same strip would flicker in
+        and out with every slider."""
+        vendor = self.caps.get("cpu_vendor")
+        if vendor == hardware.CPU_VENDOR_AMD:
+            subtitle = UNSUPPORTED_CPU_SUBTITLE_AMD
+        elif vendor == hardware.CPU_VENDOR_INTEL:
+            subtitle = UNSUPPORTED_CPU_SUBTITLE_INTEL
+        else:
+            subtitle = UNSUPPORTED_CPU_SUBTITLE_DEFAULT
+        # Named only when one was written THIS run -- see MainWindow and
+        # app.py's first-launch check. getattr all the way down: the tests
+        # in tests/test_cpu_intel_page.py build this page with
+        # CpuPage.__new__ and set nothing on it but caps.
+        report_path = getattr(getattr(self, "window", None),
+                              "hardware_report_path", None)
+        if report_path:
+            subtitle += (f"\n\nA hardware report was just written to "
+                        f"{report_path} — attaching it to an issue is what "
+                        f"helps get this machine supported.")
+        group = Adw.PreferencesGroup()
+        row = Adw.ActionRow(
+            title=UNSUPPORTED_CPU_TITLE.get(vendor,
+                                            UNSUPPORTED_CPU_TITLE_DEFAULT),
+            subtitle=subtitle)
+        # Unlimited, or the explanation is ellipsised to one line and says
+        # nothing at all.
+        row.set_subtitle_lines(0)
+        icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+        icon.set_valign(Gtk.Align.CENTER)
+        row.add_prefix(icon)
+        group.add(row)
+        page.add(group)
+
     def _build_actions_group(self):
         """The page's header-bar buttons. Not added to the page itself --
         the window packs this beside the title. See
@@ -434,11 +623,16 @@ class CpuPage(Gtk.Box):
         unlike a disabled control, which still claims a row's worth of
         space and a place in the layout for something that will never work
         on this hardware."""
-        if not self.caps.get("ryzenadj"):
-            # Every row in "Power limits" is one field of the single
-            # ryzenadj write hardware.cpu_apply_plan makes -- with it
-            # unavailable, nothing is left in the group at all.
+        backend = resolve_power_backend(self.caps)
+        if backend is None:
+            # No backend at all: nothing is left in "Power limits" -- neither
+            # table was built (see _build), and the group would otherwise
+            # stand there empty.
             limits_group.set_visible(False)
+        # The Curve Optimizer is ryzenadj's alone -- there is no equivalent on
+        # the ppt/rapl backend, so it is hidden whenever ryzenadj is not the
+        # chosen backend, not only when there is no backend at all.
+        if backend != "ryzenadj" and "coall" in self.rows:
             self.rows["coall"].set_visible(False)
         if not self.caps.get("cpu_boost"):
             self.rows["boost"].set_visible(False)
@@ -470,15 +664,29 @@ class CpuPage(Gtk.Box):
         self._loading = True
         try:
             cpu = (self.window.current_profile() or {}).get("cpu") or {}
-            values = {
-                # The config keeps the first three in milliwatts, which is
-                # what ryzenadj wants; the page shows watts.
-                "stapm": cpu.get("stapm", 55000) / 1000,
-                "fast": cpu.get("fast", 65000) / 1000,
-                "slow": cpu.get("slow", 55000) / 1000,
-                "temp": cpu.get("temp", 90),
-                "coall": cpu.get("coall", 0),
-            }
+            # coall's row exists on every machine (hidden where it does not
+            # apply -- see _apply_capability_gating), so it is always in
+            # this dict; stapm/fast/slow/temp only exist as rows on the
+            # ryzenadj backend, and pl1/pl2 only on ppt/rapl -- building
+            # only the pair that has a row keeps the loop below from a
+            # KeyError on whichever backend this machine is not.
+            values = {"coall": cpu.get("coall", 0)}
+            if self._power_backend == "ryzenadj":
+                values.update({
+                    # The config keeps these three in milliwatts, which is
+                    # what ryzenadj wants; the page shows watts.
+                    "stapm": cpu.get("stapm", 55000) / 1000,
+                    "fast": cpu.get("fast", 65000) / 1000,
+                    "slow": cpu.get("slow", 55000) / 1000,
+                    "temp": cpu.get("temp", 90),
+                })
+            elif self._power_backend in ("ppt", "rapl"):
+                # Already in watts in the config -- see profiles.py -- so no
+                # unit conversion, unlike the three above.
+                values.update({
+                    "pl1": cpu.get("pl1", 55),
+                    "pl2": cpu.get("pl2", 65),
+                })
             for key, value in values.items():
                 row = self.rows[key]
                 row.set_value(self._clamp(row, value))
@@ -574,9 +782,11 @@ class CpuPage(Gtk.Box):
     def _on_sample(self, data, error):
         self._sampling = False
         if error is not None:
-            # One failed read is not worth a toast every two seconds; the
-            # traceback is already on stderr from apply_async.
+            # One failed read is not worth a toast every two seconds, and a
+            # run of them is worth exactly one. See sampling.py.
+            self._sample_failures.report(self.window, error, source="cpu")
             return
+        self._sample_failures.succeeded()
         self._render(data)
 
     def _render(self, data):
@@ -625,7 +835,7 @@ class CpuPage(Gtk.Box):
         says "not being written" without the group jumping in height every
         time the box is clicked."""
         on = self.rows[LIMITS_KEY].get_active()
-        for key in GATED_ROWS:
+        for key in self.gated_rows:
             self.rows[key].set_sensitive(on)
 
     def _clock_ceiling_active(self):
@@ -780,20 +990,34 @@ class CpuPage(Gtk.Box):
         if not no_floor and not unlimited and self._clock_ceiling_active():
             floor_ghz = min(floor_ghz, ghz)
         values = {
-            "stapm": int(self.rows["stapm"].get_value()) * 1000,
-            "fast": int(self.rows["fast"].get_value()) * 1000,
-            "slow": int(self.rows["slow"].get_value()) * 1000,
-            "temp": int(self.rows["temp"].get_value()),
             "coall": int(self.rows["coall"].get_value()),
             "boost": bool(self.rows["boost"].get_active()),
             "max_freq": 0 if unlimited else int(round(ghz * 1e6)),
             "min_freq": 0 if no_floor else int(round(floor_ghz * 1e6)),
             # Read by hardware.cpu_apply_plan, which drops the whole
-            # ryzenadj step when it is False. The four limits above are
-            # still sent along -- the plan decides, not this function, so
+            # limits step when it is False, whichever backend that step
+            # turns out to be. The limit values themselves are still sent
+            # along either way -- the plan decides, not this function, so
             # what is on screen is what gets saved the moment it is back on.
             LIMITS_KEY: bool(self.rows[LIMITS_KEY].get_active()),
         }
+        # Only the rows this backend actually has: the ryzenadj branch of
+        # cpu_apply_plan needs all four of stapm/fast/slow/temp present to
+        # fire at all, and the ppt/rapl branch needs pl1/pl2 -- sending the
+        # other pair's keys with no rows behind them would either KeyError
+        # here or, worse, hand the plan values.get() has no widget to match.
+        if self._power_backend == "ryzenadj":
+            values.update({
+                "stapm": int(self.rows["stapm"].get_value()) * 1000,
+                "fast": int(self.rows["fast"].get_value()) * 1000,
+                "slow": int(self.rows["slow"].get_value()) * 1000,
+                "temp": int(self.rows["temp"].get_value()),
+            })
+        elif self._power_backend in ("ppt", "rapl"):
+            values.update({
+                "pl1": int(self.rows["pl1"].get_value()),
+                "pl2": int(self.rows["pl2"].get_value()),
+            })
         # There is no EPP control on this page; the profile owns it, and the
         # apply re-asserts it because a profile's EPP is part of what "these
         # CPU settings" means.
@@ -908,7 +1132,7 @@ class CpuPage(Gtk.Box):
         # hardware accepted, so no control is left claiming a setting the
         # chip refused.
         failed_rows = [key for step, ok, _ in results if not ok
-                       for key in STEP_ROWS[step]]
+                       for key in self.step_rows[step]]
         if failed_rows:
             self._restore(failed_rows)
 
@@ -985,7 +1209,7 @@ class CpuPage(Gtk.Box):
         "the profile moved" refusal as the only thing the user hears."""
         data = {}
         for step in steps:
-            for key in STEP_SAVES.get(step, ()):
+            for key in self.step_saves.get(step, ()):
                 data[key] = values[key]
         toggle_moved = self._limits_toggle_moved(snapshot)
         if toggle_moved:
@@ -1004,7 +1228,7 @@ class CpuPage(Gtk.Box):
         if toggle_moved:
             self._applied[LIMITS_KEY] = bool(snapshot[LIMITS_KEY])
         for step in steps:
-            for key in STEP_ROWS[step]:
+            for key in self.step_rows[step]:
                 self._applied[key] = snapshot[key]
         return None
 

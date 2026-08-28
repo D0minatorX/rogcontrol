@@ -49,8 +49,18 @@ throws them away every time the power mode changes.
 
 CPU
 
-STAPM, fast and slow power limits, temperature target, Curve Optimizer
-undervolt, turbo boost, and a maximum and minimum core clock.
+On AMD: STAPM, fast and slow power limits, temperature target, Curve
+Optimizer undervolt, turbo boost, and a maximum and minimum core clock.
+
+On Intel: PL1 (sustained) and PL2 (short-burst) power limits, through the
+firmware's own asus-wmi control where the model exposes it, or RAPL as a
+fallback -- turbo boost, the energy preference and the clock ceiling and
+floor work the same as on AMD. No undervolt and no temperature target;
+neither has an Intel equivalent on this platform. A model with neither the
+firmware control nor a writable RAPL limit shows a notice instead of a
+control that could only fail -- see docs/INTEL-SUPPORT-PLAN.txt. The System
+page's "Save hardware report" button, or `rogcontrol --hardware-report`, is
+how to find out which this machine is.
 
 Nothing is written until you press Apply. Moving a control changes what the
 page is asking for and says so in a banner at the top; the chip is untouched
@@ -167,9 +177,16 @@ ALSO
   * Live RAM and VRAM use on the overview page, beside the temperatures
   * A tray icon that shows and switches the active profile
   * Keyboard shortcuts for cycling profiles and lighting modes
+  * A page whose live readings stop coming back says so instead of showing
+    dashes — dashes mean "this machine has no such sensor", and a sampler
+    that has broken is a different thing that used to look identical
+  * Every keyboard shortcut that fails tells you why, rather than only that
+    it failed
   * Settings survive suspend, reboot and firmware resets — a background
     service re-asserts them
   * Everything you configure is in one file, ~/.config/rogcontrol.json
+  * Anything that goes wrong with no window open is written to
+    ~/.local/share/rogcontrol/rogcontrol.log
 
 
 WHAT WE LEARNED MEASURING THIS LAPTOP
