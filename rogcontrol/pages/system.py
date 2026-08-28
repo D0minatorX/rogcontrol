@@ -538,7 +538,16 @@ class SystemPage(Adw.PreferencesPage):
         refresh = Gtk.Button(label="Refresh")
         refresh.set_valign(Gtk.Align.CENTER)
         refresh.connect("clicked", lambda _b: self._reload_log())
-        group.set_header_suffix(refresh)
+
+        clear = Gtk.Button(label="Clear")
+        clear.set_valign(Gtk.Align.CENTER)
+        clear.add_css_class("destructive-action")
+        clear.connect("clicked", self._on_clear_log_clicked)
+
+        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        header_box.append(clear)
+        header_box.append(refresh)
+        group.set_header_suffix(header_box)
 
         self.log_view = Gtk.TextView()
         self.log_view.set_editable(False)
@@ -1392,6 +1401,32 @@ class SystemPage(Adw.PreferencesPage):
         # every single time.
         buffer.place_cursor(buffer.get_end_iter())
         self.log_view.scroll_to_mark(buffer.get_insert(), 0.0, True, 0.0, 1.0)
+
+    def _on_clear_log_clicked(self, _button):
+        # Same confirmation shape as deleting a profile: this cannot be
+        # undone, and it is the history of what the boot-apply service and
+        # the enforcer did while nobody was watching -- exactly what someone
+        # troubleshooting a fresh problem needs, so a stray click must not
+        # take it away silently.
+        dialog = Adw.AlertDialog(heading="Clear the log?",
+                                 body="This cannot be undone.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("clear", "Clear")
+        dialog.set_response_appearance("clear",
+                                       Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_clear_log_response)
+        dialog.present(self)
+
+    def _on_clear_log_response(self, _dialog, response):
+        if response != "clear":
+            return
+        if hardware.clear_log():
+            self._reload_log()
+            self.window.toast("Log cleared.")
+        else:
+            self.window.toast(f"Could not clear the log at {hardware.LOG_PATH}.")
 
     # -- graphics mode -------------------------------------------------------
 

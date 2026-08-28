@@ -2100,6 +2100,34 @@ def read_log_tail(max_lines=200, path=None, max_bytes=LOG_TAIL_BYTES):
     return "\n".join(lines)
 
 
+def clear_log(path=None):
+    """Empty the log and drop its rotated backup. True on success.
+
+    Under the same LOG_LOCK_PATH flock log()'s own rotation uses, so a line
+    one of the five writers is mid-append on cannot land between this
+    truncating the file and it being reopened -- the same hazard the
+    rotation lock already exists to avoid. Truncated in place rather than
+    removed: every writer opens LOG_PATH in append mode expecting it to be
+    there, and a path that briefly does not exist is one more case they
+    would all have to handle for no benefit."""
+    path = LOG_PATH if path is None else path
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(LOG_LOCK_PATH, "a") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                pass
+            open(path, "w").close()
+            try:
+                os.remove(path + ".1")
+            except OSError:
+                pass
+        return True
+    except OSError:
+        return False
+
+
 # -- Fans --------------------------------------------------------------------
 
 FAN_CHANNELS = ("1", "2", "3")
