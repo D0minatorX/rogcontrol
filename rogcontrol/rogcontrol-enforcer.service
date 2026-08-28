@@ -1,5 +1,14 @@
 [Unit]
 Description=Continuously enforce ROG Control profile (CPU/GPU/fans/charge/kbd) against BIOS/firmware resets
+# Ordering only, same fix and same reasoning as rogcontrol-apply.service:
+# this starts under default.target, which can be reached a few seconds
+# before the compositor publishes DISPLAY -- and the first cycle's GPU
+# clock offsets go through nvidia-settings, which needs it. After= makes
+# this wait when graphical-session.target is part of the same startup,
+# and does nothing at all when it is not, so a tty-only session (or a
+# compositor with no systemd integration) still starts the enforcer
+# rather than never starting it.
+After=graphical-session.target
 
 [Service]
 Type=simple
