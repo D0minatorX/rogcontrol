@@ -4,18 +4,26 @@ This module provides functions for interpolating fan curves and converting
 between percentages, PWM values, and RPM measurements.
 """
 
-# rpm = floor + slope * curve_percent, per channel.
+# rpm = floor + slope * curve_percent for curve_percent > 0; 0% is a hard
+# special case that reports 0 rpm (fan off), per channel.
 #
-# Fan speed is NOT a straight fraction of max rpm, which is what this app
-# assumed. Every channel idles at a hard floor of roughly 1650-1750 rpm --
-# 0% on the curve does not stop the fan, and never did. Measured on this
-# machine with flat curves at 11/31/50/70/100%, each held ~22s to settle,
-# with the enforcer paused so nothing else could re-push a curve mid-test.
-# Least-squares fit over those five points lands within 22-56 rpm on every
-# channel, well under the 100 rpm granularity the hardware reports.
+# Fan speed above 0% is NOT a straight fraction of max rpm, which is what
+# this app originally assumed. The floor/slope numbers below came from flat
+# curves at 11/31/50/70/100%, each held ~22s to settle, with the enforcer
+# paused so nothing else could re-push a curve mid-test -- but that first
+# attempt never actually measured 0%, only extrapolated it as the
+# least-squares y-intercept, and that extrapolation was wrong. Writing a
+# literal PWM 0 (rogcontrol-helper fan <ch>, all eight points at pwm 0) and
+# watching fan*_input on the asus hwmon for 30s with the enforcer paused
+# showed the fan reaching a genuine 0 rpm repeatedly -- it does stop -- but
+# hunting the whole time (0 -> ~300-1700 -> 0, never settling), which is a
+# stall/restart pattern in the fan hardware near-threshold rather than a
+# firmware floor. The floor/slope pair below still describes the curve
+# correctly for every percentage above 0; only the pct=0 case needed fixing,
+# in pct_to_rpm below.
 #
-# This is what made the displayed numbers wrong: asking for a curve the app
-# labelled 3400 rpm (50%) actually delivered ~4100, because the real
+# This is what made the displayed numbers wrong above 0%: asking for a curve
+# the app labelled 3400 rpm (50%) actually delivered ~4100, because the real
 # mapping starts at the floor rather than at zero.
 # Measured ceilings at a flat 100% curve, settled a full minute, were
 # 6600 / 6500 / 7800 rpm -- the CPU and GPU fans physically top out a few
@@ -269,6 +277,13 @@ def move_point(points, index, temp, pct, min_gap=MIN_TEMP_GAP):
 def pct_to_rpm(pct, floor, slope):
     """Fan percentage to rpm using this machine's measured calibration.
 
+    0% is a hard special case returning 0 rpm: the fan genuinely stops at a
+    literal PWM 0 (confirmed live, see FAN_RPM_CAL above), it just does not
+    hold there cleanly -- so 0 is what the curve asks for and what the fan
+    settles toward, even though the floor/slope line does not reach that low.
+    Every percentage above 0 still runs through floor + slope * pct, which is
+    the measured response there.
+
     NOTE: the argument order differs from the older ``pct_to_rpm(rpm_cal, pct)``
     in rogcontrol.py -- this one takes the percentage first and the calibration
     unpacked, because that is what callers of this module have to hand. The
@@ -277,7 +292,10 @@ def pct_to_rpm(pct, floor, slope):
     extrapolating past either end reports an rpm the fan cannot physically
     reach (150% would claim 9050 rpm on a fan that tops out at 6585).
     """
-    return round(floor + slope * max(0, min(100, pct)))
+    pct = max(0, min(100, pct))
+    if pct == 0:
+        return 0
+    return round(floor + slope * pct)
 
 
 def rpm_to_pct(rpm, floor, slope):
