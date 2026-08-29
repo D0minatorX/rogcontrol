@@ -166,6 +166,29 @@ take_smu_lock() {
     return 0
 }
 
+# A separate, short-wait lock for the fan action only -- NOT the SMU lock
+# above, and deliberately so: the comment on SMU_LOCK_WAIT explains why a CPU
+# apply must never make a fan write wait behind it. This exists for a
+# different race: the GUI, the enforcer's periodic full-apply, and the
+# cycle-profile hotkey each send one channel's 8-point curve as a single
+# helper call, but nothing stops two of those calls landing for the same
+# channel at once (a GUI apply racing the enforcer, say) -- the kernel
+# serialises each individual sysfs write, not the 8-point sequence, so an
+# interleaving there can leave a channel showing a mix of two different
+# curves' points. The wait is kept short because these calls are already rare
+# and brief; a caller that cannot get in just proceeds unlocked rather than
+# fail a fan write over a lock file that could not be created.
+FAN_LOCK_WAIT=2
+take_fan_lock() {
+    local file
+    file=$(smu_lock_file) || return 0
+    file="${file}.fan"
+    command -v flock >/dev/null 2>&1 || return 0
+    { exec 8>>"$file"; } 2>/dev/null || return 0
+    flock -w "$FAN_LOCK_WAIT" 8 2>/dev/null
+    return 0
+}
+
 # The asusd actions take no arguments at all: the unit name is written into
 # this script and never comes from the caller. Anything extra is a caller
 # that thinks it is passing a unit name, and is refused rather than ignored.
@@ -237,13 +260,25 @@ case "$1" in
         # amd-pstate exposes one global switch, but acpi-cpufreq and the
         # intel drivers expose it per policy, so fall back to those.
         WROTE=0
+        FAILED=""
         for p in /sys/devices/system/cpu/cpufreq/policy*/boost; do
             [ -e "$p" ] || continue
-            echo "$VAL" > "$p"
-            WROTE=1
+            # Each policy is an independent core: one write failing (a locked
+            # or read-only policy) must not, via set -e, abort the loop and
+            # leave later cores at the old value with no report of which core
+            # was skipped -- so failures are collected instead of fatal here.
+            if echo "$VAL" > "$p" 2>/dev/null; then
+                WROTE=1
+            else
+                FAILED="$FAILED $p"
+            fi
         done
+        if [ -n "$FAILED" ]; then
+            echo "failed to write boost on:$FAILED" >&2
+        fi
         if [ "$WROTE" = 1 ]; then
-            exit 0
+            [ -z "$FAILED" ] && exit 0
+            exit 1
         fi
         # intel_pstate in active mode has neither of the above -- it
         # publishes no_turbo instead, meaning the opposite: 1 turns turbo
@@ -295,14 +330,24 @@ case "$1" in
                 [ -e "$m" ] || continue
                 CUR_MIN=$(cat "$m")
                 if [ "$CUR_MIN" -gt "$VAL" ]; then
-                    echo "$VAL" > "$m"
+                    echo "$VAL" > "$m" 2>/dev/null || \
+                        echo "failed to lower floor on $m" >&2
                 fi
             done
         fi
+        # Best-effort across policies, same as cpuboost above: each policy is
+        # an independent core, so one failing write is reported and skipped
+        # rather than -- via set -e -- aborting the loop and leaving later
+        # cores at the old ceiling with no report of which core was missed.
+        FAILED=""
         for f in "${POLICIES[@]}"; do
             [ -e "$f" ] || continue
-            echo "$VAL" > "$f"
+            echo "$VAL" > "$f" 2>/dev/null || FAILED="$FAILED $f"
         done
+        if [ -n "$FAILED" ]; then
+            echo "failed to write clock ceiling on:$FAILED" >&2
+            exit 1
+        fi
         ;;
 
     cpuminclock)
@@ -352,6 +397,7 @@ case "$1" in
             [ "$VAL" -ge "$HW_MIN" ] || {
                 echo "floor $VAL kHz below this CPU's minimum ($HW_MIN)" >&2; exit 1; }
         fi
+        FAILED=""
         for f in "${POLICIES[@]}"; do
             [ -e "$f" ] || continue
             D=$(dirname "$f")
@@ -373,8 +419,14 @@ case "$1" in
                     THIS="$CUR_MAX"
                 fi
             fi
-            echo "$THIS" > "$f"
+            # Best-effort across policies -- see cpuboost/cpuclock above for
+            # why a single failing core must not, via set -e, abort the rest.
+            echo "$THIS" > "$f" 2>/dev/null || FAILED="$FAILED $f"
         done
+        if [ -n "$FAILED" ]; then
+            echo "failed to write clock floor on:$FAILED" >&2
+            exit 1
+        fi
         if [ "$RESTORE" = 0 ]; then
             CUR_MAX=$(cat "$P0/scaling_max_freq")
             [ "$VAL" -le "$CUR_MAX" ] || echo \
@@ -639,6 +691,9 @@ case "$1" in
             echo "asus_custom_fan_curve hwmon device not found" >&2
             exit 1
         }
+        # See take_fan_lock: closes the window where two callers' 8-point
+        # sequences for the same channel could interleave.
+        take_fan_lock
         POINT=1
         while [ "$#" -gt 0 ]; do
             T="$1"; P="$2"; shift 2
@@ -646,8 +701,21 @@ case "$1" in
             is_int "$P" || { echo "Invalid pwm: $P" >&2; exit 1; }
             [ "$T" -ge 0 ] && [ "$T" -le 100 ] || { echo "temp out of range (0-100): $T" >&2; exit 1; }
             [ "$P" -ge 0 ] && [ "$P" -le 255 ] || { echo "pwm out of range (0-255): $P" >&2; exit 1; }
-            echo "$T" > "$FAN_HWMON/pwm${CH}_auto_point${POINT}_temp"
-            echo "$P" > "$FAN_HWMON/pwm${CH}_auto_point${POINT}_pwm"
+            # set -e does not catch a failed write inside this loop the way
+            # it would a top-level command, so each write is checked by hand:
+            # without that, one bad point (a transient EBUSY on the hwmon
+            # node, say) would abort here having already written some of this
+            # channel's points but not others, and skip the pwm*_enable
+            # below -- leaving the channel disabled with a half-written
+            # curve and no clear message about which point failed.
+            echo "$T" > "$FAN_HWMON/pwm${CH}_auto_point${POINT}_temp" || {
+                echo "failed to write point $POINT temp for channel $CH" >&2
+                exit 1
+            }
+            echo "$P" > "$FAN_HWMON/pwm${CH}_auto_point${POINT}_pwm" || {
+                echo "failed to write point $POINT pwm for channel $CH" >&2
+                exit 1
+            }
             POINT=$((POINT + 1))
         done
         # REQUIRED: the asus-wmi custom fan curve interface silently
@@ -659,7 +727,10 @@ case "$1" in
         # every time, or the BIOS silently ignores everything just written
         # and falls back to its own curve -- this was the real cause of
         # fans never reaching the RPMs the curve asked for.
-        echo "1" > "$FAN_HWMON/pwm${CH}_enable"
+        echo "1" > "$FAN_HWMON/pwm${CH}_enable" || {
+            echo "wrote channel $CH curve but failed to re-enable it" >&2
+            exit 1
+        }
         ;;
 
     kbd)
