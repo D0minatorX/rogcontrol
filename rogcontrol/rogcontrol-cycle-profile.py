@@ -138,23 +138,29 @@ def apply_profile(profile):
 def main():
     if not os.path.exists(CONFIG_PATH):
         return
-    config = config_mod.load_config()
+    # Through config.update_config rather than a bare load/save: the read
+    # happens immediately before the write, so a GUI apply, the enforcer's AC
+    # auto-switch or the tray landing between the two can no longer be
+    # silently overwritten. This script is bound to a keyboard shortcut --
+    # the one profile-switch path most likely to be fired twice in a second
+    # -- so that gap mattered more here than anywhere else it was fixed.
+    picked = {}
 
-    names = list(config.get("profiles", {}).keys())
-    if not names:
+    def _pick_next(cfg):
+        names = list(cfg.get("profiles", {}).keys())
+        if not names:
+            picked["next_name"] = None
+            return
+        current = cfg.get("current_profile")
+        idx = names.index(current) if current in names else -1
+        next_name = names[(idx + 1) % len(names)]
+        cfg["current_profile"] = next_name
+        picked["next_name"] = next_name
+
+    config = config_mod.update_config(_pick_next)
+    next_name = picked.get("next_name")
+    if next_name is None:
         return
-    current = config.get("current_profile")
-    idx = names.index(current) if current in names else -1
-    next_name = names[(idx + 1) % len(names)]
-
-    config["current_profile"] = next_name
-    # Through config.save_config, which writes a temporary file and renames
-    # it over the config. Writing in place -- which this did -- truncates the
-    # real file the moment it is opened, so an interrupted write left the
-    # user with no profiles at all. That is the entire reason config.py
-    # exists, and this script is bound to a keyboard shortcut, so it is the
-    # one most likely to be fired twice in a second.
-    config_mod.save_config(config)
 
     # Before applying, and before the fan writes in particular: the OS power
     # mode has to move with the profile or the enforcer switches the profile
