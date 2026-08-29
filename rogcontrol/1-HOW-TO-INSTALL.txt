@@ -51,7 +51,7 @@ packages make OS updates slower and can occasionally break them.
 
 Everything else installs onto the real system exactly as it does everywhere
 else: the privileged helper, the sudoers rule, the background services, the
-suspend hook, the menu entry and your settings.
+menu entry and your settings.
 
 The installer layers the packages, does everything else it normally would,
 and stops with:

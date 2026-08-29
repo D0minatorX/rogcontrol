@@ -636,59 +636,24 @@ else
 fi
 
 # ------------------------------------------------------------- sleep hook ---
-step "Installing suspend/resume fan hook"
-# The hook is a plain script driven by a systemd unit, NOT a drop-in in a
-# system-sleep directory. Both of the earlier attempts at the drop-in were
-# broken, in opposite directions:
-#
-#   /usr/lib/systemd/system-sleep  is the only directory systemd-sleep ever
-#       executes -- and /usr is read-only on an atomic system, so writing it
-#       there killed the install partway through on Bazzite.
-#   /etc/systemd/system-sleep      is writable everywhere, and is read by
-#       nothing. systemd-sleep has exactly one hard-coded directory and there
-#       is no /etc counterpart to it, unlike almost every other systemd path.
-#       So the hook installed cleanly, looked installed, and never ran once.
-#
-# A unit wanted by sleep.target has neither problem: /etc/systemd/system is
-# writable on every distro including the atomic ones and is where systemd
-# looks for units. See rogcontrol-fan-sleep.service for how one oneshot unit
-# covers both the "pre" and the "post" half.
-#
-# The script goes to /usr/local/bin beside the helper it calls -- the same
-# root-owned, mode-755, writable-even-on-ostree location, already proven by
-# the helper install above. The username is baked in at install time: this
-# file runs as root with no login session, so it cannot resolve ~ on its own
-# for the "post" step.
+# The suspend/resume fan-drop hook is gone (no longer wanted). Clean up any
+# copy an older install left behind, from every location it has ever lived in.
 SLEEP_HOOK=/usr/local/bin/rogcontrol-fan-sleep-hook
 SLEEP_UNIT=/etc/systemd/system/rogcontrol-fan-sleep.service
-tmp="$(mktemp)"
-sed "s/__ROGCONTROL_USER__/$USER/" "$SCRIPT_DIR/rogcontrol-fan-sleep-hook" > "$tmp"
-sudo install -D -o root -g root -m 755 "$tmp" "$SLEEP_HOOK"
-rm -f "$tmp"
-sudo install -D -o root -g root -m 644 "$SCRIPT_DIR/rogcontrol-fan-sleep.service" "$SLEEP_UNIT"
-sudo systemctl daemon-reload
-# Not --now: starting it would run the "pre" half and park the fans at their
-# floor on a machine that is wide awake. sleep.target pulls it in by itself
-# at the next suspend, which is the only time it should ever run.
-if sudo systemctl enable rogcontrol-fan-sleep.service >/dev/null 2>&1; then
-    say "Suspend hook enabled (rogcontrol-fan-sleep.service)"
-else
-    warn "Could not enable rogcontrol-fan-sleep.service - fans will keep the"
-    warn "active profile's curve while the machine is asleep."
+if sudo test -e "$SLEEP_UNIT" 2>/dev/null; then
+    step "Removing old suspend/resume fan hook"
+    sudo systemctl disable rogcontrol-fan-sleep.service >/dev/null 2>&1 || true
+    sudo rm -f "$SLEEP_UNIT"
+    sudo systemctl daemon-reload
 fi
-# Copies from both of the earlier drop-in locations. The /usr/lib one runs on
-# top of the unit and would do the whole thing twice per suspend -- and the
-# "pre" half spends a second per fan channel, so the cost is visible. The /etc
-# one never ran at all, but it calls a helper that an uninstall removes, so
-# leaving it behind is a stale file pointed at a binary that may be gone.
-for OLD_SLEEP_HOOK in /usr/lib/systemd/system-sleep/rogcontrol-fan-sleep-hook \
+for OLD_SLEEP_HOOK in "$SLEEP_HOOK" \
+                      /usr/lib/systemd/system-sleep/rogcontrol-fan-sleep-hook \
                       /etc/systemd/system-sleep/rogcontrol-fan-sleep-hook; do
     if sudo test -e "$OLD_SLEEP_HOOK" 2>/dev/null; then
         sudo rm -f "$OLD_SLEEP_HOOK" \
-            && say "Removed the old drop-in copy from $(dirname "$OLD_SLEEP_HOOK")"
+            && say "Removed old fan hook from $(dirname "$OLD_SLEEP_HOOK")"
     fi
 done
-say "Fans will drop to idle before suspend and restore the active profile on resume"
 
 # ------------------------------------------------------------------ app -----
 step "Installing application"
