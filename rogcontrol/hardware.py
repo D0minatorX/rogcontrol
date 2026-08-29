@@ -19,6 +19,7 @@ import json
 import os
 import platform
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -251,14 +252,34 @@ def run_helper(*args, timeout=10):
     failure: the one call that matters here, ``cpu``, writes to stderr on
     every single run."""
     cmd = " ".join(str(a) for a in args)
+    # A separate process group (start_new_session) so a timeout can kill
+    # sudo's whole child tree, not just sudo itself. sudo -n execs the helper
+    # directly (no fork), but the helper in turn forks ryzenadj/nvidia-smi/
+    # rogauracore -- left running past the timeout, those keep the helper's
+    # flock held (see rogcontrol-helper's cpu action), and every apply after
+    # this one fails with "another apply in progress" until the orphan exits
+    # on its own. subprocess.run's own timeout only ever kills the immediate
+    # child, so this uses Popen directly to reach the group.
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             helper_command(args),
-            capture_output=True, text=True, timeout=timeout,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
         )
     except Exception as e:
         print(f"rogcontrol: helper could not run: {cmd} -> {e}", file=sys.stderr)
         return False, str(e)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate()
+        print(f"rogcontrol: helper timed out: {cmd}", file=sys.stderr)
+        return False, "timed out"
+    result = subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
     if result.returncode != 0:
         msg = helper_error_message(result)
         print(f"rogcontrol: helper failed: {cmd} -> {msg}", file=sys.stderr)
