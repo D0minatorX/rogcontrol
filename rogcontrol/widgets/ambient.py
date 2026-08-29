@@ -104,6 +104,11 @@ class AmbientSampler:
         self._stop = threading.Event()
         self._token_counter = 0
         self._subscriptions = []
+        # _subscriptions is touched from two threads: the GLib main-loop
+        # thread (on_signal, below) and stop_async's worker thread. Without
+        # this, a portal response landing while stop() is tearing down races
+        # a mutate-during-iterate on the same list.
+        self._subscriptions_lock = threading.Lock()
 
     # -- portal handshake -----------------------------------------------------
 
@@ -120,11 +125,12 @@ class AmbientSampler:
 
         def on_signal(_conn, _sender, _path, _iface, _signal, params):
             code, results = params.unpack()
-            for sub in self._subscriptions:
-                if sub[1] == path:
-                    self._bus.signal_unsubscribe(sub[0])
-                    self._subscriptions.remove(sub)
-                    break
+            with self._subscriptions_lock:
+                for sub in self._subscriptions:
+                    if sub[1] == path:
+                        self._bus.signal_unsubscribe(sub[0])
+                        self._subscriptions.remove(sub)
+                        break
             if code != 0:
                 # 1 is the user cancelling the picker, which is a choice
                 # rather than a failure.
@@ -138,7 +144,8 @@ class AmbientSampler:
         sub_id = self._bus.signal_subscribe(
             "org.freedesktop.portal.Desktop", "org.freedesktop.portal.Request",
             "Response", path, None, Gio.DBusSignalFlags.NONE, on_signal)
-        self._subscriptions.append((sub_id, path))
+        with self._subscriptions_lock:
+            self._subscriptions.append((sub_id, path))
 
     def start(self):
         try:
@@ -343,9 +350,10 @@ class AmbientSampler:
             self._pipeline.set_state(Gst.State.NULL)
             self._pipeline = None
         self._appsink = None
-        for sub_id, _path in self._subscriptions:
+        with self._subscriptions_lock:
+            subs, self._subscriptions = self._subscriptions, []
+        for sub_id, _path in subs:
             self._bus.signal_unsubscribe(sub_id)
-        self._subscriptions = []
         if self._session:
             # Closing the session releases the capture; the granted permission
             # survives it, which is what the restore token is for.
