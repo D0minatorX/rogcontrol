@@ -731,4 +731,3 @@ def charger_flash_plan(cfg, caps=None, brightness=None, live_reading=None):
         return None
     return (flash, restore, brightness_wake_args(brightness),
             brightness_restore_args(brightness))
-    return flash, restore
