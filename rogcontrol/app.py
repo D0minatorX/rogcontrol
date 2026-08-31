@@ -21,6 +21,7 @@ applications grid starts the app but never attaches to the window it
 opened -- which looks exactly like clicking the icon doing nothing at all.
 """
 
+import concurrent.futures
 import json
 import os
 import sys
@@ -142,6 +143,14 @@ class MainWindow(Adw.ApplicationWindow):
         # A page reload asked for while a write was in flight, run once it
         # ends. See reload_pages.
         self._reload_after_apply = False
+        # One long-lived worker instead of a fresh threading.Thread per
+        # apply_async call: every page's tick (2-5s, for as long as the
+        # window is open) went through apply_async, so that was an OS
+        # thread spun up and torn down forever. max_workers=1 matches every
+        # caller's own busy-flag gating -- none of them issues a second
+        # apply_async before the first has returned.
+        self._worker_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1)
 
         self.pages = {}
         self._build_ui()
@@ -1063,7 +1072,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_done(result, error)
             return GLib.SOURCE_REMOVE
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._worker_pool.submit(worker)
 
     # -- self test -----------------------------------------------------------
 
@@ -1202,6 +1211,12 @@ class RogControlApp(Adw.Application):
         if self.win is not None:
             self.win.stop_ambient()
             self.win.save_window_size()
+            # cancel_futures=True: a stray tick queued behind an in-flight
+            # sample must not delay exit. wait=False: ThreadPoolExecutor
+            # otherwise registers an atexit join that would block process
+            # exit on a slow in-flight sudo run_helper call -- the
+            # daemon=True threads this replaced never had that problem.
+            self.win._worker_pool.shutdown(wait=False, cancel_futures=True)
         Adw.Application.do_shutdown(self)
 
     def do_activate(self):
