@@ -370,6 +370,14 @@ def restore_backup(cfg, data):
 CONFIG_POLL_SECONDS = 5
 
 
+def config_mtime():
+    """When the config file was last written, or None if it cannot be asked."""
+    try:
+        return os.path.getmtime(CONFIG_PATH)
+    except OSError:
+        return None
+
+
 def config_file_moved_on(last_mtime, mtime):
     """True when the config has been written since we last looked at it.
 

@@ -167,6 +167,7 @@ QUIT_EXIT_CODE = 42
 class Tray:
     def __init__(self):
         self.config = config_mod.load_config()
+        self._last_config_mtime = config_mod.config_mtime()
         # True only when Quit was chosen from this menu. A SIGTERM (systemctl
         # stop, logout) leaves it False: systemd is not restarting the
         # service in that case anyway, and a stop is not the user saying they
@@ -322,7 +323,16 @@ class Tray:
     # -- polling -------------------------------------------------------------
 
     def _poll(self):
-        """Follow the config, whoever changed it."""
+        """Follow the config, whoever changed it.
+
+        A stat, not a full load+parse, when nothing has moved: the common
+        case every 5 seconds is that nobody touched the file since last
+        time."""
+        mtime = config_mod.config_mtime()
+        if not config_mod.config_file_moved_on(self._last_config_mtime,
+                                                mtime):
+            return GLib.SOURCE_CONTINUE
+        self._last_config_mtime = mtime
         self.config = config_mod.load_config()
         current = self.config.get("current_profile")
         if self._stock_profiles() != self._shown:

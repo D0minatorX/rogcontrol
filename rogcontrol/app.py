@@ -72,14 +72,6 @@ PAGE_SPECS = (
 )
 
 
-def _config_mtime():
-    """When the config was last written, or None if it cannot be asked."""
-    try:
-        return os.path.getmtime(config_mod.CONFIG_PATH)
-    except OSError:
-        return None
-
-
 class MainWindow(Adw.ApplicationWindow):
     """Split-view window: sidebar of pages, content pane per page.
 
@@ -157,7 +149,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         # The config file has five writers; this window is one of them. See
         # check_external_config_change.
-        self._last_config_mtime = _config_mtime()
+        self._last_config_mtime = config_mod.config_mtime()
         self._config_watch = GLib.timeout_add_seconds(
             config_mod.CONFIG_POLL_SECONDS, self.check_external_config_change)
         self.connect("destroy", self._on_destroy)
@@ -882,7 +874,7 @@ class MainWindow(Adw.ApplicationWindow):
         is set around the profile switcher so that following the file does
         not fire an apply, which would turn every external switch into a
         second ~10 second fan write from this side."""
-        mtime = _config_mtime()
+        mtime = config_mod.config_mtime()
         if not config_mod.config_file_moved_on(self._last_config_mtime, mtime):
             # First sample, or the file is gone: record and read nothing.
             if self._last_config_mtime is None:
