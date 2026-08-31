@@ -160,17 +160,32 @@ def read_int(path):
         return None
 
 
+_HWMON_CACHE = {}  # (root, name) -> resolved hwmon directory path
+
+
 def find_hwmon_by_name(name, root=None):
     """Path of the hwmon directory whose ``name`` file holds ``name``.
 
     hwmonN numbering is assigned in probe order and moves between boots, so
-    the number can never be hardcoded -- this lookup is the only safe way to
-    reach a specific chip."""
+    the number can never be hardcoded -- but it is stable for the life of a
+    running process, and this is called every couple of seconds by several
+    readers, so the resolved path is cached rather than re-listing
+    ``/sys/class/hwmon`` and re-opening every device's ``name`` file each
+    time. Still verified with one read on every call, so a chip that somehow
+    renumbers mid-run falls through to a fresh scan instead of returning a
+    stale path."""
+    key = (root, name)
+    cached = _HWMON_CACHE.get(key)
+    if cached is not None:
+        if read_file(os.path.join(cached, "name")) == name:
+            return cached
+        del _HWMON_CACHE[key]
     base = _under(root, HWMON_DIR)
     try:
         for entry in sorted(os.listdir(base)):
             path = os.path.join(base, entry)
             if read_file(os.path.join(path, "name")) == name:
+                _HWMON_CACHE[key] = path
                 return path
     except OSError:
         pass
