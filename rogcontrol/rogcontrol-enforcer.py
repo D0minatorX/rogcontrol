@@ -52,6 +52,7 @@ import glob
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -384,7 +385,14 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
                 # an AMD machine.
                 "cpu_power_limits": hardware.cpu_power_limits_backend(),
             }
-            for _step, args in hardware.cpu_apply_plan(cpu, caps):
+            # safety_tripped is the crash-loop breaker (see
+            # config.record_boot_attempt): once set, this periodic pass must
+            # keep re-asserting stock instead of the profile's own coall, or
+            # a login apply that correctly forced stock at boot gets
+            # overwritten by this same pass a minute later.
+            cpu_to_apply = (config_mod.stock_cpu_values(cpu)
+                           if config.get("safety_tripped") else cpu)
+            for _step, args in hardware.cpu_apply_plan(cpu_to_apply, caps):
                 run_helper(*args)
 
         if full:
@@ -1401,7 +1409,24 @@ def apply_gpu_clock_offsets(gpu):
                 dedupe_key="nvmem")
 
 
+def _on_terminate(_signum, _frame):
+    """systemd sends SIGTERM here on every stop -- a real shutdown/reboot, a
+    logout for a user-session service, or `systemctl --user stop`. Recording
+    it as a clean end is what tells the next login apply's crash-loop
+    counter (config.record_boot_attempt) that THIS session did not freeze,
+    so a deliberate reboot for an unrelated reason never looks like one of
+    the two straight crashes that force the undervolt back to stock.
+    Re-raised as SystemExit rather than swallowed, so this still shuts the
+    service down the way it would have with no handler installed."""
+    try:
+        config_mod.mark_clean_shutdown()
+    except OSError:
+        pass
+    raise SystemExit(0)
+
+
 def main():
+    signal.signal(signal.SIGTERM, _on_terminate)
     # Background thread reacts to power-mode changes immediately; the
     # main loop below is the periodic fallback in case a signal is missed.
     watcher = threading.Thread(target=ppd_watcher_thread, daemon=True)

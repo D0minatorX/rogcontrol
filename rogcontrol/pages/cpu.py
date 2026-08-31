@@ -940,6 +940,20 @@ class CpuPage(Gtk.Box):
             # The banner is the progress line while an apply is running; the
             # apply owns it until it finishes.
             return
+        if self.window.config.get("safety_tripped"):
+            # config.record_boot_attempt tripped this after two boots in a
+            # row with no proof the undervolt did not freeze the machine.
+            # The login apply and the enforcer are both forcing coall to 0
+            # right now regardless of what this profile stores, so the
+            # slider on screen is not what the chip is actually running --
+            # this is the one thing on the page that has to say so.
+            # button-clicked below goes to _on_apply_clicked, which clears
+            # the trip before sending the plan.
+            self._show_banner(
+                "Undervolt disabled after repeated boot failures — the CPU "
+                "is running stock. Adjust it and Apply to try again.",
+                "Apply")
+            return
         # No "not applied yet" banner. Apply and Revert are in the header
         # bar now, visible on every page and at every scroll position, so a
         # full-width bar appearing the instant a slider moves said nothing
@@ -1043,6 +1057,14 @@ class CpuPage(Gtk.Box):
     def _on_apply_clicked(self, _widget):
         if self._applying:
             return
+        if self.window.config.get("safety_tripped"):
+            # The user has seen the crash-loop banner and is choosing to
+            # send this coall value for real. Cleared here, before the plan
+            # is built below, so a plan this same call produces is not
+            # immediately overridden back to stock by the enforcer's next
+            # 60-second pass.
+            config_mod.clear_safety_trip(self.window.config)
+            config_mod.save_config(self.window.config)
         values = self._pending_values()
         # What every control held at the moment Apply was pressed. The
         # controls stay live while the write runs, so recording their current

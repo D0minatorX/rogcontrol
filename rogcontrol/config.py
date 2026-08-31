@@ -68,6 +68,13 @@ DEFAULT_CONFIG = {
     # a concrete swatch to put in front of the user before they enable it.
     "charger_flash": False,
     "charger_flash_color": [0, 255, 255],
+    # Crash-loop breaker for the CPU undervolt (coall) -- see the block
+    # below this dict. clean_shutdown defaults True so a fresh install (or
+    # a config predating this key) is never treated as coming back from a
+    # crash it never had.
+    "boot_fail_count": 0,
+    "safety_tripped": False,
+    "clean_shutdown": True,
 }
 
 
@@ -669,3 +676,87 @@ def save_config(cfg, path=None):
         except OSError:
             pass
         raise
+
+
+# --- crash-loop breaker for the CPU undervolt --------------------------------
+#
+# A bad all-core Curve Optimizer value (coall) can freeze the machine, and
+# the login apply and the enforcer both re-assert the current profile's
+# undervolt unconditionally -- so a value that freezes the machine on this
+# boot freezes it again on the next one, forever, with no window ever open
+# long enough to change it back.
+#
+# The break is a streak counter that survives across boots. It cannot know a
+# freeze happened -- nothing survives that to report it -- so it infers one
+# from its absence: a boot counts as a crash unless something recorded that
+# THIS one ended cleanly, either by running long enough to prove itself
+# (mark_boot_survived, from a detached watchdog the login apply starts) or by
+# shutting down on its own rather than freezing (mark_clean_shutdown, from
+# the enforcer's SIGTERM handler). Two such unproven boots in a row and the
+# undervolt is forced to stock until the user acknowledges it.
+
+# How many boots in a row with no proof of survival before the undervolt is
+# forced to stock. Not 1: a single reboot for an unrelated reason (a BIOS
+# update, a kernel upgrade) must not look identical to a crash loop.
+BOOT_FAIL_THRESHOLD = 2
+
+# How long a boot has to run, uninterrupted, before it counts as proof the
+# current undervolt is safe. Long enough to cover instability that only
+# shows up under sustained load, not just an instant freeze on apply.
+BOOT_SURVIVAL_SECONDS = 20 * 60
+
+
+def record_boot_attempt(cfg):
+    """Update the crash-loop counters for one login apply. Mutates ``cfg``.
+
+    Must be called -- and the result saved to disk -- BEFORE the undervolt
+    is written to the chip, so that if this boot freezes right there, the
+    incremented count has already survived to be read on the next one.
+
+    Returns True when the undervolt should be forced to stock this boot
+    rather than the profile's own value."""
+    if cfg.get("clean_shutdown", True):
+        cfg["boot_fail_count"] = 0
+    else:
+        cfg["boot_fail_count"] = cfg.get("boot_fail_count", 0) + 1
+    # Unproven until this boot's own watchdog or shutdown hook says
+    # otherwise -- so a second freeze before either fires still counts.
+    cfg["clean_shutdown"] = False
+    if cfg["boot_fail_count"] >= BOOT_FAIL_THRESHOLD:
+        cfg["safety_tripped"] = True
+    return cfg.get("safety_tripped", False)
+
+
+def mark_boot_survived(path=None):
+    """This boot ran BOOT_SURVIVAL_SECONDS without freezing -- proof the
+    current undervolt is safe. Called by the login apply's detached
+    watchdog, never inline: nothing that runs inside the login apply itself
+    lives long enough to call this."""
+    update_config(lambda cfg: cfg.update(boot_fail_count=0), path=path)
+
+
+def mark_clean_shutdown(path=None):
+    """This session ended on its own rather than by freezing. Called from
+    the enforcer's SIGTERM handler, so a deliberate reboot or logout before
+    the survival watchdog fires is not counted as a crash."""
+    update_config(lambda cfg: cfg.update(clean_shutdown=True), path=path)
+
+
+def clear_safety_trip(cfg):
+    """The user has seen the crash-loop banner and asked to try the
+    undervolt again. Mutates ``cfg``; the caller still has to save it and
+    then actually apply, or the old value just comes back forced to stock
+    at the next boot."""
+    cfg["safety_tripped"] = False
+    cfg["boot_fail_count"] = 0
+
+
+def stock_cpu_values(cpu):
+    """``cpu`` with the undervolt forced off, everything else untouched.
+
+    Used in place of a profile's own cpu section when safety_tripped is
+    set: the power limits, boost and clock settings are not what freezes a
+    machine, only coall is, so only it needs overriding."""
+    values = dict(cpu)
+    values["coall"] = 0
+    return values

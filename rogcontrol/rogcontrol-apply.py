@@ -40,6 +40,7 @@ to the BIOS update that caused it.
 """
 
 import os
+import subprocess
 import sys
 import time
 import traceback
@@ -152,7 +153,7 @@ def apply_gpu_clock_offsets(gpu, profile_only=False):
                          source="apply", dedupe_key="nvmem")
 
 
-def apply_once(config, profile_only=False):
+def apply_once(config, profile_only=False, force_stock_undervolt=False):
     profile_name = config.get("current_profile")
     profile = config.get("profiles", {}).get(profile_name)
 
@@ -185,7 +186,17 @@ def apply_once(config, profile_only=False):
             # of ifs here as well, and every setting added since has had to
             # be added to each copy by hand -- the clock floor reached three
             # of the four and was silently dropped by the fourth.
-            for _step, args in hardware.cpu_apply_plan(cpu, ALL_CPU_CAPS):
+            #
+            # force_stock_undervolt is the crash-loop breaker: two boots in a
+            # row with no proof the current coall is safe (see
+            # config.record_boot_attempt) and this profile's own value is
+            # not sent, only stock, until the user clears it from the CPU
+            # page. Everything else in the profile -- power limits, boost,
+            # clock -- still applies normally; those are not what freezes a
+            # machine.
+            cpu_to_apply = (config_mod.stock_cpu_values(cpu)
+                           if force_stock_undervolt else cpu)
+            for _step, args in hardware.cpu_apply_plan(cpu_to_apply, ALL_CPU_CAPS):
                 run_helper(*args)
         gpu = profile.get("gpu")
         if gpu and hardware.dgpu_available():
@@ -260,11 +271,54 @@ def apply_once(config, profile_only=False):
         run_helper("panelod", 1 if config["panel_od"] else 0)
 
 
+def _spawn_survival_watchdog():
+    """Start a detached process that marks this boot as proven safe once it
+    has run for config.BOOT_SURVIVAL_SECONDS without freezing.
+
+    Detached, not a thread: this script's own retries finish in well under
+    a minute, long before that mark is reached, and a thread dies with its
+    process. start_new_session=True keeps it running after this process
+    exits and out of the login apply's own process group, so nothing about
+    login waits on it or can kill it by accident."""
+    try:
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__),
+             "--survival-watchdog"],
+            start_new_session=True, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        hardware.log(f"could not start the boot-survival watchdog: {e}",
+                     "ERROR", source="apply", dedupe_key="watchdogspawn")
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if "--survival-watchdog" in argv:
+        # Not part of a login apply -- see _spawn_survival_watchdog. Sleeps
+        # past the point a crash-loop's next freeze would usually already
+        # have happened, then clears the streak that record_boot_attempt
+        # keeps. If this process itself gets killed by a freeze, it simply
+        # never reaches the write, which is exactly the "unproven" state
+        # the counter is meant to stay in.
+        time.sleep(config_mod.BOOT_SURVIVAL_SECONDS)
+        config_mod.mark_boot_survived()
+        return
     profile_only = "--profile-only" in argv
     if not os.path.exists(CONFIG_PATH):
         return
+    # The crash-loop breaker only applies to a real login apply. A profile
+    # switch (--profile-only) runs on a machine already known to be up, so
+    # it has nothing to do with a boot that never got that far, and counting
+    # it as a "boot" would let the user's own profile switches paper over an
+    # undervolt that is actually the problem.
+    force_stock_undervolt = False
+    if not profile_only:
+        cfg = config_mod.load_config()
+        force_stock_undervolt = config_mod.record_boot_attempt(cfg)
+        # Written now, before the risky write below, not after this
+        # function returns -- see record_boot_attempt's docstring.
+        config_mod.save_config(cfg)
+        _spawn_survival_watchdog()
     # The retries are for login, and only for login. At login nvidia and
     # asus-wmi may not have finished coming up, so the whole apply is run
     # three times ten seconds apart and the last one wins.
@@ -283,7 +337,8 @@ def main(argv=None):
             # keeps the unreadable file as a .corrupt-<timestamp> copy and
             # hands back a migrated default, so the machine at least comes up
             # configured.
-            apply_once(config_mod.load_config(), profile_only=profile_only)
+            apply_once(config_mod.load_config(), profile_only=profile_only,
+                      force_stock_undervolt=force_stock_undervolt)
         except Exception as e:  # noqa: BLE001 - logged, then retried
             # Logged rather than swallowed. This runs at login with nothing
             # on screen: a broken config, a missing dependency or a bug in
