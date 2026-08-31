@@ -1391,7 +1391,19 @@ def session_display_env(timeout=5):
 
 def set_nvidia_clock_offset(kind, mhz, timeout=10):
     """Apply one clock offset, returning ``(ok, message)`` like run_helper."""
+    # Retried rather than checked once: the unit files order the enforcer
+    # and the boot apply after graphical-session.target, but reaching that
+    # target only means the compositor's jobs are done, not that it has
+    # finished exporting DISPLAY into the user manager's environment --
+    # that import is a separate step and can still land a moment later.
+    # Three tries over three seconds matches the window the ordering fix's
+    # own measurement (three seconds early) left uncovered.
     env = session_display_env()
+    for _ in range(2):
+        if env.get("DISPLAY"):
+            break
+        time.sleep(1)
+        env = session_display_env()
     if not env.get("DISPLAY"):
         # Said plainly rather than left to nvidia-settings, whose own answer
         # ("The control display is undefined") reads like a broken driver
