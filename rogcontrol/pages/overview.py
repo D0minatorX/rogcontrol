@@ -25,6 +25,7 @@ from ..fancurve import get_rpm_cal, interpolate_curve, pct_to_rpm  # noqa: E402
 
 REFRESH_SECONDS = 2
 DASH = "—"
+IDLE_TEXT = "Idle"
 
 # One MiB in GiB, since both memory readers answer in MiB.
 MIB_PER_GIB = 1024
@@ -207,17 +208,21 @@ class OverviewPage(Adw.PreferencesPage):
     def _sample(self):
         """Read everything. Runs on a worker thread -- no widgets in here."""
         have_nvidia = self.window.caps.get("nvidia")
+        # Asked first, and it decides whether nvidia-smi runs at all: that
+        # call wakes the card to answer it, so polling it every two seconds
+        # would hold the dGPU awake for as long as this page is open. See
+        # pages/gpu.py's own _sample for the same guard.
+        suspended = hardware.dgpu_is_suspended() if have_nvidia else None
+        skip_nvidia = not have_nvidia or suspended
         gpu_temp, gpu_power = (hardware.read_nvidia_stats()
-                               if have_nvidia else (None, None))
-        # Skipped without a card for the same reason the two above are: the
-        # exec fails immediately and would still cost a fork every two
-        # seconds to arrive back at the dash it starts on.
-        vram = hardware.read_vram() if have_nvidia else (None, None)
+                               if not skip_nvidia else (None, None))
+        vram = hardware.read_vram() if not skip_nvidia else (None, None)
         percent, charging = hardware.read_battery()
         return {
             "cpu_temp": hardware.read_cpu_temp(),
             "cpu_clock": hardware.read_peak_core_clock_mhz(),
             "pkg_power": hardware.read_cpu_power_w(),
+            "dgpu_suspended": suspended,
             "gpu_temp": gpu_temp,
             "gpu_power": gpu_power,
             "ram": hardware.read_memory(),
@@ -254,14 +259,22 @@ class OverviewPage(Adw.PreferencesPage):
         self.cpu_power_val.set_text(
             DASH if power is None else f"{power:.1f} W")
 
-        gpu_temp = data.get("gpu_temp")
-        self.gpu_temp_val.set_text(
-            DASH if gpu_temp is None else f"{gpu_temp:.0f} °C")
-        gpu_power = data.get("gpu_power")
-        self.gpu_power_val.set_text(
-            DASH if gpu_power is None else f"{gpu_power:.1f} W")
-        self.vram_val.set_text(
-            format_used_total(*(data.get("vram") or (None, None))))
+        if data.get("dgpu_suspended"):
+            # Not a dash: a suspended card is a working card doing its job,
+            # and a dash here reads as "cannot be read" -- which is what a
+            # missing driver looks like. IDLE_TEXT says which it is.
+            self.gpu_temp_val.set_text(IDLE_TEXT)
+            self.gpu_power_val.set_text(IDLE_TEXT)
+            self.vram_val.set_text(IDLE_TEXT)
+        else:
+            gpu_temp = data.get("gpu_temp")
+            self.gpu_temp_val.set_text(
+                DASH if gpu_temp is None else f"{gpu_temp:.0f} °C")
+            gpu_power = data.get("gpu_power")
+            self.gpu_power_val.set_text(
+                DASH if gpu_power is None else f"{gpu_power:.1f} W")
+            self.vram_val.set_text(
+                format_used_total(*(data.get("vram") or (None, None))))
 
         self.ram_val.set_text(
             format_used_total(*(data.get("ram") or (None, None))))

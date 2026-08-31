@@ -801,6 +801,12 @@ class KeyboardPage(Adw.PreferencesPage):
 
         Every write is a ~270 ms USB round trip, so an unchanged colour is
         skipped entirely rather than being re-sent on every tick."""
+        if mode == "GPU Temp Color" and hardware.dgpu_is_suspended():
+            # nvidia-smi wakes the card to answer, and this tick runs
+            # forever regardless of which page is open -- see overview.py's
+            # _sample for the same guard. Keep whatever colour is already
+            # lit rather than waking the dGPU every two seconds for it.
+            return None
         color, _reason = self._live_color(mode)
         if color is None or color == self._last_live_color:
             return None
