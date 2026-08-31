@@ -268,6 +268,22 @@ PSR_FOREIGN = (
     "so this switch is disabled. Remove it by hand if you want this app to "
     "manage panel self-refresh.")
 
+UPDATE_AUTO_KEYS = ("off", "launch", "daily", "48h", "weekly", "monthly")
+UPDATE_AUTO_LABELS = ["Never", "Every launch", "Daily", "Every 48 hours",
+                      "Weekly", "Monthly"]
+# Seconds between checks for every key except "launch" (unthrottled -- it
+# checks each time the window opens) and "off" (never checks). Read by
+# app.py's own auto-check, next to last_update_check in the config.
+UPDATE_AUTO_INTERVALS_S = {
+    "daily": 24 * 60 * 60,
+    "48h": 48 * 60 * 60,
+    "weekly": 7 * 24 * 60 * 60,
+    "monthly": 30 * 24 * 60 * 60,
+}
+UPDATE_AUTO_SUBTITLE = (
+    "Whether this app asks GitHub for a newer release on its own. Never by "
+    "default -- an update always stays a Check click away either way.")
+
 SYNC_DESCRIPTION = (
     "This app and the OS both hold an opinion about the power mode. "
     "Selecting a profile here sets the OS mode to match. Changing it the "
@@ -321,6 +337,10 @@ class SystemPage(Adw.PreferencesPage):
         self._boost_countdown_id = None
         self._boost_deadline = None
         self._boost_profile = None
+        # True from a Check click (or the app's own launch/daily
+        # auto-check) until the answer comes back, so the two cannot race
+        # each other into two overlapping GitHub requests.
+        self._update_busy = False
         self.asusd_state = {}
         # What is in the picker, and separately the last non-empty answer
         # supergfxctl -s gave. The two are deliberately not the same list.
@@ -619,6 +639,27 @@ class SystemPage(Adw.PreferencesPage):
         report_row.add_suffix(self.report_button)
         report_row.set_activatable_widget(self.report_button)
         group.add(report_row)
+
+        self.update_row = Adw.ActionRow(title="Check for updates")
+        self.update_row.set_subtitle_lines(0)
+        self._set_update_status(f"Running v{APP_VERSION}")
+        self.update_check_button = Gtk.Button(label="Check")
+        self.update_check_button.set_valign(Gtk.Align.CENTER)
+        self.update_check_button.connect("clicked",
+                                         self._on_check_update_clicked)
+        self.update_row.add_suffix(self.update_check_button)
+        self.update_row.set_activatable_widget(self.update_check_button)
+        group.add(self.update_row)
+
+        auto_row = Adw.ComboRow(title="Check automatically",
+                                subtitle=UPDATE_AUTO_SUBTITLE,
+                                model=Gtk.StringList.new(UPDATE_AUTO_LABELS))
+        auto_row.set_subtitle_lines(0)
+        current = self.window.config.get("update_check", "off")
+        auto_row.set_selected(UPDATE_AUTO_KEYS.index(current)
+                              if current in UPDATE_AUTO_KEYS else 0)
+        auto_row.connect("notify::selected", self._on_update_auto_changed)
+        group.add(auto_row)
 
     def _value_row(self, group, title, subtitle="", strong=False):
         """A titled row whose suffix label carries the value.
@@ -1164,6 +1205,102 @@ class SystemPage(Adw.PreferencesPage):
             self.window.toast(f"Could not save the hardware report: {error}")
             return
         self.window.toast(f"Hardware report saved to {path}")
+
+    # -- updates ---------------------------------------------------------
+
+    def _set_update_status(self, text):
+        self.update_row.set_subtitle(text)
+
+    def _on_check_update_clicked(self, _button):
+        self.check_for_update()
+
+    def check_for_update(self):
+        """Ask GitHub for a newer release. Shared by the button and the
+        app's own launch/daily auto-check (see app.py), so there is exactly
+        one place that decides what "available" means and how the dialog is
+        offered."""
+        if self._update_busy:
+            return
+        self._update_busy = True
+        self.update_check_button.set_sensitive(False)
+        self._set_update_status("Checking…")
+        self.window.apply_async(hardware.check_for_update,
+                                self._on_update_checked)
+
+    def _on_update_checked(self, result, error):
+        self._update_busy = False
+        self.update_check_button.set_sensitive(True)
+        if error is not None:
+            self._set_update_status(f"Could not check for updates: {error}")
+            return
+        if result.get("error"):
+            self._set_update_status(
+                f"Could not check for updates: {result['error']}")
+            return
+        if not result.get("available"):
+            self._set_update_status(f"Up to date (v{APP_VERSION})")
+            return
+        version = result.get("version")
+        download_url = result.get("download_url")
+        if not download_url:
+            # Newer, but this release has nothing this app knows how to
+            # fetch automatically -- see UPDATE_ASSET_PREFIX. Said plainly
+            # rather than offering a button that can only fail.
+            self._set_update_status(
+                f"v{version} available, but no matching download was found "
+                f"on the release page.")
+            return
+        self._set_update_status(f"v{version} available")
+        self._offer_update(version, download_url)
+
+    def _offer_update(self, version, download_url):
+        dialog = Adw.AlertDialog(
+            heading=f"Update to v{version}?",
+            body="This downloads the release and opens a terminal running "
+                "its installer -- the same install.sh you would run by "
+                "hand, so it still asks for your sudo password there. Your "
+                "settings, profiles and fan calibration are kept.")
+        dialog.add_response("later", "Later")
+        dialog.add_response("update", "Update")
+        dialog.set_response_appearance("update",
+                                       Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("update")
+        dialog.set_close_response("later")
+        dialog.connect("response", self._on_update_dialog_response,
+                       version, download_url)
+        dialog.present(self)
+
+    def _on_update_dialog_response(self, _dialog, response, version,
+                                   download_url):
+        if response != "update":
+            return
+        self._set_update_status(f"Downloading v{version}…")
+        self.window.apply_async(
+            lambda: hardware.download_and_stage_update(download_url),
+            lambda result, error: self._on_update_staged(
+                version, result, error))
+
+    def _on_update_staged(self, version, install_sh_path, error):
+        if error is not None:
+            self._set_update_status(f"Update failed: {error}")
+            self.window.toast(f"Could not download v{version}: {error}")
+            return
+        ok, message = hardware.launch_update_terminal(install_sh_path)
+        if ok:
+            self._set_update_status(
+                f"Installing v{version} in a terminal window…")
+            self.window.toast("Opened a terminal to install the update -- "
+                              "follow the prompts there.")
+        else:
+            self._set_update_status(f"Could not open a terminal: {message}")
+            self.window.toast(message)
+
+    def _on_update_auto_changed(self, row, _param):
+        if self._loading:
+            return
+        key = UPDATE_AUTO_KEYS[row.get_selected()]
+        self.window.config["update_check"] = key
+        config_mod.save_config(self.window.config)
 
     def _render_sync(self, power_mode):
         name = self.window.current_profile_name() or DASH

@@ -75,6 +75,13 @@ DEFAULT_CONFIG = {
     "boot_fail_count": 0,
     "safety_tripped": False,
     "clean_shutdown": True,
+    # How often the System page checks GitHub for a newer release on its
+    # own, unasked: "off", "launch" (once per window open) or "daily" (at
+    # most once every 24h, tracked by last_update_check below). Off by
+    # default -- a fresh install or an update to this version must not
+    # start making unsolicited network calls that were not there before.
+    "update_check": "off",
+    "last_update_check": 0,
 }
 
 

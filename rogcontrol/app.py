@@ -45,7 +45,7 @@ from .pages.fans import CHANNEL_GAP_S, FansPage  # noqa: E402
 from .pages.gpu import GpuPage  # noqa: E402
 from .pages.keyboard import KeyboardPage  # noqa: E402
 from .pages.overview import OverviewPage  # noqa: E402
-from .pages.system import SystemPage  # noqa: E402
+from .pages.system import SystemPage, UPDATE_AUTO_INTERVALS_S  # noqa: E402
 from .widgets.ambient import ambient_available  # noqa: E402
 
 APP_ID = "org.rogcontrol.RogControl"
@@ -1180,7 +1180,40 @@ class RogControlApp(Adw.Application):
                     # seen it. idle_add so it appears after the window has
                     # actually mapped, not fighting the initial layout pass.
                     GLib.idle_add(self._prompt_first_run_calibration)
+                self._maybe_auto_check_update()
         return self.win
+
+    def _maybe_auto_check_update(self):
+        """Run the System page's own update check unasked, if the user has
+        opted into it -- see config.py's update_check and
+        pages/system.py's UPDATE_AUTO_INTERVALS_S.
+
+        Every mode but "launch" is throttled by a timestamp in the config
+        rather than by anything time-based in this process, because the
+        process does not live between launches: opening and closing the
+        window five times in an hour must not mean five checks just because
+        each one is a fresh "launch"."""
+        config = self.win.config
+        mode = config.get("update_check", "off")
+        if mode == "off":
+            return
+        interval = UPDATE_AUTO_INTERVALS_S.get(mode)
+        if interval is not None:
+            last = config.get("last_update_check", 0) or 0
+            if time.time() - last < interval:
+                return
+        config["last_update_check"] = time.time()
+        config_mod.save_config(config)
+        # idle_add: the window has not mapped yet at this point, and the
+        # dialog this can open (see pages/system.py) needs a realized parent
+        # to present against.
+        GLib.idle_add(self._run_auto_update_check)
+
+    def _run_auto_update_check(self):
+        page = self.win.pages.get("system")
+        if page is not None:
+            page.check_for_update()
+        return GLib.SOURCE_REMOVE
 
     def _prompt_first_run_calibration(self):
         # Marked BEFORE the dialog is even shown, not after a response: a

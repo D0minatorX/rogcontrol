@@ -19,11 +19,17 @@ import json
 import os
 import platform
 import re
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
+import zipfile
 
 from . import APP_VERSION, kbdcolor
 from .profiles import PROFILE_TO_PPD_MODE
@@ -2999,3 +3005,138 @@ def write_hardware_report(root=None):
     with open(path, "w") as f:
         f.write(hardware_report_text(root=root))
     return path
+
+
+# --- checking for and applying an update -------------------------------------
+#
+# install.sh needs sudo per step (each call can prompt) and expects to run
+# from beside the rest of a release checkout -- the helper binary, the
+# .service files, the icons -- not just the python package this app imports
+# from. So "update" means: ask GitHub what the latest tagged release is,
+# download the zip a human attached to that release, and open a terminal
+# running the install.sh inside it. A subprocess with no TTY cannot supply
+# the sudo password install.sh's own steps ask for, which is why this never
+# tries to run install.sh directly.
+
+GITHUB_REPO = "D0minatorX/rogcontrol"
+GITHUB_LATEST_RELEASE_URL = (
+    f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest")
+# The naming convention every release asset has followed so far (see the
+# Rog-Control-V*.zip files this repo ships). Matched by prefix rather than
+# taking whichever .zip happens to be first, so a release with more than one
+# attachment (a source archive GitHub adds automatically, say) cannot grab
+# the wrong one.
+UPDATE_ASSET_PREFIX = "Rog-Control-V"
+UPDATE_USER_AGENT = "rogcontrol-update-check"
+
+
+def _version_tuple(version):
+    """"v1.0.0.9" (or "1.0.0.9") -> (1, 0, 0, 9), for a tuple comparison.
+
+    Stops at the first component that is not a plain integer rather than
+    raising, so a tag with something unexpected on the end ("1.0.0.9-rc1")
+    still compares on the numeric prefix instead of failing the whole
+    check."""
+    parts = []
+    for part in version.lstrip("vV").split("."):
+        try:
+            parts.append(int(part))
+        except ValueError:
+            break
+    return tuple(parts)
+
+
+def check_for_update(timeout=10):
+    """Ask GitHub for the latest release and compare it to APP_VERSION.
+
+    Returns a dict -- ``{"available", "version", "download_url", "error"}``
+    -- rather than raising: this runs on a worker thread with exactly one
+    caller, which always wants something to show the user, not an exception
+    to catch. ``error`` is set only for a request that failed outright; a
+    release with nothing newer, or newer but with no matching asset, is not
+    an error."""
+    try:
+        request = urllib.request.Request(
+            GITHUB_LATEST_RELEASE_URL,
+            headers={"Accept": "application/vnd.github+json",
+                     "User-Agent": UPDATE_USER_AGENT})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as e:
+        return {"available": False, "version": None, "download_url": None,
+                "error": str(e)}
+    tag = data.get("tag_name") or ""
+    latest = _version_tuple(tag)
+    if not latest or latest <= _version_tuple(APP_VERSION):
+        return {"available": False, "version": None, "download_url": None,
+                "error": None}
+    download_url = None
+    for asset in data.get("assets") or []:
+        name = asset.get("name") or ""
+        if name.startswith(UPDATE_ASSET_PREFIX) and name.endswith(".zip"):
+            download_url = asset.get("browser_download_url")
+            break
+    return {"available": True, "version": tag.lstrip("vV"),
+            "download_url": download_url, "error": None}
+
+
+def download_and_stage_update(download_url, timeout=60):
+    """Download the release zip and extract it. Returns the path to the
+    extracted copy's install.sh.
+
+    Raises on any failure -- network, a corrupt zip, an archive with no
+    install.sh in it -- since the one caller turns every one of those
+    straight into a toast; there is no partial-success case worth a tuple
+    for.
+
+    Extracted into a fresh temp directory every time, never reused, so a
+    previous run's leftovers (or a partial extraction from one that failed
+    halfway) can never mix into this one."""
+    stage_dir = tempfile.mkdtemp(prefix="rogcontrol-update-")
+    zip_path = os.path.join(stage_dir, "update.zip")
+    request = urllib.request.Request(
+        download_url, headers={"User-Agent": UPDATE_USER_AGENT})
+    with urllib.request.urlopen(request, timeout=timeout) as response, \
+            open(zip_path, "wb") as f:
+        shutil.copyfileobj(response, f)
+    with zipfile.ZipFile(zip_path) as archive:
+        archive.extractall(stage_dir)
+    for root, _dirs, files in os.walk(stage_dir):
+        if "install.sh" in files:
+            return os.path.join(root, "install.sh")
+    raise RuntimeError("the downloaded update has no install.sh in it")
+
+
+# Tried in this order -- GNOME first since it is the desktop install.sh's own
+# detection treats as the common case, then KDE's terminal, then xterm as the
+# one every X11/Wayland session with the base package set tends to carry.
+# Each entry is (binary name, argv prefix before the command to run).
+UPDATE_TERMINALS = (
+    ("gnome-terminal", ["gnome-terminal", "--"]),
+    ("konsole", ["konsole", "-e"]),
+    ("xterm", ["xterm", "-e"]),
+)
+
+
+def launch_update_terminal(install_sh_path):
+    """Open a terminal running the staged installer. Returns ``(ok, message)``.
+
+    install.sh cannot simply be run as a subprocess: it calls sudo per step
+    and each of those calls can stop to ask for a password, which needs a
+    real TTY attached. Opening a terminal is what gives it one, the same way
+    a user running it by hand would."""
+    script_dir = os.path.dirname(install_sh_path)
+    inner_command = (
+        f"cd {shlex.quote(script_dir)} && ./install.sh; "
+        "echo; read -p 'Press Enter to close... '")
+    for name, prefix in UPDATE_TERMINALS:
+        if shutil.which(name) is None:
+            continue
+        try:
+            subprocess.Popen([*prefix, "bash", "-c", inner_command])
+            return True, None
+        except OSError:
+            continue
+    tried = ", ".join(name for name, _prefix in UPDATE_TERMINALS)
+    return False, (f"No terminal emulator found (tried {tried}). Run it "
+                   f"yourself: cd {script_dir} && ./install.sh")
