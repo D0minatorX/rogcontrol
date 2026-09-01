@@ -1402,10 +1402,13 @@ def set_nvidia_clock_offset(kind, mhz, timeout=10):
     # target only means the compositor's jobs are done, not that it has
     # finished exporting DISPLAY into the user manager's environment --
     # that import is a separate step and can still land a moment later.
-    # Three tries over three seconds matches the window the ordering fix's
-    # own measurement (three seconds early) left uncovered.
+    # Three tries over three seconds (the ordering fix's own measurement)
+    # still missed the window on this machine on 2026-08-31, so this now
+    # covers six seconds -- still well under the caller's own timeout and
+    # the enforcer's 60s cycle, so a slow session never blocks anything
+    # else on this thread.
     env = session_display_env()
-    for _ in range(2):
+    for _ in range(6):
         if env.get("DISPLAY"):
             break
         time.sleep(1)
