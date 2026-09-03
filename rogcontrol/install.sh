@@ -8,7 +8,11 @@ warn() { printf '%s %s\n' "$WARN" "$*"; }
 die()  { printf '%s %s\n' "$ERR" "$*" >&2; exit 1; }
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
-VERSION=1.0.0.9
+# The one place the version lives is rogcontrol/__init__.py -- read it back
+# out rather than keeping a second copy here that a release could forget to
+# bump alongside it.
+VERSION="$(sed -n 's/^APP_VERSION = "\(.*\)"/\1/p' "$SCRIPT_DIR/__init__.py")"
+[ -n "$VERSION" ] || die "Could not read APP_VERSION from $SCRIPT_DIR/__init__.py"
 STATE_DIR="$HOME/.local/share/rogcontrol"
 STATE_FILE="$STATE_DIR/install-state"
 APP_CONFIG="$HOME/.config/rogcontrol.json"

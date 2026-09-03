@@ -1275,10 +1275,17 @@ class SystemPage(Adw.PreferencesPage):
         if response != "update":
             return
         self._set_update_status(f"Downloading v{version}…")
-        self.window.apply_async(
+        # apply_isolated, not apply_async: this is the one hardware call
+        # that reaches an outside server rather than the laptop itself, so
+        # it is the one that can hang on a stalled DNS lookup or a
+        # connection that never completes. Running it on the shared
+        # worker pool would let that hang freeze every other page's live
+        # stats for the rest of the session.
+        self.window.apply_isolated(
             lambda: hardware.download_and_stage_update(download_url),
             lambda result, error: self._on_update_staged(
-                version, result, error))
+                version, result, error),
+            timeout=30)
 
     def _on_update_staged(self, version, install_sh_path, error):
         if error is not None:

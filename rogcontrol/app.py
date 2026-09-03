@@ -1074,6 +1074,46 @@ class MainWindow(Adw.ApplicationWindow):
 
         self._worker_pool.submit(worker)
 
+    def apply_isolated(self, fn, on_done=None, timeout=None):
+        """Like ``apply_async``, but on its own throwaway thread rather than
+        the shared single-worker pool.
+
+        For one-off calls (the update download) that must not be able to
+        wedge that pool: it is also what every page's live-stat polling and
+        Apply button run through, so a call here that blocks forever --
+        stalled DNS, a connection that never gets past connect() -- would
+        freeze the entire app for the rest of the session, not just this
+        call. ``timeout`` reports back as an error instead of waiting
+        forever; the thread itself is left running in the background since
+        Python cannot cancel it, but it can no longer block anything else."""
+        done = threading.Event()
+        outcome = {}
+
+        def worker():
+            try:
+                outcome["result"] = fn()
+            except Exception as e:  # noqa: BLE001 - reported, not swallowed
+                outcome["error"] = e
+            finally:
+                done.set()
+
+        def deliver(result, error):
+            on_done(result, error)
+            return GLib.SOURCE_REMOVE
+
+        def supervisor():
+            if not done.wait(timeout):
+                if on_done is not None:
+                    GLib.idle_add(deliver, None, TimeoutError(
+                        f"timed out after {timeout:g}s"))
+                return
+            if on_done is not None:
+                GLib.idle_add(deliver, outcome.get("result"),
+                              outcome.get("error"))
+
+        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=supervisor, daemon=True).start()
+
     # -- self test -----------------------------------------------------------
 
     def self_test(self):
