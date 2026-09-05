@@ -204,6 +204,17 @@ def run_helper(*args):
     return hardware.run_helper_logged(*args, source="enforcer", timeout=30)[0]
 
 
+def run_nvidia_helper(*args):
+    """A helper write that goes through nvidia-smi.
+
+    wait_seconds is 0 on purpose: this is a loop that must not sleep inside a
+    cycle, and the card being unreachable right now is the one failure this
+    service is guaranteed to get another go at 60 seconds later. That is also
+    why it is logged at INFO -- see hardware.run_nvidia_helper_logged."""
+    return hardware.run_nvidia_helper_logged(
+        *args, source="enforcer", timeout=30)[0]
+
+
 # -- power-profiles-daemon ----------------------------------------------------
 #
 # These three were hand-copied from the package and then diverged from it, in
@@ -403,7 +414,7 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
                 # "cycle failed", which is true but says nothing about which
                 # profile or which key, once a minute forever.
                 if "watts" in gpu:
-                    run_helper("gpu", gpu["watts"])
+                    run_nvidia_helper("gpu", gpu["watts"])
                 apply_gpu_clock_offsets(gpu)
 
         # The fan boost, if one is in force, replaces the profile's curves
@@ -456,7 +467,7 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
                 flat = []
                 for t, pct in expanded:
                     flat += [t, pct_to_pwm255(pct)]
-                run_helper("fan", channel, *flat)
+                hardware.run_fan_helper_logged(channel, *flat, source="enforcer")
             _last_applied_fans = fans_signature
             _last_fan_apply_time = time.monotonic()
 
@@ -1376,37 +1387,126 @@ def thermal_state_changed():
     return changed
 
 
+# -- GPU clock offsets that arrived before the graphical session -------------
+#
+# nvidia-settings is the only way to move these two offsets and it needs the
+# user's X/Xwayland display, so an offset written before the session exists
+# cannot land. That is not rare and it is not an error: this service is
+# Restart=always, is wanted by default.target, and its first full apply is
+# routinely reached at boot seconds before the compositor has published a
+# display -- and on a machine sitting at a display-manager greeter there is no
+# session at all until somebody logs in, which can be minutes or never.
+#
+# What made this a bug rather than a delay is WHERE the offsets are written:
+# only inside apply_full_profile's `full` branch, which is reached on a
+# profile switch, an external power-mode change and startup -- and NOT by the
+# 60-second upkeep pass. So the one attempt made at boot was also the last
+# one, and a user with a real overclock configured ran the whole session
+# without it while the log said only that it had "failed". No amount of
+# waiting inside the call fixes that (a fixed wait was tried, at three seconds
+# and then at six, and lost the race again on 2026-09-02); the offset has to
+# outlive the attempt.
+#
+# So a no-display failure parks the offset here and the cycle retries it,
+# cheaply -- session_display_ready is a couple of reads -- until it lands.
+_pending_gpu_offsets = {}
+_pending_offsets_since = None
+
+# How long a deferred offset may sit here before it is worth a WARN. Below
+# this it is the ordinary boot race and saying anything is noise; above it,
+# something is actually wrong (no session is ever coming, or nvidia-settings
+# is unusable) and the user is entitled to know why their overclock is not on.
+PENDING_OFFSET_WARN_SECONDS = 600
+
+
+def _defer_offset(kind, mhz, reason=None):
+    """Park one offset until the thing it is waiting on exists.
+
+    ``reason`` is the missing piece in the daemon's own words -- no session,
+    or no driver. Two things can be absent and the log has to say which: an
+    overclock waiting for a login and one waiting for the card to come back
+    out of Integrated are the same line otherwise."""
+    global _pending_offsets_since
+    if not _pending_gpu_offsets:
+        _pending_offsets_since = time.monotonic()
+    _pending_gpu_offsets[kind] = mhz
+    log(f"GPU {kind} clock offset deferred: "
+        f"{reason or hardware.NO_DISPLAY_MESSAGE} "
+        f"-- retrying every {INTERVAL_SECONDS}s until it does", "INFO",
+        dedupe_key=f"nvdefer{kind}", dedupe_seconds=3600)
+
+
+def retry_pending_gpu_offsets():
+    """Re-apply offsets parked by _defer_offset, once a session exists.
+
+    Called from the cycle rather than from apply_full_profile, because the
+    whole point is to keep trying on the pass that runs every minute -- the
+    full apply that first tried may not happen again this session."""
+    global _pending_offsets_since
+    if not _pending_gpu_offsets:
+        return
+    if not hardware.session_display_ready():
+        waited = time.monotonic() - (_pending_offsets_since or time.monotonic())
+        if waited >= PENDING_OFFSET_WARN_SECONDS:
+            log(f"GPU clock offsets still not applied after {waited / 60:.0f} "
+                f"minutes: {hardware.NO_DISPLAY_MESSAGE}", "WARN",
+                dedupe_key="nvpending", dedupe_seconds=3600)
+        return
+    for kind, mhz in list(_pending_gpu_offsets.items()):
+        if set_clock_offset(kind, mhz):
+            log(f"GPU {kind} clock offset applied ({mhz} MHz) now that the "
+                "graphical session is up", "INFO")
+    if not _pending_gpu_offsets:
+        _pending_offsets_since = None
+
+
+def set_clock_offset(kind, mhz):
+    """Write one clock offset, deferring it when there is no session yet.
+
+    Through hardware.set_nvidia_clock_offset, not a hand-built command line.
+    Both copies of this ran nvidia-settings with NO timeout, in a service that
+    is a single loop: one hung call and the enforcer stops enforcing anything,
+    for good, with nothing logged -- and on the auto-switch path it hangs
+    while holding _ac_lock. The package's call has a timeout and turns a
+    failure into (ok, message) rather than an exception.
+
+    The no-display case is not a failure to report, it is work to do later --
+    see _defer_offset. Everything else still goes in the log as an error,
+    because a driver that rejected the offset is a real problem and must not
+    be quietly retried once a minute forever."""
+    ok, message = hardware.set_nvidia_clock_offset(kind, mhz)
+    if ok:
+        _pending_gpu_offsets.pop(kind, None)
+        return True
+    if message in (hardware.NO_DISPLAY_MESSAGE, hardware.NO_DRIVER_MESSAGE):
+        # Both are "not yet", not "no". The card being gone is the same shape
+        # of wait as the session being gone -- Integrated mode, or a switch
+        # part-way through -- and the retry costs one procfs read while it
+        # lasts, so it stays parked rather than being reported once a minute.
+        _defer_offset(kind, mhz, message)
+        return False
+    log(f"GPU {kind} clock offset failed: {message}", "ERROR",
+        dedupe_key=f"nv{kind}")
+    return False
+
+
 def apply_gpu_clock_offsets(gpu):
-    # Through hardware.set_nvidia_clock_offset, not a hand-built command
-    # line. Both copies of this ran nvidia-settings with NO timeout, in a
-    # service that is a single loop: one hung call and the enforcer stops
-    # enforcing anything, for good, with nothing logged -- and on the
-    # auto-switch path it hangs while holding _ac_lock. The package's call
-    # has a timeout and turns a failure into (ok, message) rather than an
-    # exception, which is what every other subprocess in this tree does.
     if "clock_offset" in gpu:
-        ok, message = hardware.set_nvidia_clock_offset(
-            "core", gpu["clock_offset"])
-        if not ok:
-            log(f"GPU core clock offset failed: {message}", "ERROR",
-                dedupe_key="nvcore")
+        set_clock_offset("core", gpu["clock_offset"])
     if "clock_limit" in gpu:
         # Against the card's own maximum, not a hardcoded 3090: the top of
         # the slider means "no ceiling", and comparing against another
         # card's number turns that into a lock (or refuses a real cap).
-        run_helper("gpuclocklimit",
-                   hardware.gpu_clock_limit_arg(
-                       gpu["clock_limit"], hardware.gpu_clock_limit_max()))
+        run_nvidia_helper("gpuclocklimit",
+                          hardware.gpu_clock_limit_arg(
+                              gpu["clock_limit"],
+                              hardware.gpu_clock_limit_max()))
     if "dyn_boost" in gpu:
         run_helper("nvboost", gpu["dyn_boost"])
     if "temp_target" in gpu:
         run_helper("nvtemp", gpu["temp_target"])
     if "mem_clock_offset" in gpu:
-        ok, message = hardware.set_nvidia_clock_offset(
-            "memory", gpu["mem_clock_offset"])
-        if not ok:
-            log(f"GPU memory clock offset failed: {message}", "ERROR",
-                dedupe_key="nvmem")
+        set_clock_offset("memory", gpu["mem_clock_offset"])
 
 
 def _on_terminate(_signum, _frame):
@@ -1486,6 +1586,13 @@ def main():
                                        force_fan_reapply=thermal_changed
                                        or boost_ended,
                                        full=thermal_changed)
+
+                # After the apply, so an offset this cycle just deferred is
+                # not immediately retried against the same missing session.
+                # This is the only path that runs every cycle, which is why
+                # the deferred offsets wait here rather than in the full
+                # apply that first tried them.
+                retry_pending_gpu_offsets()
 
                 # Keyboard brightness and charge limit are NOT re-applied
                 # here. Both were measured to hold their values with the

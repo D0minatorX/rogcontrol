@@ -76,6 +76,21 @@ def run_helper(*args):
     which is the shape the silent-failure bug hid in the first time."""
     return hardware.run_helper_logged(*args, source="apply", timeout=30)[0]
 
+
+def run_nvidia_helper(*args):
+    """A helper write that goes through nvidia-smi.
+
+    Same call, two differences that belong to the card rather than the value:
+    a runtime-suspended card is given a moment to come back first, and "the
+    card is not reachable" is logged at INFO rather than ERROR. Measured on
+    2026-09-04: supergfxd unbound and removed the dGPU mid mode-switch, and
+    the writes landing in that window put two red lines in the log for
+    settings that were never wrong and are re-applied by the enforcer on its
+    next pass."""
+    return hardware.run_nvidia_helper_logged(
+        *args, source="apply", timeout=30,
+        wait_seconds=DGPU_WAKE_WAIT_SECONDS)[0]
+
 # Every setting this machine has; the helper refuses anything it cannot
 # do, and this script has no capability probe of its own. ryzenadj is the
 # exception: it is asked about, because it does not refuse cleanly on a chip
@@ -91,6 +106,12 @@ ALL_CPU_CAPS = {"ryzenadj": hardware.cpu_is_amd(), "cpu_boost": True,
 CONFIG_PATH = config_mod.CONFIG_PATH
 RETRIES = 3
 DELAY_SECONDS = 10
+
+# How long a GPU write waits for a runtime-suspended card, for the same
+# reason OFFSET_WAIT_SECONDS below exists: this script is one-shot, so a
+# short wait is its only second chance. The enforcer passes 0 -- it must not
+# sleep in its loop and gets a free retry a minute later.
+DGPU_WAKE_WAIT_SECONDS = 5
 
 # See pages/fans.py: retested down to 0.5s with no failures, kept at 5s for
 # margin over the retested floor.
@@ -120,6 +141,30 @@ def _offset_worth_writing(gpu, key, profile_only):
         return True
 
 
+# How long the login apply may wait for the session to publish a display
+# before giving up on an offset. This script is one-shot -- nothing behind it
+# retries -- so unlike the enforcer it is worth waiting a little. Kept short
+# all the same: the enforcer defers and retries the same offsets every 60
+# seconds (see its retry_pending_gpu_offsets), so a session that takes longer
+# than this, or that does not exist yet because nobody has logged in, still
+# gets its overclock. This is a head start, not the safety net.
+OFFSET_WAIT_SECONDS = 15
+
+
+def _offset_failure_level(message):
+    """ERROR for a real failure, INFO for the two "not yet" answers.
+
+    Neither is this script's problem to report: the enforcer picks the offset
+    up and applies it when the session appears, or when the card comes back
+    from Integrated. Logging them as ERROR is what put two red lines in the
+    log at every boot, and six more per graphics-mode switch, for work that
+    was about to be handled."""
+    return ("INFO"
+            if message in (hardware.NO_DISPLAY_MESSAGE,
+                           hardware.NO_DRIVER_MESSAGE)
+            else "ERROR")
+
+
 def apply_gpu_clock_offsets(gpu, profile_only=False):
     # Through hardware.set_nvidia_clock_offset, not a hand-built command
     # line. Both copies of this ran nvidia-settings with NO timeout, in a
@@ -130,27 +175,31 @@ def apply_gpu_clock_offsets(gpu, profile_only=False):
     # exception, which is what every other subprocess in this tree does.
     if _offset_worth_writing(gpu, "clock_offset", profile_only):
         ok, message = hardware.set_nvidia_clock_offset(
-            "core", gpu["clock_offset"])
+            "core", gpu["clock_offset"], wait_seconds=OFFSET_WAIT_SECONDS)
         if not ok:
-            hardware.log(f"GPU core clock offset failed: {message}", "ERROR",
-                         source="apply", dedupe_key="nvcore")
+            hardware.log(f"GPU core clock offset failed: {message}",
+                         _offset_failure_level(message), source="apply",
+                         dedupe_key="nvcore")
     if "clock_limit" in gpu:
         # Against the card's own maximum, not a hardcoded 3090: the top of
         # the slider means "no ceiling", and comparing against another
         # card's number turns that into a lock (or refuses a real cap).
-        run_helper("gpuclocklimit",
-                   hardware.gpu_clock_limit_arg(
-                       gpu["clock_limit"], hardware.gpu_clock_limit_max()))
+        run_nvidia_helper("gpuclocklimit",
+                          hardware.gpu_clock_limit_arg(
+                              gpu["clock_limit"],
+                              hardware.gpu_clock_limit_max()))
     if "dyn_boost" in gpu:
         run_helper("nvboost", gpu["dyn_boost"])
     if "temp_target" in gpu:
         run_helper("nvtemp", gpu["temp_target"])
     if _offset_worth_writing(gpu, "mem_clock_offset", profile_only):
         ok, message = hardware.set_nvidia_clock_offset(
-            "memory", gpu["mem_clock_offset"])
+            "memory", gpu["mem_clock_offset"],
+            wait_seconds=OFFSET_WAIT_SECONDS)
         if not ok:
-            hardware.log(f"GPU memory clock offset failed: {message}", "ERROR",
-                         source="apply", dedupe_key="nvmem")
+            hardware.log(f"GPU memory clock offset failed: {message}",
+                         _offset_failure_level(message), source="apply",
+                         dedupe_key="nvmem")
 
 
 def apply_once(config, profile_only=False, force_stock_undervolt=False):
@@ -208,7 +257,7 @@ def apply_once(config, profile_only=False, force_stock_undervolt=False):
             # panel overdrive below it down as well. The window has always
             # guarded this; the three background copies did not.
             if "watts" in gpu:
-                run_helper("gpu", gpu["watts"])
+                run_nvidia_helper("gpu", gpu["watts"])
             apply_gpu_clock_offsets(gpu, profile_only=profile_only)
 
         # Only the channels whose curve is not already the one the
@@ -245,7 +294,7 @@ def apply_once(config, profile_only=False, force_stock_undervolt=False):
             flat = []
             for t, pct in expanded:
                 flat += [t, pct_to_pwm255(pct)]
-            run_helper("fan", channel, *flat)
+            hardware.run_fan_helper_logged(channel, *flat, source="apply")
 
     # Global settings, below the profile because neither belongs to one.
     # See the module docstring for why only one of them is skipped on a

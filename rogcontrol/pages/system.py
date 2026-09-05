@@ -96,6 +96,12 @@ FAN_BOOST_TOOLTIP = (
 # render than the page is worth.
 LOG_LINES = 300
 
+# What the errors-only view searches. Bounded by read_log_tail's own byte cap
+# either way, so this is not a licence to read the whole file -- it is the
+# difference between "the last few minutes" and "this boot and the one
+# before", which is the span an error is usually hunted across.
+LOG_LINES_FILTERED = 2000
+
 SUPERGFX_SUBTITLE = (
     "The daemon that switches between integrated, hybrid and dGPU graphics. "
     "The picker itself is on the GPU page."
@@ -564,7 +570,22 @@ class SystemPage(Adw.PreferencesPage):
         clear.add_css_class("destructive-action")
         clear.connect("clicked", self._on_clear_log_clicked)
 
+        # On by default, because that is what this section is opened for: the
+        # log is mostly the app saying it did what it was told, and the
+        # question being asked of it is "did anything go wrong". The toggle
+        # stays so the surrounding lines -- which profile switched, when the
+        # power source moved -- are still one click away when an error needs
+        # its context.
+        self.errors_only = Gtk.ToggleButton(label="Errors only")
+        self.errors_only.set_valign(Gtk.Align.CENTER)
+        self.errors_only.set_active(True)
+        self.errors_only.set_tooltip_text(
+            "Show only ERROR and WARN entries, with the lines that belong to "
+            "them")
+        self.errors_only.connect("toggled", lambda _b: self._reload_log())
+
         header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        header_box.append(self.errors_only)
         header_box.append(clear)
         header_box.append(refresh)
         group.set_header_suffix(header_box)
@@ -1534,12 +1555,24 @@ class SystemPage(Adw.PreferencesPage):
             self.window.apply_profile_async(name)
 
     def _reload_log(self):
-        text = hardware.read_log_tail(LOG_LINES)
+        # A wider window when filtering: 300 lines of a busy log can be all
+        # routine, and an errors-only view that came back empty because the
+        # errors were 400 lines back would be worse than no filter at all.
+        errors_only = self.errors_only.get_active()
+        text = hardware.read_log_tail(
+            LOG_LINES_FILTERED if errors_only else LOG_LINES)
         buffer = self.log_view.get_buffer()
         if text is None:
             buffer.set_text(f"No log yet at {hardware.LOG_PATH}.")
             return
-        buffer.set_text(text or "The log is empty.")
+        if errors_only:
+            problems = hardware.filter_log_problems(text)
+            buffer.set_text(problems or (
+                "The log is empty." if not text else
+                f"No errors or warnings in the last "
+                f"{LOG_LINES_FILTERED} lines."))
+        else:
+            buffer.set_text(text or "The log is empty.")
         # Sit at the newest line: the reason to open a log is what happened
         # last, and a view that opens at the oldest entry has to be scrolled
         # every single time.

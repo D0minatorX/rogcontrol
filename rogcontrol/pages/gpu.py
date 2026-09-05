@@ -171,6 +171,13 @@ NO_DAEMON_SUBTITLE = (
 # if it was pressed by accident; short enough not to look stuck.
 REBOOT_DELAY_SECONDS = 5
 
+# How long after an accepted switch the mode is read back to see whether it
+# actually happened. Long enough to cover supergfxd's own teardown (measured
+# at 13 seconds for the failing Integrated attempt on 2026-09-04: unload
+# drivers, unbind and remove the card, restart the display manager), short
+# enough that the user is still looking at the page.
+MODE_VERIFY_SECONDS = 20
+
 
 class GpuPage(Gtk.Box):
     """A banner, the controls, and one Apply button.
@@ -696,7 +703,7 @@ class GpuPage(Gtk.Box):
             self.window.toast(f"Graphics mode change failed: {message}")
             self._start_sample()
             return
-        if hardware.mode_change_needs_reboot(self.current_mode, mode):
+        if self._switch_needs_reboot(mode):
             # The MUX flip is queued in firmware and applied at POST.
             # Nothing a running system does finishes it, so offering "log
             # out" here would send the user round a loop that cannot work.
@@ -705,6 +712,53 @@ class GpuPage(Gtk.Box):
         self.window.toast(f"Graphics mode set to {mode}. "
                           f"Log out to finish switching.")
         self._start_sample()
+        # And check that it stuck. supergfxd answers this call over D-Bus the
+        # moment it accepts the request, then carries it out on its own
+        # thread, so "accepted" is not "done" -- on 2026-09-04 it accepted
+        # Integrated, failed on `rmmod nvidia: Module nvidia is in use`
+        # seconds later, and came back up in Hybrid, while this page went on
+        # showing the switch as successful.
+        GLib.timeout_add_seconds(MODE_VERIFY_SECONDS,
+                                 self._verify_mode_took, mode)
+
+    def _switch_needs_reboot(self, mode):
+        """Whether this accepted switch finishes at a reboot or at a logout.
+
+        Three sources, most authoritative first, because getting this wrong
+        costs the user a whole logout that changes nothing:
+
+        1. supergfxd's config. always_reboot makes EVERY switch a reboot,
+           Integrated/Hybrid included, and the app cannot infer that from the
+           hardware -- it is a choice someone made in /etc/supergfxd.conf.
+        2. supergfxd's pending action, when it has decided on one yet.
+        3. The MUX, read from sysfs. True regardless of any daemon, and the
+           answer when supergfxd is not installed at all.
+        """
+        if hardware.supergfxd_always_reboot():
+            return True
+        if hardware.read_gpu_pending_action() == hardware.PENDING_REBOOT:
+            return True
+        return hardware.mode_change_needs_reboot(self.current_mode, mode)
+
+    def _verify_mode_took(self, mode):
+        """Say so when supergfxd accepted a switch and then did not do it.
+
+        Not a retry: a switch that failed halfway has already stopped the
+        display manager and pulled the card off the PCI bus once, and doing
+        that again unasked is how a wedged session becomes a lost one. The
+        user is told what actually happened and left to decide."""
+        actual = hardware.read_gpu_mode()
+        if actual is None or actual == mode:
+            return GLib.SOURCE_REMOVE
+        self.current_mode = actual
+        self._render_modes(self.supported_modes, actual)
+        self._show_mode_answer(
+            mode, False,
+            f"supergfxd accepted {mode} but the mode is still {actual}. Its "
+            f"own log says why: journalctl -u supergfxd -b")
+        self.window.toast(f"Switch to {mode} did not complete — still "
+                          f"{actual}.")
+        return GLib.SOURCE_REMOVE
 
     def _ask_to_reboot(self, mode):
         dialog = Adw.AlertDialog(

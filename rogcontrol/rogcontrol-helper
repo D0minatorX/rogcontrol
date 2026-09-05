@@ -189,6 +189,31 @@ take_fan_lock() {
     return 0
 }
 
+# The keyboard controller is a single USB device that rogauracore claims for
+# the length of one write, and it is written by more callers than anything
+# else here: the login apply, the enforcer, the tray, the hotkey cyclers and
+# the window, several of which react to the SAME event. Measured at boot on
+# 2026-09-04, 22:24:51: three kbdrgb writes with three different colours
+# started inside one second because a profile switch reached three of them at
+# once, and two came back "exit 250" with nothing on stderr -- rogauracore
+# failing to claim an interface another copy of rogauracore was holding.
+#
+# Longer wait than the fan lock: a colour write takes about a second of USB
+# round trips, so 2s would have the third caller give up while the second is
+# still legitimately working. Waiting is right here in a way it is not for
+# fans, because these writes are short, rare and idempotent -- the last one
+# to run wins and that is the colour the user asked for.
+KBD_LOCK_WAIT=6
+take_kbd_lock() {
+    local file
+    file=$(smu_lock_file) || return 0
+    file="${file}.kbd"
+    command -v flock >/dev/null 2>&1 || return 0
+    { exec 9>>"$file"; } 2>/dev/null || return 0
+    flock -w "$KBD_LOCK_WAIT" 9 2>/dev/null
+    return 0
+}
+
 # The asusd actions take no arguments at all: the unit name is written into
 # this script and never comes from the caller. Anything extra is a caller
 # that thinks it is passing a unit name, and is refused rather than ignored.
@@ -753,6 +778,10 @@ case "$1" in
             echo "rogauracore is not installed" >&2
             exit 1
         }
+        # Before any of the branches below, so that two callers racing the
+        # same profile switch queue rather than fight over the USB claim.
+        # See take_kbd_lock.
+        take_kbd_lock
         hex2() { printf '%02x' "$1"; }
 
         case "$CMD" in

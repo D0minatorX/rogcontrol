@@ -132,7 +132,7 @@ def apply_profile(profile):
         flat = []
         for t, pct in expanded:
             flat += [t, pct_to_pwm255(pct)]
-        run_helper("fan", channel, *flat)
+        hardware.run_fan_helper_logged(channel, *flat, source="cycle")
 
 
 def main():

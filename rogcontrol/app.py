@@ -994,13 +994,25 @@ class MainWindow(Adw.ApplicationWindow):
     def toast(self, text):
         """Show a transient message. Safe to call from any thread."""
         if threading.current_thread() is threading.main_thread():
-            self.toast_overlay.add_toast(Adw.Toast.new(text))
+            self.toast_overlay.add_toast(self._make_toast(text))
         else:
             GLib.idle_add(self._toast_idle, text)
 
     def _toast_idle(self, text):
-        self.toast_overlay.add_toast(Adw.Toast.new(text))
+        self.toast_overlay.add_toast(self._make_toast(text))
         return GLib.SOURCE_REMOVE
+
+    @staticmethod
+    def _make_toast(text):
+        # use-markup defaults to True, so text built from live values --
+        # a shell command, an exception message, a path -- breaks Pango
+        # markup parsing the moment it contains a bare "&" or "<" (e.g. the
+        # update terminal fallback's "cd X && ./install.sh") and the toast
+        # never appears at all, silently. None of this app's toasts need
+        # markup.
+        toast = Adw.Toast.new(text)
+        toast.set_use_markup(False)
+        return toast
 
     def claim_hardware(self, owner):
         """Take the machine for one slow write, or refuse and say why.

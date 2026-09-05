@@ -1143,6 +1143,116 @@ def dgpu_is_suspended(root=None):
     return None
 
 
+# What nvidia-smi says when the card is not reachable at this instant, as
+# opposed to when it has refused the value being written. Matched on
+# substrings because the wording differs between the NVML init failure
+# ("Failed to initialize NVML: No supported GPUs were found") and the
+# per-device one ("Unable to determine the device handle for GPU0:
+# 0000:01:00.0: Unknown Error"), and both arrive on the same stderr.
+#
+# The distinction matters because the two want opposite handling: a card that
+# is asleep, mid-resume, or whose driver has not come back from an S3 cycle
+# is a write to retry, not a fault to report, and the enforcer comes back
+# every 60 seconds to do exactly that. A card that rejected a 500 W limit is
+# a real error and must stay one.
+DGPU_UNREACHABLE_MARKERS = (
+    "no devices found",
+    "no supported gpus were found",
+    "unable to determine the device handle",
+    "unable to determine the number of gpus",
+    "failed to initialize nvml",
+    "driver/library version mismatch",
+)
+
+
+def dgpu_unreachable(message):
+    """True when this nvidia-smi failure means "the card is not there now"."""
+    low = (message or "").lower()
+    return any(marker in low for marker in DGPU_UNREACHABLE_MARKERS)
+
+
+def wait_for_dgpu_awake(wait_seconds=0, poll_seconds=0.5):
+    """Give a runtime-suspended card a moment to come back. Returns a bool.
+
+    True when the card is awake, or when it cannot be told (no card, no
+    runtime PM node) -- unknown keeps the old behaviour of writing anyway,
+    same principle as dgpu_available().
+
+    Waiting rather than skipping because nvidia-smi is supposed to resume the
+    card itself and mostly does; this covers the window where the write lands
+    while the resume is still in flight and NVML answers "No devices found"
+    instead of blocking. wait_seconds defaults to 0 for the long-lived
+    services, which must not sleep in their loop and get a free retry on the
+    next pass anyway."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        if dgpu_is_suspended() is not True:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll_seconds)
+
+
+def run_nvidia_helper_logged(*args, source="app", timeout=30, wait_seconds=0):
+    """A helper write that goes through nvidia-smi, logged the way those need.
+
+    run_helper_logged with two differences, both about the card rather than
+    the value: the write waits for a runtime-suspended card first, and a
+    failure that says the card is unreachable is logged at INFO, because
+    nothing is wrong with the setting and the next enforcer pass re-applies
+    it. Same shape as the NO_DISPLAY_MESSAGE handling on the clock offsets,
+    and for the same reason -- two red lines per resume, every resume, for
+    work that was about to be redone.
+
+    Returns ``(ok, message)`` like run_helper_logged."""
+    wait_for_dgpu_awake(wait_seconds)
+    ok, message = run_helper(*args, timeout=timeout)
+    if not ok:
+        cmd = " ".join(str(a) for a in args)
+        level = "INFO" if dgpu_unreachable(message) else "ERROR"
+        suffix = (" -- card not reachable, will retry"
+                  if level == "INFO" else "")
+        log(f"{cmd} failed: {message}{suffix}", level, source=source,
+            dedupe_key=f"fail:{args[0]}")
+    return ok, message
+
+
+# The one fan channel that has nothing to do with the discrete card. Used to
+# decide how loudly a failed curve write is reported, not which ones are
+# attempted -- see run_fan_helper_logged.
+CPU_FAN_CHANNEL = "1"
+
+
+def run_fan_helper_logged(channel, *values, source="app", timeout=30):
+    """A fan-curve write, reported with the state of the dGPU taken into account.
+
+    The GPU-side fan channels will not take a curve while the card is powered
+    down -- the EC has nothing to control and the write comes back non-zero.
+    That is expected in Integrated mode and while a mode switch is in
+    progress, and on 2026-09-04 it put three ERROR lines in the log for fans
+    behaving exactly as they should. So it is logged at INFO in that state
+    and stays an ERROR in every other.
+
+    The write is still ATTEMPTED rather than skipped when the card is down.
+    Which channels are GPU-side is model-specific -- FAN_LABELS is this
+    laptop's map, not a fact about ASUS hardware -- and a machine whose third
+    fan is a chassis fan has to keep getting its curve regardless of what the
+    NVIDIA card is doing.
+
+    Returns ``(ok, message)`` like run_helper_logged."""
+    ok, message = run_helper("fan", channel, *values, timeout=timeout)
+    if not ok:
+        gpu_side_while_card_down = (str(channel) != CPU_FAN_CHANNEL
+                                    and not nvidia_driver_loaded())
+        level = "INFO" if gpu_side_while_card_down else "ERROR"
+        label = FAN_LABELS.get(str(channel), f"fan {channel}")
+        suffix = (" -- expected while the card is powered down"
+                  if gpu_side_while_card_down else "")
+        log(f"fan {channel} ({label}) curve failed: {message}{suffix}",
+            level, source=source, dedupe_key=f"fan{channel}")
+    return ok, message
+
+
 def read_vram(timeout=5):
     """(used_mib, total_mib) of the NVIDIA card's own memory, or (None, None).
 
@@ -1362,22 +1472,106 @@ def nvidia_settings_args(kind, mhz):
 # what session_display_env is for.
 DISPLAY_VARS = ("DISPLAY", "XAUTHORITY")
 
+# The exact message a caller gets when the only thing wrong is that there is
+# no graphical session yet. A constant rather than a string typed out again at
+# each call site: the enforcer tells this failure apart from a real
+# nvidia-settings error by comparing against it, and defers instead of
+# reporting. Said plainly rather than left to nvidia-settings, whose own answer
+# ("The control display is undefined") reads like a broken driver.
+NO_DISPLAY_MESSAGE = ("no graphical session yet -- nvidia-settings needs "
+                      "DISPLAY, which the session had not published")
+
+# The same idea for the other reason an offset cannot land: the card is not
+# there. Integrated mode, a mode switch still tearing the card down, or a
+# reboot pending on one -- in all three the nvidia module is gone, and the
+# offset is work to do when it comes back rather than a fault to report.
+NO_DRIVER_MESSAGE = ("nvidia driver not loaded -- the card is powered down "
+                     "or a graphics-mode switch has not finished")
+
+# Processes whose environment is worth trusting first when harvesting a
+# display below: each one IS the graphical session (or is started by it), so
+# its DISPLAY/XAUTHORITY pair is the session's own.
+SESSION_PROCESS_HINTS = (
+    "Xwayland", "Xorg", "X", "gnome-shell", "gnome-session-binary",
+    "kwin_wayland", "kwin_x11", "plasmashell", "sway", "Hyprland",
+    "xfwm4", "cinnamon", "mutter", "labwc", "niri",
+)
+
+
+def _display_env_from_processes():
+    """DISPLAY/XAUTHORITY read out of a live process belonging to this user's
+    graphical session, or ``{}`` when there is no such process.
+
+    The second place to look, after the user manager. A compositor is not
+    obliged to import anything into systemd -- a session started by startx, or
+    any setup where the display is exported by the shell rather than by
+    ``systemctl --user import-environment``, never publishes it -- so a
+    service that only asks the manager would wait forever on a machine whose
+    display is perfectly usable. Every process's environment here is readable
+    without privilege because they are this user's own."""
+    uid = os.getuid()
+    self_pid = str(os.getpid())
+    fallback = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return {}
+    for entry in entries:
+        if not entry.isdigit() or entry == self_pid:
+            continue
+        path = f"/proc/{entry}"
+        try:
+            if os.stat(path).st_uid != uid:
+                continue
+            with open(f"{path}/environ", "rb") as f:
+                raw = f.read()
+        except OSError:
+            continue
+        found = {}
+        for item in raw.split(b"\0"):
+            name, sep, value = item.partition(b"=")
+            if not sep:
+                continue
+            decoded = name.decode("utf-8", "replace")
+            if decoded in DISPLAY_VARS:
+                found[decoded] = value.decode("utf-8", "replace")
+        # DISPLAY is the one that has to be there. XAUTHORITY is often
+        # legitimately unset -- X falls back to ~/.Xauthority -- so a process
+        # carrying only DISPLAY is still a usable answer, just a worse one
+        # than a process carrying both.
+        if not found.get("DISPLAY"):
+            continue
+        try:
+            with open(f"{path}/comm") as f:
+                comm = f.read().strip()
+        except OSError:
+            comm = ""
+        if comm in SESSION_PROCESS_HINTS and found.get("XAUTHORITY"):
+            return found
+        if not fallback or (found.get("XAUTHORITY")
+                            and not fallback.get("XAUTHORITY")):
+            fallback = found
+    return fallback
+
 
 def session_display_env(timeout=5):
     """This process's environment, with DISPLAY/XAUTHORITY filled in from the
-    user's session manager when they are missing.
+    user's session when they are missing.
 
     The boot apply is a systemd user service wanted by default.target, and
     it can start BEFORE the compositor imports those two variables into the
     user manager -- measured at three seconds early on this machine. A
     process's environment is fixed when it execs, so every retry inside that
     one process then ran without a display and nvidia-settings answered "The
-    control display is undefined" to all of them. Asking the manager at the
-    moment of the call gets the variables it has imported since.
+    control display is undefined" to all of them. Asking at the moment of the
+    call gets whatever the session has published since.
 
-    ``systemctl --user show-environment`` needs no display of its own -- it
-    talks to the manager over its socket -- so this is safe to call from a
-    service that may have started before there was one."""
+    Two sources, in order. ``systemctl --user show-environment`` needs no
+    display of its own -- it talks to the manager over its socket -- so it is
+    safe to call from a service that started before there was one. When the
+    manager has nothing (the compositor never imported it, or has not yet),
+    the session's own processes are asked instead; see
+    _display_env_from_processes."""
     env = os.environ.copy()
     if all(env.get(name) for name in DISPLAY_VARS):
         return env
@@ -1385,40 +1579,56 @@ def session_display_env(timeout=5):
         result = subprocess.run(["systemctl", "--user", "show-environment"],
                                 capture_output=True, text=True, timeout=timeout)
     except Exception:
+        result = None
+    if result is not None and result.returncode == 0:
+        for line in result.stdout.splitlines():
+            name, sep, value = line.partition("=")
+            if sep and name in DISPLAY_VARS and not env.get(name):
+                env[name] = value
+    if env.get("DISPLAY"):
         return env
-    if result.returncode != 0:
-        return env
-    for line in result.stdout.splitlines():
-        name, sep, value = line.partition("=")
-        if sep and name in DISPLAY_VARS and not env.get(name):
+    for name, value in _display_env_from_processes().items():
+        if not env.get(name):
             env[name] = value
     return env
 
 
-def set_nvidia_clock_offset(kind, mhz, timeout=10):
-    """Apply one clock offset, returning ``(ok, message)`` like run_helper."""
-    # Retried rather than checked once: the unit files order the enforcer
-    # and the boot apply after graphical-session.target, but reaching that
-    # target only means the compositor's jobs are done, not that it has
-    # finished exporting DISPLAY into the user manager's environment --
-    # that import is a separate step and can still land a moment later.
-    # Three tries over three seconds (the ordering fix's own measurement)
-    # still missed the window on this machine on 2026-08-31, so this now
-    # covers six seconds -- still well under the caller's own timeout and
-    # the enforcer's 60s cycle, so a slow session never blocks anything
-    # else on this thread.
+def session_display_ready():
+    """True when a graphical session that nvidia-settings can talk to exists.
+
+    What a caller holding a deferred offset asks before retrying it. Cheap in
+    the answer that matters: once the display is in this process's own
+    environment (the window, the tray) it is a dict lookup, and the two
+    lookups behind it only run for a service that started without one."""
+    return bool(session_display_env().get("DISPLAY"))
+
+
+def set_nvidia_clock_offset(kind, mhz, timeout=10, wait_seconds=0):
+    """Apply one clock offset, returning ``(ok, message)`` like run_helper.
+
+    ``wait_seconds`` is for one-shot callers only -- the login apply, which
+    has nothing after it that would retry, so waiting a moment for a session
+    that is nearly up is the whole of its second chance. It defaults to 0
+    because waiting is the wrong answer for everyone else: a long-lived
+    service must not block its loop on it, and the failure it would be
+    waiting out (``NO_DISPLAY_MESSAGE``) is exactly the one worth deferring
+    and retrying later rather than sleeping through. This retried for six
+    seconds unconditionally and still lost the race at boot on 2026-09-02;
+    no fixed wait is long enough, because a session can be minutes away (a
+    display manager sitting on its greeter) or never arrive at all."""
+    # Before the session question, because it is the cheaper one and because
+    # nvidia-settings answers it with 30 lines of GTK theme warnings around a
+    # two-line "NVIDIA driver is not loaded" -- all of which went into the log
+    # as one ERROR, six times, on 2026-09-04 while the card was off the bus.
+    if not nvidia_driver_loaded():
+        return False, NO_DRIVER_MESSAGE
     env = session_display_env()
-    for _ in range(6):
-        if env.get("DISPLAY"):
-            break
+    deadline = time.monotonic() + wait_seconds
+    while not env.get("DISPLAY") and time.monotonic() < deadline:
         time.sleep(1)
         env = session_display_env()
     if not env.get("DISPLAY"):
-        # Said plainly rather than left to nvidia-settings, whose own answer
-        # ("The control display is undefined") reads like a broken driver
-        # rather than a graphical session that is not up yet.
-        return False, ("no graphical session yet -- nvidia-settings needs "
-                       "DISPLAY, which the session had not published")
+        return False, NO_DISPLAY_MESSAGE
     try:
         result = subprocess.run(nvidia_settings_args(kind, mhz), env=env,
                                 capture_output=True, text=True, timeout=timeout)
@@ -1723,15 +1933,41 @@ def read_gpu_mode(timeout=5):
     return result.stdout.strip() or None
 
 
-def dgpu_available(timeout=5):
-    """False only when the mode is known and it is Integrated.
+# The kernel's own answer to "is there a GPU the nvidia driver can talk to".
+# One entry per bound card, and the directory disappears with the module.
+NVIDIA_PROC_GPUS = "/proc/driver/nvidia/gpus"
 
-    Integrated powers the card down, so nvidia-smi cannot reach it -- every
-    apply that touches the GPU logged an ERROR each enforcer cycle while
-    sitting in that mode. Unknown (no supergfxctl, or it did not answer)
-    returns True: a machine with no supergfxd is not one this ever guarded
-    against, so it keeps applying as it always did."""
-    return read_gpu_mode(timeout) != "Integrated"
+
+def nvidia_driver_loaded(root=None):
+    """True when the nvidia module is loaded and has a card bound to it.
+
+    Two reads of a procfs directory, no subprocess -- which is what makes it
+    usable as a guard in front of every nvidia-smi call rather than only at
+    startup."""
+    try:
+        return bool(os.listdir(_under(root, NVIDIA_PROC_GPUS)))
+    except OSError:
+        return False
+
+
+def dgpu_available(timeout=5):
+    """Whether a GPU write can land: not Integrated, and driver actually up.
+
+    The mode question alone is not enough, and 2026-09-04 is why. supergfxd
+    reports the mode it has ACCEPTED, not the one in force: asked for
+    AsusMuxDgpu at 20:22 with the reboot still pending, `supergfxctl -g`
+    answered AsusMuxDgpu immediately while the machine went on running
+    Integrated with the nvidia module unloaded and the card off the PCI bus.
+    This returned True for that, and the apply and the enforcer between them
+    put eight ERROR lines in the log writing to a driver that was not there.
+    The same gap opens at boot, where the login apply can beat supergfxd to
+    the point of answering at all.
+
+    So the daemon is asked what it intends and the kernel is asked what is
+    actually loaded, and both have to agree before anything is written."""
+    if read_gpu_mode(timeout) == "Integrated":
+        return False
+    return nvidia_driver_loaded()
 
 
 def read_supported_gpu_modes(timeout=5):
@@ -1744,6 +1980,80 @@ def read_supported_gpu_modes(timeout=5):
     if result.returncode != 0:
         return []
     return parse_supergfx_modes(result.stdout)
+
+
+# What supergfxd wants the user to do before the mode it has accepted is
+# actually in force. Normalised to these three, because the daemon's own
+# wording has changed between releases ("Logout", "logout required",
+# "No action required") and the page branches on it.
+PENDING_REBOOT, PENDING_LOGOUT, PENDING_NONE = "reboot", "logout", "none"
+
+
+def parse_pending_action(text):
+    """supergfxd's pending-action string as one of the three above, or None.
+
+    None means it could not be told -- an unknown word, an empty answer, a
+    daemon that did not reply -- and the caller falls back to deciding for
+    itself. Anything containing "reboot" wins over "logout": the two never
+    appear together, but a reboot instruction acted on as a logout leaves the
+    user in the loop this whole function exists to end."""
+    low = (text or "").strip().lower()
+    if not low:
+        return None
+    if "reboot" in low:
+        return PENDING_REBOOT
+    if "logout" in low or "log out" in low:
+        return PENDING_LOGOUT
+    if "no action" in low or low in ("none", "nothing"):
+        return PENDING_NONE
+    return None
+
+
+SUPERGFXD_CONF_PATH = "/etc/supergfxd.conf"
+
+
+def supergfxd_always_reboot(root=None):
+    """True when supergfxd applies EVERY mode change at the next boot.
+
+    None when the file is missing or unreadable. World-readable JSON, so this
+    is a file read and not another subprocess.
+
+    Read directly rather than inferred from the pending action, because the
+    pending action is a race: supergfxd answers the D-Bus switch call the
+    moment it accepts, and `supergfxctl -p` goes on saying "No action
+    required" until its worker has got far enough to decide. Asking it
+    straight after a switch -- which is exactly when the answer is needed --
+    is asking too early, which is how a user got told to log out for a change
+    that was waiting on a reboot, twice, before the second attempt happened
+    to catch the daemon in the right state."""
+    try:
+        with open(_under(root, SUPERGFXD_CONF_PATH)) as f:
+            return bool(json.load(f).get("always_reboot"))
+    except (OSError, ValueError):
+        return None
+
+
+def read_gpu_pending_action(timeout=5):
+    """What supergfxd says has to happen next, or None.
+
+    Asked rather than worked out, because the app cannot know it: with
+    ``always_reboot`` set in /etc/supergfxd.conf EVERY mode change becomes a
+    reboot, including the Integrated/Hybrid pair that normally only needs a
+    logout -- and telling a user to log out for a change that is waiting on a
+    reboot sends them round a loop that never completes. The daemon holds
+    that config, so the daemon is asked.
+
+    mode_change_needs_reboot() is still the fallback for when this returns
+    None: it answers the MUX question from the hardware, which is true
+    regardless of what any daemon thinks."""
+    try:
+        result = subprocess.run(["supergfxctl", "-p"],
+                                capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return parse_pending_action(result.stdout)
 
 
 # The one mode that lives on the far side of the hardware MUX. Switching
@@ -2091,6 +2401,12 @@ def set_power_mode_for_profile(profile_name, timeout=5):
 
 
 
+# How long to leave the keyboard controller before a second attempt. Long
+# enough to cover USB enumeration finishing, short enough to stay inside the
+# enforcer's cycle without being noticed.
+KBD_RETRY_DELAY_S = 1.5
+
+
 def set_profile_kbd_color(cfg, profile_name=None, caps=None, timeout=10):
     """Take the keyboard colour along with a profile switch.
 
@@ -2113,10 +2429,32 @@ def set_profile_kbd_color(cfg, profile_name=None, caps=None, timeout=10):
     out of four.
 
     The colour itself is decided in kbdcolor, which has no hardware in it;
-    this is only the write."""
+    this is only the write.
+
+    Retried once, because the write that fails is the one that collided with
+    another writer. The keyboard is a single USB device and a profile switch
+    reaches several callers at once: at 22:24:51 on 2026-09-04 the login
+    apply, the enforcer and the tray each started a colour write inside the
+    same second and two came back "exit 250" with nothing on stderr --
+    rogauracore unable to claim an interface another copy of rogauracore was
+    holding. (The first guess, USB enumeration, was wrong: the controller had
+    been on the bus for 23 seconds by then.)
+
+    The lock in the helper (take_kbd_lock) is the actual fix, and makes those
+    callers queue instead of fight. This stays as the backstop for the
+    collisions it cannot serialise -- another program on the machine holding
+    the same device -- and for a helper too old to have the lock.
+
+    One retry, not a loop: this is called from the enforcer's cycle, and a
+    keyboard that is genuinely absent must not cost that loop a second per
+    pass forever."""
     args = kbdcolor.profile_color_args(cfg, profile_name, caps)
     if args is None:
         return None
+    ok, message = run_helper(*args, timeout=timeout)
+    if ok:
+        return ok, message
+    time.sleep(KBD_RETRY_DELAY_S)
     return run_helper(*args, timeout=timeout)
 
 # -- Log ---------------------------------------------------------------------
@@ -2155,6 +2493,36 @@ def read_log_tail(max_lines=200, path=None, max_bytes=LOG_TAIL_BYTES):
     if max_lines is not None and len(lines) > max_lines:
         lines = lines[-max_lines:]
     return "\n".join(lines)
+
+
+# A log line starts with its own timestamp; anything else is a continuation
+# of the line above it. nvidia-settings alone contributes a dozen such lines
+# per failure (its GTK theme warnings), and a filter that dropped them would
+# turn one real error into a headline with its explanation cut off.
+LOG_ENTRY_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[(\w+)\]")
+
+# Which levels count as a problem worth showing on their own. WARN is in
+# with ERROR deliberately: the enforcer's "offsets still not applied after 40
+# minutes" is a WARN, and it is exactly the kind of line someone opening a
+# filtered log is looking for.
+LOG_PROBLEM_LEVELS = ("ERROR", "WARN")
+
+
+def filter_log_problems(text, levels=LOG_PROBLEM_LEVELS):
+    """Only the entries logged at ``levels``, continuation lines included.
+
+    Returns "" when there are none, which the caller can tell apart from a
+    log that could not be read (None) or one that is genuinely empty."""
+    if not text:
+        return text
+    kept, keeping = [], False
+    for line in text.splitlines():
+        match = LOG_ENTRY_RE.match(line)
+        if match:
+            keeping = match.group(1) in levels
+        if keeping:
+            kept.append(line)
+    return "\n".join(kept)
 
 
 def clear_log(path=None):
@@ -3111,12 +3479,23 @@ def download_and_stage_update(download_url, timeout=60):
 
 
 # Tried in this order -- GNOME first since it is the desktop install.sh's own
-# detection treats as the common case, then KDE's terminal, then xterm as the
-# one every X11/Wayland session with the base package set tends to carry.
+# detection treats as the common case, then KDE's terminal, then the other
+# terminals people actually have installed instead of either DE's default
+# (a GNOME session with only alacritty -- the case that surfaced this list
+# was too short -- is not rare), then xterm as the one every X11/Wayland
+# session with the base package set tends to carry.
 # Each entry is (binary name, argv prefix before the command to run).
 UPDATE_TERMINALS = (
     ("gnome-terminal", ["gnome-terminal", "--"]),
     ("konsole", ["konsole", "-e"]),
+    ("alacritty", ["alacritty", "-e"]),
+    ("kitty", ["kitty"]),
+    ("foot", ["foot"]),
+    ("wezterm", ["wezterm", "start", "--"]),
+    ("tilix", ["tilix", "-e"]),
+    ("terminator", ["terminator", "-x"]),
+    ("xfce4-terminal", ["xfce4-terminal", "-x"]),
+    ("ghostty", ["ghostty", "-e"]),
     ("xterm", ["xterm", "-e"]),
 )
 
