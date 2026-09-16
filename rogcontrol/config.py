@@ -561,6 +561,13 @@ def migrate_config(cfg, gpu_min_w=1, gpu_max_w=140):
                 if section not in prof:
                     prof[section] = json.loads(json.dumps(base[section]))
 
+            # Older profiles must actively return this per-profile setting
+            # to driver Auto, rather than inheriting the previous profile.
+            gpu = prof.get("gpu")
+            if isinstance(gpu, dict):
+                gpu.setdefault("powermizer_mode", 2)
+                gpu.setdefault("voltage_boost", 0)
+
     # Every profile gets the keyboard colour Profile Color paints it in, if
     # it has not got one already. Outside the two branches above rather than
     # inside either, because both need it: a fresh install has just been

@@ -89,7 +89,14 @@ time and test.
 GPU
 
 Power limit, core and memory clock offsets, a clock ceiling, NVIDIA Dynamic
-Boost and temperature target. Ranges are read from your card, not hardcoded.
+Boost and temperature target. The GPU tab also shows experimental, per-profile
+Voltage Boost (0–100%) only when a read-only probe confirms that this NVIDIA
+GPU and driver expose the required voltage-rail control. 0% is stock; any
+non-zero Apply asks for confirmation because it can increase heat/power and
+cause instability. It uses the installed NVIDIA driver directly and never
+requires LACT. Quick Access also provides the NVIDIA PowerMizer mode per
+profile when the active GPU and driver support it. Ranges are read from your
+card, not hardcoded.
 
 Applied on the same terms as the CPU page: an Apply button, a banner naming
 what is not on the card yet, and a profile that is only written once the card

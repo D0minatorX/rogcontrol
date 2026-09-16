@@ -20,7 +20,9 @@ installer detects what is missing and offers to install it:
 
     ryzenadj        CPU power limits and undervolt (AMD only)
     nvidia-utils    GPU temperature and power limit
-    nvidia-settings GPU clock offsets
+    nvidia-settings GPU clock offsets and PowerMizer (when supported)
+    NVIDIA driver   experimental Voltage Boost (when the live driver probe supports it;
+                    no LACT installation is needed)
     supergfxctl     switching between integrated and hybrid graphics
     rogauracore     keyboard colours and lighting modes
     libayatana-appindicator   the tray icon

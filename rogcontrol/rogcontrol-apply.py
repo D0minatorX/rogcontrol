@@ -161,7 +161,8 @@ def _offset_failure_level(message):
     was about to be handled."""
     return ("INFO"
             if message in (hardware.NO_DISPLAY_MESSAGE,
-                           hardware.NO_DRIVER_MESSAGE)
+                           hardware.NO_DRIVER_MESSAGE,
+                           hardware.NVIDIA_POWERMIZER_QUERY_MESSAGE)
             else "ERROR")
 
 
@@ -173,6 +174,19 @@ def apply_gpu_clock_offsets(gpu, profile_only=False):
     # auto-switch path it hangs while holding _ac_lock. The package's call
     # has a timeout and turns a failure into (ok, message) rather than an
     # exception, which is what every other subprocess in this tree does.
+    if "powermizer_mode" in gpu:
+        ok, message = hardware.set_nvidia_powermizer_mode(
+            gpu["powermizer_mode"], wait_seconds=OFFSET_WAIT_SECONDS)
+        if not ok and message != hardware.NVIDIA_POWERMIZER_UNSUPPORTED_MESSAGE:
+            hardware.log(f"GPU PowerMizer mode failed: {message}",
+                         _offset_failure_level(message), source="apply",
+                         dedupe_key="nvpowermizer")
+    if "voltage_boost" in gpu:
+        ok, message = hardware.set_nvidia_voltage_boost(gpu["voltage_boost"])
+        if not ok and message != hardware.NVIDIA_VOLTAGE_BOOST_UNSUPPORTED_MESSAGE:
+            hardware.log(f"GPU Voltage Boost failed: {message}",
+                         _offset_failure_level(message), source="apply",
+                         dedupe_key="nvvoltageboost")
     if _offset_worth_writing(gpu, "clock_offset", profile_only):
         ok, message = hardware.set_nvidia_clock_offset(
             "core", gpu["clock_offset"], wait_seconds=OFFSET_WAIT_SECONDS)

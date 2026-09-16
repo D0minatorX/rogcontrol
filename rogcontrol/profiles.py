@@ -130,7 +130,8 @@ DEFAULT_PROFILES = {
     "Quiet": {
         "cpu": {"stapm": 25000, "fast": 35000, "slow": 25000, "temp": 85, "coall": 0,
                 "limits_enabled": False, "epp": "power", "pl1": 35, "pl2": 45},
-        "gpu": {"watts": 65, "clock_offset": 0, "mem_clock_offset": 0},
+        "gpu": {"watts": 65, "clock_offset": 0, "mem_clock_offset": 0,
+                "powermizer_mode": 2, "voltage_boost": 0},
         "fans": {
             "1": [[50, 6], [60, 6], [70, 6], [80, 6], [86, 6], [90, 8],
                   [93, 40], [96, 80]],
@@ -143,7 +144,8 @@ DEFAULT_PROFILES = {
     "Balanced Power": {
         "cpu": {"stapm": 55000, "fast": 65000, "slow": 55000, "temp": 90, "coall": 0,
                 "limits_enabled": False, "epp": "balance_power", "pl1": 55, "pl2": 65},
-        "gpu": {"watts": 100, "clock_offset": 0, "mem_clock_offset": 0},
+        "gpu": {"watts": 100, "clock_offset": 0, "mem_clock_offset": 0,
+                "powermizer_mode": 2, "voltage_boost": 0},
         "fans": {
             "1": [[50, 9], [60, 9], [70, 9], [80, 9], [86, 9], [90, 12],
                   [93, 55], [96, 95]],
@@ -156,7 +158,8 @@ DEFAULT_PROFILES = {
     "Balanced Performance": {
         "cpu": {"stapm": 55000, "fast": 65000, "slow": 55000, "temp": 90, "coall": 0,
                 "limits_enabled": False, "epp": "balance_performance", "pl1": 55, "pl2": 65},
-        "gpu": {"watts": 100, "clock_offset": 0, "mem_clock_offset": 0},
+        "gpu": {"watts": 100, "clock_offset": 0, "mem_clock_offset": 0,
+                "powermizer_mode": 2, "voltage_boost": 0},
         "fans": {
             "1": [[50, 11], [60, 11], [70, 11], [80, 11], [86, 11], [90, 14],
                   [93, 65], [96, 100]],
@@ -169,7 +172,8 @@ DEFAULT_PROFILES = {
     "Performance": {
         "cpu": {"stapm": 75000, "fast": 90000, "slow": 75000, "temp": 95, "coall": 0,
                 "limits_enabled": False, "epp": "performance", "pl1": 80, "pl2": 90},
-        "gpu": {"watts": 140, "clock_offset": 0, "mem_clock_offset": 0},
+        "gpu": {"watts": 140, "clock_offset": 0, "mem_clock_offset": 0,
+                "powermizer_mode": 2, "voltage_boost": 0},
         "fans": {
             "1": [[50, 18], [70, 18], [86, 18], [89, 24], [92, 50],
                   [94, 75], [97, 92], [100, 100]],

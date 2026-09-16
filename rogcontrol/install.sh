@@ -902,6 +902,23 @@ command -v nvidia-smi >/dev/null 2>&1      && f=1 || f=0
 cap "GPU power / clock limit" $f nvidia "nvidia-smi missing"
 command -v nvidia-settings >/dev/null 2>&1 && f=1 || f=0
 cap "GPU clock offsets" $f nvidia_settings "nvidia-settings missing"
+# This is deliberately a read-only probe in its own Python process. The
+# undocumented NVAPI rail interface is not related to nvidia-settings, and
+# the child boundary means an incompatible driver cannot affect install.sh.
+f=0
+if command -v nvidia-smi >/dev/null 2>&1; then
+    # sed reads the complete output, unlike head which can make nvidia-smi
+    # fail with SIGPIPE under this script's `set -o pipefail` on multi-GPU
+    # systems.
+    pci_bus="$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader 2>/dev/null | sed -n '1p')"
+    if [ -n "$pci_bus" ] && PYTHONPATH="$LIBDIR${PYTHONPATH:+:$PYTHONPATH}" \
+        python3 -m rogcontrol.nvidia_api read --pci-bus "$pci_bus" 2>/dev/null \
+        | grep -q '"ok": true'; then
+        f=1
+    fi
+fi
+cap "GPU Voltage Boost (experimental)" $f nvidia_voltage_boost \
+    "active NVIDIA GPU/driver does not expose the voltage-rail control"
 command -v supergfxctl >/dev/null 2>&1     && f=1 || f=0
 cap "GPU mode switching" $f supergfxctl "supergfxctl missing"
 # Vendor first, exactly as hardware.detect_capabilities gates it: the binary

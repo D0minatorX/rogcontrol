@@ -190,7 +190,9 @@ def launch_update_terminal(install_sh_path, status_path=None):
         if shutil.which(name) is None:
             continue
         try:
-            process = subprocess.Popen([*prefix, "bash", "-c", inner_command])
+            process = subprocess.Popen(
+                [*prefix, "bash", "-c", inner_command],
+                start_new_session=True)
             try:
                 if process.wait(timeout=0.3) != 0:
                     continue

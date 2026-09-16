@@ -46,13 +46,13 @@ MIN_WIDTH, MIN_HEIGHT = 360, 360
 # (id, sidebar label, icon). Order is the sidebar order.
 PAGE_SPECS = (
     ("quick_access", "Quick Access", "speedometer-symbolic"),
-    ("overview", "Overview", "speedometer-symbolic"),
     ("cpu", "CPU", "computer-chip-symbolic"),
     ("gpu", "GPU", "video-display-symbolic"),
     ("fans", "Fans", "weather-windy-symbolic"),
     ("battery", "Battery", "battery-good-symbolic"),
     ("keyboard", "Keyboard", "keyboard-brightness-symbolic"),
     ("system", "System", "emblem-system-symbolic"),
+    ("overview", "Overview", "speedometer-symbolic"),
 )
 
 
@@ -562,6 +562,16 @@ class MainWindow(Adw.ApplicationWindow):
             if "temp_target" in gpu and self.caps.get("nv_temp_target"):
                 do("GPU temperature target",
                    lambda: hardware.run_helper("nvtemp", gpu["temp_target"]))
+            if ("voltage_boost" in gpu
+                    and self.caps.get("nvidia_voltage_boost")):
+                do("GPU Voltage Boost",
+                   lambda: hardware.set_nvidia_voltage_boost(
+                       gpu["voltage_boost"]))
+            if ("powermizer_mode" in gpu
+                    and self.caps.get("nvidia_powermizer_modes")):
+                do("GPU PowerMizer mode",
+                   lambda: hardware.set_nvidia_powermizer_mode(
+                       gpu["powermizer_mode"]))
             if self.caps.get("nvidia_settings"):
                 if "clock_offset" in gpu:
                     do("GPU core clock offset",
@@ -904,7 +914,7 @@ class MainWindow(Adw.ApplicationWindow):
                 tick()
         for page_id, _label, _icon in PAGE_SPECS:
             self.select_page(page_id)
-        self.select_page("overview")
+        self.select_page("quick_access")
         # The header menu's items are strings pointing at actions by name, so
         # a renamed handler shows up as a menu entry that is simply dead
         # rather than as an error. Nothing else would catch it.
@@ -968,6 +978,18 @@ class RogControlApp(Adw.Application):
                                             gpu_max_w=gpu_limits["max_w"])
             caps = hardware.detect_capabilities()
             caps["gpu_limits"] = gpu_limits
+            # GPUPowerMizerMode is a per-GPU driver attribute, not proof of
+            # nvidia-settings being installed. Probe it in this graphical
+            # session so unsupported NVIDIA cards and AMD systems get no row.
+            caps["nvidia_powermizer_modes"] = (
+                hardware.detect_nvidia_powermizer_modes()
+                if caps.get("nvidia_settings") else ())
+            # The voltage rail interface is an undocumented driver entry
+            # point. Probe it in the isolated child before constructing the
+            # page; no row is shown unless this exact GPU accepts a read.
+            caps["nvidia_voltage_boost"] = (
+                hardware.probe_nvidia_voltage_boost() is not None
+                if caps.get("nvidia") else False)
             # Asked here rather than inside detect_capabilities, which is
             # standard library only so the helper scripts and the tests can
             # import it: answering this needs GStreamer and a session bus.
@@ -975,7 +997,7 @@ class RogControlApp(Adw.Application):
             hardware_report_path = None
             self.win = MainWindow(self, config, caps,
                                   hardware_report_path=hardware_report_path)
-            self.win.select_page("overview")
+            self.win.select_page("quick_access")
             if not self.self_test:
                 # Ambient is the only mode that needs a process behind it, so
                 # a saved Ambient mode has to be restarted here; every other

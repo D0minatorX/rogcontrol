@@ -1410,6 +1410,8 @@ def thermal_state_changed():
 # So a no-display failure parks the offset here and the cycle retries it,
 # cheaply -- session_display_ready is a couple of reads -- until it lands.
 _pending_gpu_offsets = {}
+_pending_powermizer_mode = None
+_pending_voltage_boost = None
 _pending_offsets_since = None
 
 # How long a deferred offset may sit here before it is worth a WARN. Below
@@ -1443,12 +1445,25 @@ def retry_pending_gpu_offsets():
     whole point is to keep trying on the pass that runs every minute -- the
     full apply that first tried may not happen again this session."""
     global _pending_offsets_since
-    if not _pending_gpu_offsets:
+    if (not _pending_gpu_offsets and _pending_powermizer_mode is None
+            and _pending_voltage_boost is None):
+        return
+    # Voltage Boost goes straight to the NVIDIA driver rather than the
+    # display-server-bound nvidia-settings, so it can be retried before a
+    # graphical session exists. The other pending controls still need one.
+    if _pending_voltage_boost is not None:
+        percent = _pending_voltage_boost
+        if set_voltage_boost(percent):
+            log("GPU Voltage Boost applied now that the NVIDIA driver is up",
+                "INFO")
+    if (not _pending_gpu_offsets and _pending_powermizer_mode is None):
+        if _pending_voltage_boost is None:
+            _pending_offsets_since = None
         return
     if not hardware.session_display_ready():
         waited = time.monotonic() - (_pending_offsets_since or time.monotonic())
         if waited >= PENDING_OFFSET_WARN_SECONDS:
-            log(f"GPU clock offsets still not applied after {waited / 60:.0f} "
+            log(f"GPU session settings still not applied after {waited / 60:.0f} "
                 f"minutes: {hardware.NO_DISPLAY_MESSAGE}", "WARN",
                 dedupe_key="nvpending", dedupe_seconds=3600)
         return
@@ -1456,7 +1471,13 @@ def retry_pending_gpu_offsets():
         if set_clock_offset(kind, mhz):
             log(f"GPU {kind} clock offset applied ({mhz} MHz) now that the "
                 "graphical session is up", "INFO")
-    if not _pending_gpu_offsets:
+    if _pending_powermizer_mode is not None:
+        mode = _pending_powermizer_mode
+        if set_powermizer_mode(mode):
+            log("GPU PowerMizer mode applied now that the graphical session "
+                "is up", "INFO")
+    if (not _pending_gpu_offsets and _pending_powermizer_mode is None
+            and _pending_voltage_boost is None):
         _pending_offsets_since = None
 
 
@@ -1490,7 +1511,59 @@ def set_clock_offset(kind, mhz):
     return False
 
 
+def set_powermizer_mode(mode):
+    """Write PowerMizer, deferring through the same session race as offsets."""
+    global _pending_offsets_since, _pending_powermizer_mode
+    ok, message = hardware.set_nvidia_powermizer_mode(mode)
+    if ok:
+        _pending_powermizer_mode = None
+        return True
+    if message == hardware.NVIDIA_POWERMIZER_UNSUPPORTED_MESSAGE:
+        _pending_powermizer_mode = None
+        return False
+    if message in (hardware.NO_DISPLAY_MESSAGE, hardware.NO_DRIVER_MESSAGE,
+                   hardware.NVIDIA_POWERMIZER_QUERY_MESSAGE):
+        if not _pending_gpu_offsets and _pending_powermizer_mode is None:
+            _pending_offsets_since = time.monotonic()
+        _pending_powermizer_mode = mode
+        log(f"GPU PowerMizer mode deferred: {message} -- retrying every "
+            f"{INTERVAL_SECONDS}s until it does", "INFO",
+            dedupe_key="nvdeferpowermizer", dedupe_seconds=3600)
+        return False
+    log(f"GPU PowerMizer mode failed: {message}", "ERROR",
+        dedupe_key="nvpowermizer")
+    return False
+
+
+def set_voltage_boost(percent):
+    """Write Voltage Boost and retain a transient driver failure for retry."""
+    global _pending_offsets_since, _pending_voltage_boost
+    ok, message = hardware.set_nvidia_voltage_boost(percent)
+    if ok:
+        _pending_voltage_boost = None
+        return True
+    if message == hardware.NVIDIA_VOLTAGE_BOOST_UNSUPPORTED_MESSAGE:
+        _pending_voltage_boost = None
+        return False
+    if message == hardware.NO_DRIVER_MESSAGE:
+        if (not _pending_gpu_offsets and _pending_powermizer_mode is None
+                and _pending_voltage_boost is None):
+            _pending_offsets_since = time.monotonic()
+        _pending_voltage_boost = percent
+        log(f"GPU Voltage Boost deferred: {message} -- retrying every "
+            f"{INTERVAL_SECONDS}s until it does", "INFO",
+            dedupe_key="nvdefervoltageboost", dedupe_seconds=3600)
+        return False
+    log(f"GPU Voltage Boost failed: {message}", "ERROR",
+        dedupe_key="nvvoltageboost")
+    return False
+
+
 def apply_gpu_clock_offsets(gpu):
+    if "powermizer_mode" in gpu:
+        set_powermizer_mode(gpu["powermizer_mode"])
+    if "voltage_boost" in gpu:
+        set_voltage_boost(gpu["voltage_boost"])
     if "clock_offset" in gpu:
         set_clock_offset("core", gpu["clock_offset"])
     if "clock_limit" in gpu:

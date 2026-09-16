@@ -1453,11 +1453,119 @@ NV_CLOCK_ATTRIBUTES = {
     "memory": "GPUMemoryTransferRateOffsetAllPerformanceLevels",
 }
 
+# Values exposed by nvidia-settings' GPUPowerMizerMode attribute. Not every
+# GPU/driver combination offers every value, so callers must use the modes
+# returned by detect_nvidia_powermizer_modes() rather than assume this table.
+NVIDIA_POWERMIZER_MODES = {
+    0: "Adaptive",
+    1: "Prefer Maximum Performance",
+    2: "Driver controlled / Auto",
+    3: "Prefer Consistent Performance",
+}
+NVIDIA_POWERMIZER_AUTO = 2
+NVIDIA_POWERMIZER_UNSUPPORTED_MESSAGE = (
+    "this NVIDIA GPU/driver does not support GPUPowerMizerMode")
+NVIDIA_POWERMIZER_QUERY_MESSAGE = (
+    "could not query NVIDIA GPUPowerMizerMode; will retry")
+NVIDIA_VOLTAGE_BOOST_UNSUPPORTED_MESSAGE = (
+    "this NVIDIA GPU/driver does not support Voltage Boost")
+NVIDIA_VOLTAGE_BOOST_MIN = 0
+NVIDIA_VOLTAGE_BOOST_MAX = 100
+
 
 def nvidia_settings_args(kind, mhz):
     """The full nvidia-settings command line for one clock offset."""
     attribute = NV_CLOCK_ATTRIBUTES[kind]
     return ["nvidia-settings", "-a", f"[gpu:0]/{attribute}={int(mhz)}"]
+
+
+def nvidia_powermizer_args(mode, target="[gpu:0]"):
+    """The PATH-resolved nvidia-settings command for one PowerMizer mode."""
+    return ["nvidia-settings", "-a",
+            f"{target}/GPUPowerMizerMode={int(mode)}"]
+
+
+def nvidia_voltage_boost_args(action, value, pci_bus):
+    """Child-process invocation for the undocumented NVAPI bridge."""
+    args = [sys.executable, "-m", "rogcontrol.nvidia_api", action]
+    if value is not None:
+        args.append(str(int(value)))
+    return args + ["--pci-bus", pci_bus]
+
+
+def primary_nvidia_pci_bus(timeout=5):
+    """The primary NVIDIA PCI address, or None when the driver cannot say."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=pci.bus_id", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    lines = result.stdout.strip().splitlines()
+    return lines[0].strip() if lines else None
+
+
+def _run_nvidia_voltage_boost(action, value=None, timeout=10):
+    if not nvidia_driver_loaded():
+        return False, NO_DRIVER_MESSAGE
+    pci_bus = primary_nvidia_pci_bus(timeout)
+    if not pci_bus:
+        return False, NVIDIA_VOLTAGE_BOOST_UNSUPPORTED_MESSAGE
+    try:
+        result = subprocess.run(nvidia_voltage_boost_args(action, value, pci_bus),
+                                capture_output=True, text=True, timeout=timeout)
+    except Exception as error:
+        return False, str(error)
+    if result.returncode != 0:
+        return False, NVIDIA_VOLTAGE_BOOST_UNSUPPORTED_MESSAGE
+    try:
+        answer = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        return False, NVIDIA_VOLTAGE_BOOST_UNSUPPORTED_MESSAGE
+    if not answer.get("ok"):
+        return False, answer.get("error") or NVIDIA_VOLTAGE_BOOST_UNSUPPORTED_MESSAGE
+    value = answer.get("value")
+    if not isinstance(value, int) or not NVIDIA_VOLTAGE_BOOST_MIN <= value <= NVIDIA_VOLTAGE_BOOST_MAX:
+        return False, NVIDIA_VOLTAGE_BOOST_UNSUPPORTED_MESSAGE
+    return True, value
+
+
+def probe_nvidia_voltage_boost(timeout=10):
+    """Current boost percentage, or None when this GPU/driver cannot use it."""
+    ok, value = _run_nvidia_voltage_boost("read", timeout=timeout)
+    return value if ok else None
+
+
+def set_nvidia_voltage_boost(value, timeout=10):
+    """Set and read back NVIDIA Voltage Boost through the isolated bridge."""
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return False, "voltage boost must be between 0 and 100"
+    if not NVIDIA_VOLTAGE_BOOST_MIN <= value <= NVIDIA_VOLTAGE_BOOST_MAX:
+        return False, "voltage boost must be between 0 and 100"
+    ok, applied = _run_nvidia_voltage_boost("set", value, timeout)
+    if not ok:
+        return False, applied
+    if applied != value:
+        return False, f"driver reported {applied}% after requesting {value}%"
+    return True, f"{applied}%"
+
+
+def parse_nvidia_powermizer_modes(output):
+    """Return supported PowerMizer values from nvidia-settings output."""
+    match = re.search(r"Valid values for 'GPUPowerMizerMode' are:\s*(.*)",
+                      output or "", re.IGNORECASE)
+    if match is None:
+        return ()
+    values = []
+    for text in re.findall(r"\d+", match.group(1)):
+        value = int(text)
+        if value in NVIDIA_POWERMIZER_MODES and value not in values:
+            values.append(value)
+    return tuple(values)
 
 
 # The two variables nvidia-settings needs to find the user's display. Read
@@ -1596,6 +1704,89 @@ def session_display_ready():
     return bool(session_display_env().get("DISPLAY"))
 
 
+def _nvidia_settings_session(wait_seconds=0):
+    """Return an nvidia-settings-ready environment or its user-facing error."""
+    if not nvidia_driver_loaded():
+        return None, NO_DRIVER_MESSAGE
+    env = session_display_env()
+    deadline = time.monotonic() + wait_seconds
+    while not env.get("DISPLAY") and time.monotonic() < deadline:
+        time.sleep(1)
+        env = session_display_env()
+    if not env.get("DISPLAY"):
+        return None, NO_DISPLAY_MESSAGE
+    return env, None
+
+
+def detect_nvidia_powermizer_modes(timeout=10):
+    """Modes the active NVIDIA GPU actually advertises, or an empty tuple.
+
+    Binary presence alone says nothing about the GPU, driver, or attribute
+    support; AMD systems and unsupported NVIDIA GPUs expose no control.
+    """
+    if not have_cmd("nvidia-settings"):
+        return ()
+    env, _message = _nvidia_settings_session()
+    if env is None:
+        return ()
+    target = nvidia_settings_gpu_target(env, timeout)
+    return _query_nvidia_powermizer_modes(env, target, timeout) or ()
+
+
+def nvidia_settings_gpu_target(env, timeout):
+    """The nvidia-settings GPU target matching the primary NVIDIA card.
+
+    ``gpu:0`` is usually right on a laptop, but it is not a cross-device
+    contract.  nvidia-settings numbers GPUs in display-server order while
+    nvidia-smi numbers them in driver order.  Match their UUIDs when both
+    tools are available; otherwise use the first actual target advertised by
+    nvidia-settings rather than assuming an index.
+    """
+    try:
+        result = subprocess.run(["nvidia-settings", "-q", "gpus"], env=env,
+                                capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    candidates = []
+    for match in re.finditer(r"^\s*\[(\d+)\](.*?)(?=^\s*\[|\Z)",
+                            result.stdout, re.MULTILINE | re.DOTALL):
+        index, block = match.groups()
+        uuid = re.search(r"GPU-[0-9a-fA-F]{8}-[0-9a-fA-F-]+", block)
+        candidates.append((index, uuid.group(0) if uuid else None))
+    if not candidates:
+        return None
+    primary_uuid = None
+    if have_cmd("nvidia-smi"):
+        try:
+            primary = subprocess.run(
+                ["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=timeout)
+            if primary.returncode == 0:
+                primary_uuid = primary.stdout.strip().splitlines()[0].strip()
+        except Exception:
+            pass
+    for index, uuid in candidates:
+        if primary_uuid and uuid == primary_uuid:
+            return f"[gpu:{index}]"
+    return f"[gpu:{candidates[0][0]}]"
+
+
+def _query_nvidia_powermizer_modes(env, target, timeout):
+    """Query supported modes with an already-resolved graphical session."""
+    if target is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["nvidia-settings", "-q", f"{target}/GPUPowerMizerMode"],
+            env=env, capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+    return (parse_nvidia_powermizer_modes(result.stdout)
+            if result.returncode == 0 else None)
+
+
 def set_nvidia_clock_offset(kind, mhz, timeout=10, wait_seconds=0):
     """Apply one clock offset, returning ``(ok, message)`` like run_helper.
 
@@ -1613,17 +1804,44 @@ def set_nvidia_clock_offset(kind, mhz, timeout=10, wait_seconds=0):
     # nvidia-settings answers it with 30 lines of GTK theme warnings around a
     # two-line "NVIDIA driver is not loaded" -- all of which went into the log
     # as one ERROR, six times, on 2026-09-04 while the card was off the bus.
-    if not nvidia_driver_loaded():
-        return False, NO_DRIVER_MESSAGE
-    env = session_display_env()
-    deadline = time.monotonic() + wait_seconds
-    while not env.get("DISPLAY") and time.monotonic() < deadline:
-        time.sleep(1)
-        env = session_display_env()
-    if not env.get("DISPLAY"):
-        return False, NO_DISPLAY_MESSAGE
+    env, message = _nvidia_settings_session(wait_seconds)
+    if env is None:
+        return False, message
     try:
         result = subprocess.run(nvidia_settings_args(kind, mhz), env=env,
+                                capture_output=True, text=True, timeout=timeout)
+    except Exception as e:
+        return False, str(e)
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout or "unknown error").strip()
+    return True, result.stdout.strip()
+
+
+def set_nvidia_powermizer_mode(mode, timeout=10, wait_seconds=0):
+    """Apply one PowerMizer mode in the user's graphical session.
+
+    The bare executable name intentionally lets each distribution's PATH
+    locate nvidia-settings instead of assuming a fixed installation path.
+    """
+    try:
+        mode = int(mode)
+    except (TypeError, ValueError):
+        return False, "invalid NVIDIA PowerMizer mode"
+    if mode not in NVIDIA_POWERMIZER_MODES:
+        return False, "invalid NVIDIA PowerMizer mode"
+    if not have_cmd("nvidia-settings"):
+        return False, "nvidia-settings is not installed or not on PATH"
+    env, message = _nvidia_settings_session(wait_seconds)
+    if env is None:
+        return False, message
+    target = nvidia_settings_gpu_target(env, timeout)
+    supported = _query_nvidia_powermizer_modes(env, target, timeout)
+    if supported is None:
+        return False, NVIDIA_POWERMIZER_QUERY_MESSAGE
+    if mode not in supported:
+        return False, NVIDIA_POWERMIZER_UNSUPPORTED_MESSAGE
+    try:
+        result = subprocess.run(nvidia_powermizer_args(mode, target), env=env,
                                 capture_output=True, text=True, timeout=timeout)
     except Exception as e:
         return False, str(e)

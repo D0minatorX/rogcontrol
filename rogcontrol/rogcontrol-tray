@@ -18,6 +18,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 
 # The shared modules live next to this script's package in the repo, and
 # under ~/.local/lib once installed (this script itself is installed into
@@ -30,6 +31,15 @@ for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
         if _candidate not in sys.path:
             sys.path.insert(0, _candidate)
         break
+
+# GTK3 must not parse the desktop's potentially GTK4-only user stylesheet.
+# Keep this directory alive for GTK and the indicator host, but never pass
+# the private environment to the GTK4 window or profile helper.
+_TRAY_FILES = tempfile.TemporaryDirectory(prefix="rogcontrol-tray-")
+_DESKTOP_ENV = {key: os.environ.get(key)
+                for key in ("XDG_CONFIG_HOME", "GTK_THEME")}
+os.environ["XDG_CONFIG_HOME"] = _TRAY_FILES.name
+os.environ["GTK_THEME"] = "Adwaita"
 
 import gi  # noqa: E402
 
@@ -141,8 +151,13 @@ def spawn(argv, env=None):
     tray menu that blocks while a profile applies is a tray menu that looks
     broken. start_new_session so the child is not killed with the tray."""
     try:
-        subprocess.Popen(argv, env=env, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
+        env = dict(os.environ if env is None else env)
+        for key, value in _DESKTOP_ENV.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
+        subprocess.Popen(argv, env=env, start_new_session=True)
     except OSError as e:
         print(f"rogcontrol-tray: could not run {argv[0]}: {e}",
               file=sys.stderr)

@@ -14,7 +14,7 @@ The six settings go to four different places:
 * the two clock offsets -> nvidia-settings, *not* through the helper, because
   it needs the user's own display connection and root has none
 
-So one Apply is up to six independent writes. They all run, in order, even if
+So one Apply is up to seven independent writes. They all run, in order, even if
 one of them fails: a refused power limit says nothing about whether a clock
 offset can be set. Only the settings that took are saved to the profile, and
 a control whose write was refused goes back to the value the card accepted
@@ -61,7 +61,7 @@ FAN_CHANNEL = "2"
 # power budget is set before the clocks that spend it, and it matches the
 # order a whole-profile apply uses.
 APPLY_ORDER = ("watts", "clock_limit", "dyn_boost", "temp_target",
-               "clock_offset", "mem_clock_offset")
+               "voltage_boost", "clock_offset", "mem_clock_offset")
 
 # Which capability each setting needs. Four independent questions, because
 # the four back ends fail independently: a machine can have nvidia-smi
@@ -71,6 +71,7 @@ CAPABILITY = {"watts": "nvidia",
               "clock_limit": "nvidia",
               "clock_offset": "nvidia_settings",
               "mem_clock_offset": "nvidia_settings",
+              "voltage_boost": "nvidia_voltage_boost",
               "dyn_boost": "nv_dynamic_boost",
               "temp_target": "nv_temp_target"}
 
@@ -79,7 +80,8 @@ TITLES = {"watts": "Power limit",
           "dyn_boost": "Dynamic Boost",
           "temp_target": "GPU temperature target",
           "clock_offset": "Core clock offset",
-          "mem_clock_offset": "Memory clock offset"}
+          "mem_clock_offset": "Memory clock offset",
+          "voltage_boost": "Voltage Boost"}
 
 # Each control keeps a few words on the row and says the rest on hover: six
 # sliders with a paragraph under each is a page that has to be scrolled past
@@ -103,6 +105,13 @@ OFFSET_TOOLTIP = (
     "corruption."
 )
 
+VOLTAGE_BOOST_TOOLTIP = (
+    "Experimental NVIDIA driver control that gives GPU Boost up to 100% "
+    "more voltage headroom. 0% is stock.\n\n"
+    "This can increase heat and power use and can make the GPU unstable. "
+    "Increase it only in small steps and test thoroughly."
+)
+
 BOOST_TOOLTIP = (
     "Extra power the firmware may shift from the CPU to the GPU under load. "
     "Higher favours the GPU in games; lower leaves more headroom for the "
@@ -118,7 +127,8 @@ TEMP_TARGET_TOOLTIP = (
 APPLY_TOOLTIP = (
     "Writes everything on this page to the card: the power limit and clock "
     "ceiling through nvidia-smi, Dynamic Boost and the temperature target "
-    "through asus-wmi, and the two offsets through nvidia-settings."
+    "through asus-wmi, Voltage Boost through the NVIDIA driver, and the "
+    "two offsets through nvidia-settings."
 )
 
 REVERT_TOOLTIP = "Puts every control back to what the profile holds."
@@ -334,7 +344,17 @@ class GpuPage(Gtk.Box):
         memory.connect("changed", self._on_changed)
         clocks.add(memory)
         self.rows["mem_clock_offset"] = memory
-        align_value_widths([ceiling, core, memory])
+
+        voltage_boost = SliderRow(
+            title="Voltage Boost", subtitle="Experimental; 0% is stock",
+            tooltip=VOLTAGE_BOOST_TOOLTIP,
+            minimum=hardware.NVIDIA_VOLTAGE_BOOST_MIN,
+            maximum=hardware.NVIDIA_VOLTAGE_BOOST_MAX,
+            step=1, unit="%", settle_ms=SETTLE_MS)
+        voltage_boost.connect("changed", self._on_changed)
+        clocks.add(voltage_boost)
+        self.rows["voltage_boost"] = voltage_boost
+        align_value_widths([ceiling, core, memory, voltage_boost])
 
         self._build_actions_group()
         self._apply_capability_gating()
@@ -452,6 +472,8 @@ class GpuPage(Gtk.Box):
         if not self.caps.get("nvidia_settings"):
             for key in ("clock_offset", "mem_clock_offset"):
                 self.rows[key].set_visible(False)
+        if not self.caps.get("nvidia_voltage_boost"):
+            self.rows["voltage_boost"].set_visible(False)
         if not self.caps.get("nv_dynamic_boost"):
             self.rows["dyn_boost"].set_visible(False)
         if not self.caps.get("nv_temp_target"):
@@ -463,7 +485,8 @@ class GpuPage(Gtk.Box):
                   for key in ("watts", "dyn_boost", "temp_target")):
             self.power_group.set_visible(False)
         if not any(self.rows[key].get_visible()
-                  for key in ("clock_limit", "clock_offset", "mem_clock_offset")):
+                  for key in ("clock_limit", "clock_offset", "mem_clock_offset",
+                              "voltage_boost")):
             self.clocks_group.set_visible(False)
 
     # -- loading -------------------------------------------------------------
@@ -492,6 +515,7 @@ class GpuPage(Gtk.Box):
                 "dyn_boost": gpu.get("dyn_boost", self.firmware_boost),
                 "temp_target": gpu.get("temp_target",
                                        self.firmware_temp_target),
+                "voltage_boost": gpu.get("voltage_boost", 0),
             }
             for key, value in values.items():
                 row = self.rows[key]
@@ -874,6 +898,35 @@ class GpuPage(Gtk.Box):
             self.window.toast("Nothing on this page can be set on this "
                               "machine.")
             return
+        voltage_boost = dict(wanted).get("voltage_boost", 0)
+        if voltage_boost > 0:
+            self._confirm_voltage_boost(wanted)
+            return
+        self._start_apply(wanted)
+
+    def _confirm_voltage_boost(self, wanted):
+        """Require a fresh acknowledgement before an interactive boost."""
+        value = dict(wanted)["voltage_boost"]
+        dialog = Adw.AlertDialog(
+            heading=f"Apply {value}% Voltage Boost?",
+            body=("Voltage Boost is an experimental NVIDIA driver control. "
+                  "It may increase GPU heat and power use, and can cause "
+                  "instability, graphical corruption, or crashes.\n\n"
+                  "0% returns to stock without this warning."))
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("apply", f"Apply {value}%")
+        dialog.set_response_appearance("apply",
+                                       Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_voltage_boost_response, wanted)
+        dialog.present(self)
+
+    def _on_voltage_boost_response(self, _dialog, response, wanted):
+        if response == "apply":
+            self._start_apply(wanted)
+
+    def _start_apply(self, wanted):
         if not self.window.claim_hardware("writing the GPU settings"):
             return
         # Which profile these settings belong to, captured now: the write
@@ -912,6 +965,8 @@ class GpuPage(Gtk.Box):
             return hardware.run_helper("nvboost", value)
         if key == "temp_target":
             return hardware.run_helper("nvtemp", value)
+        if key == "voltage_boost":
+            return hardware.set_nvidia_voltage_boost(value)
         if key == "clock_offset":
             return hardware.set_nvidia_clock_offset("core", value)
         return hardware.set_nvidia_clock_offset("memory", value)
