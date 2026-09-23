@@ -67,6 +67,13 @@ class MainWindow(Adw.ApplicationWindow):
         super().__init__(application=app)
         self.config = config
         self.caps = caps
+        # NVIDIA runtime capabilities may be unavailable when the window is
+        # constructed in Cardwire Integrated/Smart mode.  They are refreshed
+        # in place after Hybrid access returns; pages all share this dict.
+        limits = caps.get("gpu_limits") or {}
+        self._gpu_runtime_ready = bool(limits.get("name"))
+        self._gpu_runtime_refreshing = False
+        self._gpu_reapply_after_refresh = False
         # Set by the caller when the application's first-launch check just
         # wrote one (see RogControlApp._ensure_window), before this window's
         # pages are built below, so the CPU page's own-vendor notice can name
@@ -438,6 +445,104 @@ class MainWindow(Adw.ApplicationWindow):
             if reload_fn is not None:
                 reload_fn()
 
+    # -- Cardwire runtime GPU capabilities ---------------------------------
+
+    def gpu_mode_changed(self, previous, current, accessible):
+        """Follow a Cardwire policy transition reported by the GPU page."""
+        if current in ("Integrated", "Smart"):
+            self._gpu_runtime_ready = False
+            gpu_page = self.pages.get("gpu")
+            if gpu_page is not None:
+                gpu_page.set_nvidia_accessible(False)
+            quick = self.pages.get("quick_access")
+            if quick is not None:
+                quick.refresh_gpu_capabilities(False)
+            return
+        if current != "Hybrid":
+            return
+        gpu_page = self.pages.get("gpu")
+        if gpu_page is not None:
+            gpu_page.set_nvidia_accessible(accessible)
+        quick = self.pages.get("quick_access")
+        if quick is not None:
+            quick.refresh_gpu_capabilities(accessible)
+        if previous in ("Integrated", "Smart"):
+            self._gpu_reapply_after_refresh = True
+        if accessible and not self._gpu_runtime_ready:
+            self.refresh_gpu_runtime_async()
+
+    def refresh_gpu_runtime_async(self):
+        """Rediscover driver-dependent controls after Hybrid access returns."""
+        if self._gpu_runtime_refreshing:
+            return
+        self._gpu_runtime_refreshing = True
+        self.apply_async(self._probe_gpu_runtime,
+                         self._on_gpu_runtime_refreshed)
+
+    def _probe_gpu_runtime(self):
+        if hardware.nvidia_access_error() is not None:
+            return None
+        limits = hardware.detect_gpu_limits()
+        powermizer = (hardware.detect_nvidia_powermizer_modes()
+                      if self.caps.get("nvidia_settings") else ())
+        voltage = (hardware.probe_nvidia_voltage_boost() is not None
+                   if self.caps.get("nvidia") else False)
+        return {
+            "gpu_limits": limits,
+            "nvidia_powermizer_modes": powermizer,
+            "nvidia_voltage_boost": voltage,
+        }
+
+    def _on_gpu_runtime_refreshed(self, runtime_caps, error):
+        self._gpu_runtime_refreshing = False
+        if error is not None or runtime_caps is None:
+            # The GPU page samples continuously while visible.  Once the
+            # driver becomes reachable it calls gpu_mode_changed again and
+            # this probe gets another chance without a blocking retry loop.
+            return
+        self.caps.update(runtime_caps)
+        self._gpu_runtime_ready = True
+        gpu_page = self.pages.get("gpu")
+        if gpu_page is not None:
+            gpu_page.refresh_runtime_capabilities()
+        quick = self.pages.get("quick_access")
+        if quick is not None:
+            quick.refresh_gpu_capabilities(True)
+        if self._gpu_reapply_after_refresh:
+            self._gpu_reapply_after_refresh = False
+            self._reapply_active_gpu_async()
+
+    def _reapply_active_gpu_async(self):
+        """Restore only active-profile GPU tuning after entering Hybrid."""
+        if not self.claim_hardware("restoring GPU settings after Hybrid"):
+            self._gpu_reapply_after_refresh = True
+            return
+        name = self.current_profile_name()
+        gpu = (self.current_profile().get("gpu") or {}).copy()
+        self._set_apply_banner("Restoring GPU settings after Hybrid mode…")
+        self.apply_async(
+            lambda: self._apply_gpu_profile_worker(gpu),
+            lambda result, error: self._on_hybrid_gpu_reapplied(
+                name, result, error))
+
+    def _on_hybrid_gpu_reapplied(self, name, result, error):
+        self.release_hardware()
+        self.apply_banner.set_revealed(False)
+        if error is not None:
+            self.toast(f"Could not restore {name} GPU settings: {error}")
+            return
+        failures, deferred = result
+        if deferred:
+            self._gpu_reapply_after_refresh = True
+            self._gpu_runtime_ready = False
+            self.toast("Hybrid is active, but NVIDIA access is not ready yet.")
+        elif failures:
+            self.toast(f"{name} GPU settings restored, except — "
+                       + "; ".join(failures))
+        else:
+            self.toast(f"{name} GPU settings restored for Hybrid mode.")
+        self.reload_pages()
+
     # -- managing which profiles exist ---------------------------------------
     #
     # The rules all live in config.py, where they are pure and tested; what
@@ -501,6 +606,7 @@ class MainWindow(Adw.ApplicationWindow):
           takes ``scaling_max_freq`` back to hardware maximum with it. A cap
           written first is silently undone."""
         failures = []
+        gpu_deferred = None
 
         def step(text):
             GLib.idle_add(self._set_apply_banner, text)
@@ -544,43 +650,8 @@ class MainWindow(Adw.ApplicationWindow):
                    lambda a=args: hardware.run_helper(*a))
 
         gpu = profile.get("gpu") or {}
-        if gpu:
-            step("Applying the GPU settings…")
-            if "watts" in gpu and self.caps.get("nvidia"):
-                do("GPU power limit",
-                   lambda: hardware.run_helper("gpu", gpu["watts"]))
-            if "clock_limit" in gpu and self.caps.get("nvidia"):
-                arg = hardware.gpu_clock_limit_arg(
-                    gpu["clock_limit"],
-                    (self.caps.get("gpu_limits")
-                     or hardware.default_gpu_limits())["clock_limit_max"])
-                do("GPU clock ceiling",
-                   lambda: hardware.run_helper("gpuclocklimit", arg))
-            if "dyn_boost" in gpu and self.caps.get("nv_dynamic_boost"):
-                do("Dynamic Boost",
-                   lambda: hardware.run_helper("nvboost", gpu["dyn_boost"]))
-            if "temp_target" in gpu and self.caps.get("nv_temp_target"):
-                do("GPU temperature target",
-                   lambda: hardware.run_helper("nvtemp", gpu["temp_target"]))
-            if ("voltage_boost" in gpu
-                    and self.caps.get("nvidia_voltage_boost")):
-                do("GPU Voltage Boost",
-                   lambda: hardware.set_nvidia_voltage_boost(
-                       gpu["voltage_boost"]))
-            if ("powermizer_mode" in gpu
-                    and self.caps.get("nvidia_powermizer_modes")):
-                do("GPU PowerMizer mode",
-                   lambda: hardware.set_nvidia_powermizer_mode(
-                       gpu["powermizer_mode"]))
-            if self.caps.get("nvidia_settings"):
-                if "clock_offset" in gpu:
-                    do("GPU core clock offset",
-                       lambda: hardware.set_nvidia_clock_offset(
-                           "core", gpu["clock_offset"]))
-                if "mem_clock_offset" in gpu:
-                    do("GPU memory clock offset",
-                       lambda: hardware.set_nvidia_clock_offset(
-                           "memory", gpu["mem_clock_offset"]))
+        gpu_failures, gpu_deferred = self._apply_gpu_profile_worker(gpu, step)
+        failures.extend(gpu_failures)
 
         fans = profile.get("fans") or {}
         if fans and self.caps.get("fan_curve"):
@@ -621,16 +692,92 @@ class MainWindow(Adw.ApplicationWindow):
                      f"{len(channels)})…")
                 flat = fancurve.curve_to_flat(fans[channel], 8)
                 do(label, lambda: hardware.run_helper("fan", channel, *flat))
-        return failures
+        return failures, gpu_deferred
 
-    def _on_profile_applied(self, name, failures, error):
+    def _apply_gpu_profile_worker(self, gpu, step=None):
+        """Apply only one profile's GPU portion on the worker thread.
+
+        Kept separate so returning to Cardwire Hybrid mode can restore GPU
+        tuning without needlessly rewriting CPU settings and paced fan
+        curves.  ASUS firmware knobs remain usable when Cardwire blocks
+        direct NVIDIA clients.
+        """
+        failures = []
+
+        def do(label, fn):
+            ok, message = fn()
+            if not ok:
+                failures.append(f"{label}: {message}")
+
+        if not gpu:
+            return failures, None
+        if step is not None:
+            step("Applying the GPU settings…")
+        nvidia_keys = {
+            "watts", "clock_limit", "voltage_boost",
+            "powermizer_mode", "clock_offset", "mem_clock_offset",
+        }
+        needs_nvidia = any(key in gpu for key in nvidia_keys)
+        nvidia_access = (hardware.nvidia_access_error()
+                         if needs_nvidia else None)
+        if ("watts" in gpu and self.caps.get("nvidia")
+                and not nvidia_access):
+            do("GPU power limit",
+               lambda: hardware.run_helper("gpu", gpu["watts"]))
+        if ("clock_limit" in gpu and self.caps.get("nvidia")
+                and not nvidia_access):
+            arg = hardware.gpu_clock_limit_arg(
+                gpu["clock_limit"],
+                (self.caps.get("gpu_limits")
+                 or hardware.default_gpu_limits())["clock_limit_max"])
+            do("GPU clock ceiling",
+               lambda: hardware.run_helper("gpuclocklimit", arg))
+        if "dyn_boost" in gpu and self.caps.get("nv_dynamic_boost"):
+            do("Dynamic Boost",
+               lambda: hardware.run_helper("nvboost", gpu["dyn_boost"]))
+        if "temp_target" in gpu and self.caps.get("nv_temp_target"):
+            do("GPU temperature target",
+               lambda: hardware.run_helper("nvtemp", gpu["temp_target"]))
+        if ("voltage_boost" in gpu
+                and self.caps.get("nvidia_voltage_boost")
+                and not nvidia_access):
+            do("GPU Voltage Boost",
+               lambda: hardware.set_nvidia_voltage_boost(
+                   gpu["voltage_boost"]))
+        if ("powermizer_mode" in gpu
+                and self.caps.get("nvidia_powermizer_modes")
+                and not nvidia_access):
+            do("GPU PowerMizer mode",
+               lambda: hardware.set_nvidia_powermizer_mode(
+                   gpu["powermizer_mode"]))
+        if self.caps.get("nvidia_settings") and not nvidia_access:
+            if "clock_offset" in gpu:
+                do("GPU core clock offset",
+                   lambda: hardware.set_nvidia_clock_offset(
+                       "core", gpu["clock_offset"]))
+            if "mem_clock_offset" in gpu:
+                do("GPU memory clock offset",
+                   lambda: hardware.set_nvidia_clock_offset(
+                       "memory", gpu["mem_clock_offset"]))
+        return failures, nvidia_access
+
+    def _on_profile_applied(self, name, result, error):
         self.release_hardware()
         self.apply_banner.set_revealed(False)
         if error is not None:
             self.toast(f"Applying {name} failed: {error}")
             return
+        failures, gpu_deferred = result
+        deferred_text = (
+            "NVIDIA tuning deferred until Hybrid mode"
+            if gpu_deferred == hardware.CARDWIRE_BLOCKED_MESSAGE
+            else "NVIDIA tuning deferred until GPU access returns")
         if failures:
-            self.toast(f"{name} applied, except — " + "; ".join(failures))
+            suffix = f"; {deferred_text}" if gpu_deferred else ""
+            self.toast(f"{name} applied, except — " + "; ".join(failures)
+                       + suffix)
+        elif gpu_deferred:
+            self.toast(f"{name} applied — {deferred_text}.")
         else:
             self.toast(f"Profile: {name} — applied.")
         # The fan page's banner decides from the driver's cached points, and
@@ -817,6 +964,18 @@ class MainWindow(Adw.ApplicationWindow):
         if self._reload_after_apply:
             self._reload_after_apply = False
             self.reload_pages()
+        if self._gpu_reapply_after_refresh and self._gpu_runtime_ready:
+            # release_hardware is often called from the completion callback
+            # of another worker job. Queue this on the next main-loop turn so
+            # that callback can finish before a new owner and job begin.
+            GLib.idle_add(self._run_deferred_gpu_reapply)
+
+    def _run_deferred_gpu_reapply(self):
+        if (self._gpu_reapply_after_refresh and self._gpu_runtime_ready
+                and not self.hardware_busy()):
+            self._gpu_reapply_after_refresh = False
+            self._reapply_active_gpu_async()
+        return GLib.SOURCE_REMOVE
 
     def hardware_busy(self):
         return self._hw_owner is not None

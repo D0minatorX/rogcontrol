@@ -23,7 +23,8 @@ installer detects what is missing and offers to install it:
     nvidia-settings GPU clock offsets and PowerMizer (when supported)
     NVIDIA driver   experimental Voltage Boost (when the live driver probe supports it;
                     no LACT installation is needed)
-    supergfxctl     switching between integrated and hybrid graphics
+    cardwire        live integrated, hybrid and smart GPU access modes
+                    (Wayland sessions only)
     rogauracore     keyboard colours and lighting modes
     libayatana-appindicator   the tray icon
     libnotify       desktop notifications

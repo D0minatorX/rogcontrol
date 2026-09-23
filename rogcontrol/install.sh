@@ -351,7 +351,11 @@ DEPS=(
   "libnotify|command -v notify-send|libnotify|libnotify|libnotify-bin"
   "nvidia-utils (nvidia-smi)|command -v nvidia-smi|nvidia-utils|nvidia-driver|nvidia-utils"
   "nvidia-settings|command -v nvidia-settings|nvidia-settings|nvidia-settings|nvidia-settings"
-  "supergfxctl|command -v supergfxctl|supergfxctl|supergfxctl|"
+  # Cardwire is not in the default Arch/Fedora repositories. Bazzite ships
+  # it, while other distributions use OGC/AUR, Terra, or release packages.
+  # Detect and report it here without handing the native package manager a
+  # package name that is guaranteed to fail on an unconfigured repository.
+  "cardwire (live GPU modes; install from upstream)|command -v cardwire|||"
   "python-cairo (fan curve graphs)|python3 -c 'import cairo'|python-cairo|python3-cairo|python3-cairo"
   "power-profiles-daemon (OS power-mode sync)|have_ppd_or_equiv|power-profiles-daemon|power-profiles-daemon|power-profiles-daemon"
 )
@@ -381,26 +385,6 @@ except ValueError: gi.require_version('AyatanaAppIndicator3','0.1')
         apt)    missing_pkgs+=("gir1.2-ayatanaappindicator3-0.1") ;;
     esac
 fi
-
-# supergfxctl is not in Fedora's own repos at all (official or
-# updates-archive) -- it only ever comes from the asus-linux COPR. Without
-# this, `rpm-ostree install supergfxctl` (and plain `dnf install` on
-# traditional Fedora) fails with "Packages not found" even on a correctly
-# imaged Bazzite box, which looks like a missing package but is really a
-# missing repo.
-ensure_asus_linux_copr() {
-    local relver repo_file
-    relver="$(rpm -E %fedora 2>/dev/null)"
-    [ -n "$relver" ] || return 1
-    repo_file="/etc/yum.repos.d/lukenukem-asus-linux-fedora-$relver.repo"
-    [ -f "$repo_file" ] && return 0
-    step "Adding asus-linux COPR (supergfxctl lives there, not in Fedora's repos)"
-    sudo curl -fsSL \
-        "https://copr.fedorainfracloud.org/coprs/lukenukem/asus-linux/repo/fedora-$relver/lukenukem-asus-linux-fedora-$relver.repo" \
-        -o "$repo_file" \
-        && say "asus-linux COPR added" \
-        || { warn "Could not add the asus-linux COPR - supergfxctl install will fail"; return 1; }
-}
 
 # rogauracore is the one dependency with no package outside the AUR: it is not
 # in Fedora's repos, not in the asus-linux COPR, and no COPR anywhere carries
@@ -480,7 +464,6 @@ elif [ "$PM_HOST" = none ]; then
     # past instead of fatal.
     warn "Missing: ${missing_names[*]}"
     if [ ${#missing_pkgs[@]} -gt 0 ]; then
-        case " ${missing_pkgs[*]} " in *" supergfxctl "*) ensure_asus_linux_copr ;; esac
         step "Layering optional packages with rpm-ostree"
         echo "  This is an atomic/ostree system: ${OS_NAME:-unknown}"
         echo "  The following missing optional packages will be layered with rpm-ostree:"
@@ -950,8 +933,8 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 fi
 cap "GPU Voltage Boost (experimental)" $f nvidia_voltage_boost \
     "active NVIDIA GPU/driver does not expose the voltage-rail control"
-command -v supergfxctl >/dev/null 2>&1     && f=1 || f=0
-cap "GPU mode switching" $f supergfxctl "supergfxctl missing"
+command -v cardwire >/dev/null 2>&1     && f=1 || f=0
+cap "Live GPU mode switching" $f cardwire "cardwire missing"
 # Vendor first, exactly as hardware.detect_capabilities gates it: the binary
 # being installed on an Intel machine is not a capability, it is a leftover.
 if [ "$CPU_IS_AMD" -eq 1 ]; then

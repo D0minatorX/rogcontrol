@@ -102,12 +102,12 @@ Applied on the same terms as the CPU page: an Apply button, a banner naming
 what is not on the card yet, and a profile that is only written once the card
 has accepted the setting.
 
-The graphics mode: what the display is plugged into now, and a picker to
-switch between Integrated, Hybrid and AsusMuxDgpu. Integrated and Hybrid swap
-by restarting the display stack; switching into or out of AsusMuxDgpu moves
-the hardware MUX, which only the firmware can do, so that one offers to
-reboot for you. Whatever supergfxd answers is repeated on the page word for
-word, so a refusal says which of several reasons applied.
+The GPU access mode, with a picker for Cardwire's Integrated, Hybrid and Smart
+policies. Switching is live and never requires logging out. Applications that
+were already running retain their access until restarted. Whatever cardwired
+answers is repeated on the page so a refusal does not disappear with a toast.
+Cardwire itself requires a Wayland session; on X11 the picker stays disabled
+with that reason while every non-Cardwire feature remains available.
 
 Live CPU and GPU temperatures and the speed of the fan cooling each are shown
 on their own pages, refreshed every two seconds. The GPU reads "Idle" while
@@ -153,12 +153,10 @@ it works whether or not the window is open.
 
 SYSTEM
 
-Whether supergfxd — the daemon the graphics-mode picker needs — is installed
-and answering. Some distributions ship the supergfxctl package with its
-service switched off, which looks from the GPU page like a broken or missing
-feature; when that is what has happened, this row says so and offers a button
-to enable and start it. There is no button to turn it off again: without it
-the graphics mode can be neither read nor changed.
+Whether cardwired — the daemon the graphics-mode picker needs — is installed
+and answering. The page distinguishes an installed but disabled service from
+a broken daemon and offers an Enable button. There is no button to turn it off
+again: without it the GPU access mode can be neither read nor changed.
 
 Whether asusctl's daemon, asusd, is installed and running. It matters because
 it drives the same hardware as this app — the same platform knobs, fan curves

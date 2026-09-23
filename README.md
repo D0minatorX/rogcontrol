@@ -52,9 +52,20 @@ Power limit, core/memory clock offsets, a clock ceiling, NVIDIA Dynamic Boost, a
 
 *Requires: `nvidia-utils` (temperature/power limit), `nvidia-settings` (clock offsets and PowerMizer), and a compatible installed NVIDIA driver for Voltage Boost — NVIDIA only. Voltage Boost does not require LACT or bundle a driver library.*
 
-Graphics mode switching between Integrated, Hybrid, and AsusMuxDgpu.
+Live GPU access switching between Integrated, Hybrid, and Smart. Cardwire
+applies the policy without logging out; already-running applications retain
+their existing GPU access until restarted. Direct NVIDIA controls are parked
+while Integrated or Smart blocks the card. Returning to Hybrid redetects the
+card's real limits and supported controls, then reapplies only the active
+profile's GPU settings.
 
-*Requires: `supergfxctl`.*
+*Requires: [`cardwire`](https://github.com/OpenGamingCollective/cardwire) and Wayland.*
+
+External-monitor routing still depends on the laptop's physical display
+wiring, the compositor, and Cardwire itself. ROG Control changes Cardwire's
+access policy; it does not move display connectors between GPUs or override a
+mode that Cardwire refuses. The GPU page keeps Cardwire's refusal visible for
+diagnosis instead of hiding it in a short-lived notification.
 
 ### ⌨️ Keyboard
 Brightness and ten lighting modes: Static, Breathing, Pulse, Colour Cycle, Rainbow, Gradient Static, GPU Temp Colour, CPU Temp Colour, Battery Level, and Ambient (follows what's on screen, via the desktop's screen-sharing portal).
@@ -102,7 +113,7 @@ Debian/Ubuntu         sudo apt install libgtk-4-1 libadwaita-1-0 python3-gi
 | `nvidia-utils` | GPU temperature and power limit |
 | `nvidia-settings` | GPU clock offsets and PowerMizer (when supported by the active GPU) |
 | NVIDIA driver `libnvidia-api.so` | Experimental Voltage Boost, only when the active GPU/driver passes the live read-only probe |
-| `supergfxctl` | Switching between integrated and hybrid graphics |
+| `cardwire` | Live Integrated, Hybrid, and Smart GPU access modes |
 | `rogauracore` | Keyboard colours and lighting modes |
 | `libayatana-appindicator` | The tray icon |
 | `libnotify` | Desktop notifications |
@@ -122,12 +133,14 @@ If you used GitHub's green **Code → Download ZIP** button instead of `git clon
 
 One command on every supported distro. The installer reads `/etc/os-release`, so derivatives are handled by family rather than by name — CachyOS is treated as Arch, Bazzite as Fedora — and it detects your desktop (GNOME or KDE Plasma) to tell you whether the tray needs anything extra.
 
+Install Cardwire first using its [distribution instructions](https://opengamingcollective.github.io/cardwire/getting-started/installation.html), then enable `cardwired.service`. Cardwire requires Wayland and a kernel with BPF LSM support. The ROG Control installer detects Cardwire but deliberately does not add third-party repositories on your behalf.
+
 ### On Bazzite and other atomic systems
 
 Fedora Atomic images (Bazzite, Silverblue, Kinoite — GNOME and KDE Plasma spins alike) have a read-only `/usr`, so packages can't simply be installed the normal way. Even when `dnf` is present for container use, the host package path is `rpm-ostree`. The installer handles all of this itself:
 
 - **GTK4/libadwaita** (required) are listed clearly and, after confirmation, layered onto the system with `rpm-ostree`; then it tells you to reboot and run `./install.sh` once more — the second run finishes automatically.
-- **supergfxctl** (optional, GPU mode switching) isn't in Fedora's own repos at all — the installer adds the `lukenukem/asus-linux` COPR itself before layering it, so you don't have to find or add that repo by hand.
+- **Cardwire** (optional, live GPU mode switching) is preinstalled on Bazzite. Fedora users can obtain it from Terra; Arch users can use the Open Gaming Collective repository or AUR. Debian/Ubuntu packages are published on Cardwire's releases page.
 - **power-profiles-daemon** (optional, OS power-mode sync) is skipped automatically if Bazzite's `tuned-ppd` is already on the system — the two packages conflict (both provide the same service), and the app already talks to `tuned-ppd` just as well, so there's nothing to install or resolve yourself.
 
 Everything else — the privileged helper, the sudoers rule, the background services, the suspend hook and your settings — installs onto the real system exactly as it does everywhere else. The one cost is the reboot(s) for whatever got layered, and layered packages can make future OS updates slower and occasionally break them.
@@ -246,7 +259,7 @@ This app talks to hardware through tools built and maintained by other people. N
 - **[asusctl](https://gitlab.com/asus-linux/asusctl)** (asus-linux) — the reference for how this hardware talks to Linux, and the daemon this app coexists with (or replaces) on your system.
 - **[ryzenadj](https://github.com/FlyGoat/RyzenAdj)** (FlyGoat) — CPU power limit and undervolt access on AMD Ryzen.
 - **[rogauracore](https://github.com/aaaaaomg/rogauracore)** — keyboard RGB colour and lighting modes.
-- **[supergfxctl](https://gitlab.com/asus-linux/supergfxctl)** (asus-linux) — graphics mode switching.
+- **[Cardwire](https://github.com/OpenGamingCollective/cardwire)** (Open Gaming Collective) — live GPU access policy switching through eBPF on Wayland.
 - **[GTK4](https://gtk.org/) and [libadwaita](https://gnome.pages.gitlab.gnome.org/libadwaita/)** (GNOME) — the toolkit this app's interface is built on.
 - **[libayatana-appindicator](https://github.com/AyatanaIndicators/libayatana-appindicator)** — the tray icon.
 

@@ -104,7 +104,7 @@ def hardware_report_text(root=None):
 
     Read-only, and unfiltered on purpose -- see the module comment above.
     ``root`` re-bases the sysfs reads for testing, exactly as everywhere
-    else in this file; asusd/supergfxd and the desktop session are asked for
+    else in this file; asusd/cardwired and the desktop session are asked for
     directly regardless, since neither has a meaningful re-based form."""
     lines = [
         "ROG Control hardware report",
@@ -137,9 +137,9 @@ def hardware_report_text(root=None):
     lines.append(json.dumps(hardware.detect_capabilities(root=root), indent=2,
                             default=str, sort_keys=True))
 
-    _report_section(lines, "asusd / supergfxd")
+    _report_section(lines, "asusd / cardwired")
     lines.append(f"asusd: {hardware.read_asusd_state()}")
-    lines.append(f"supergfxd: {hardware.read_supergfxd_state()}")
+    lines.append(f"cardwired: {hardware.read_cardwired_state()}")
 
     lines.append("")
     return "\n".join(lines)
@@ -204,5 +204,3 @@ def write_hardware_report(root=None):
     with open(path, "w") as f:
         f.write(hardware_report_text(root=root))
     return path
-
-

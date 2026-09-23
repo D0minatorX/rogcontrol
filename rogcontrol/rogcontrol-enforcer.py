@@ -1448,6 +1448,17 @@ def retry_pending_gpu_offsets():
     if (not _pending_gpu_offsets and _pending_powermizer_mode is None
             and _pending_voltage_boost is None):
         return
+    # Cardwire may leave the NVIDIA kernel module loaded while intentionally
+    # refusing new clients.  Do not turn that policy into three failed
+    # driver probes every minute.  The pending values remain parked and the
+    # next cycle naturally retries them after Hybrid access returns.
+    access_error = hardware.nvidia_access_error()
+    if access_error:
+        if access_error == hardware.CARDWIRE_BLOCKED_MESSAGE:
+            log("Pending NVIDIA profile settings are waiting for Cardwire "
+                "Hybrid mode", "INFO", dedupe_key="nvcardwirepending",
+                dedupe_seconds=3600)
+        return
     # Voltage Boost goes straight to the NVIDIA driver rather than the
     # display-server-bound nvidia-settings, so it can be retried before a
     # graphical session exists. The other pending controls still need one.
@@ -1499,7 +1510,8 @@ def set_clock_offset(kind, mhz):
     if ok:
         _pending_gpu_offsets.pop(kind, None)
         return True
-    if message in (hardware.NO_DISPLAY_MESSAGE, hardware.NO_DRIVER_MESSAGE):
+    if message in (hardware.NO_DISPLAY_MESSAGE, hardware.NO_DRIVER_MESSAGE,
+                   hardware.CARDWIRE_BLOCKED_MESSAGE):
         # Both are "not yet", not "no". The card being gone is the same shape
         # of wait as the session being gone -- Integrated mode, or a switch
         # part-way through -- and the retry costs one procfs read while it
@@ -1522,6 +1534,7 @@ def set_powermizer_mode(mode):
         _pending_powermizer_mode = None
         return False
     if message in (hardware.NO_DISPLAY_MESSAGE, hardware.NO_DRIVER_MESSAGE,
+                   hardware.CARDWIRE_BLOCKED_MESSAGE,
                    hardware.NVIDIA_POWERMIZER_QUERY_MESSAGE):
         if not _pending_gpu_offsets and _pending_powermizer_mode is None:
             _pending_offsets_since = time.monotonic()
@@ -1551,7 +1564,8 @@ def set_voltage_boost(percent):
     if message == hardware.NVIDIA_VOLTAGE_BOOST_UNSUPPORTED_MESSAGE:
         _pending_voltage_boost = None
         return False
-    if message == hardware.NO_DRIVER_MESSAGE:
+    if message in (hardware.NO_DRIVER_MESSAGE,
+                   hardware.CARDWIRE_BLOCKED_MESSAGE):
         if (not _pending_gpu_offsets and _pending_powermizer_mode is None
                 and _pending_voltage_boost is None):
             _pending_offsets_since = time.monotonic()

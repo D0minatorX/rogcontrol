@@ -61,8 +61,26 @@ class QuickAccessPage(Adw.PreferencesPage):
 
     def reload(self):
         """Follow profile switches for the one Quick Access-owned row."""
-        if self.powermizer_row is not None:
+        if (self.powermizer_row is not None
+                and self.powermizer_row.get_visible()):
             self._restore_powermizer_selection()
+
+    def refresh_gpu_capabilities(self, accessible):
+        """Refresh the runtime-only PowerMizer row after a Cardwire switch."""
+        modes = tuple(self.window.caps.get("nvidia_powermizer_modes") or ())
+        if not modes:
+            if self.powermizer_row is not None:
+                self.powermizer_row.set_visible(False)
+            return
+        if self.powermizer_row is None:
+            self._build_powermizer_control()
+        else:
+            self._powermizer_modes = modes
+            self.powermizer_row.set_model(Gtk.StringList.new(
+                [hardware.NVIDIA_POWERMIZER_MODES[mode] for mode in modes]))
+            self._restore_powermizer_selection()
+        self.powermizer_row.set_visible(True)
+        self.powermizer_row.set_sensitive(bool(accessible))
 
     def _move(self, row, destination):
         """Move one existing row without changing its signal handlers."""
@@ -87,7 +105,7 @@ class QuickAccessPage(Adw.PreferencesPage):
             self._move(cpu.rows.get("boost"), self.performance_group)
 
         gpu = self.pages.get("gpu")
-        if self.window.caps.get("supergfxctl") and gpu is not None:
+        if self.window.caps.get("cardwire") and gpu is not None:
             for name in ("mode_blocked_row", "mode_row", "mode_answer_row"):
                 self._move(getattr(gpu, name, None), self.performance_group)
             group = getattr(gpu, "mode_group", None)
@@ -172,6 +190,10 @@ class QuickAccessPage(Adw.PreferencesPage):
             self.window.toast("GPU PowerMizer mode applied.")
             return
         self._restore_powermizer_selection()
+        if message == hardware.CARDWIRE_BLOCKED_MESSAGE:
+            self.window.toast("GPU PowerMizer deferred — switch to Hybrid "
+                              "mode to change it.")
+            return
         self.window.toast(f"GPU PowerMizer mode failed: {message}")
 
     def _move_profile_controls(self):
