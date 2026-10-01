@@ -4,7 +4,7 @@ The installer invokes this on every run, whether it is a fresh install,
 update, or same-version repair. Profiles are never changed by the report.
 """
 
-from . import hardware
+from . import graphics_backend, hardware
 
 
 LABELS = {
@@ -21,7 +21,10 @@ LABELS = {
     "nvidia": "NVIDIA GPU monitoring and clocks",
     "gpu_power_limit": "GPU power limit",
     "nvidia_settings": "GPU clock offsets",
-    "supergfxctl": "GPU mode switching",
+    "supergfxctl": "supergfxctl installed",
+    "cardwire": "Cardwire installed",
+    "cardwire_wayland": "Wayland for Cardwire",
+    "gpu_mode_switching": "Selected GPU mode switching",
     "rogauracore": "Keyboard RGB controller",
     "ryzenadj": "AMD CPU power and undervolt",
     "cpu_ppt": "ASUS CPU PL1/PL2",
@@ -53,6 +56,9 @@ def feature_rows(caps):
 def detect_feature_rows():
     """Run the app's startup probes for an installer feature report."""
     caps = hardware.detect_capabilities()
+    selected = graphics_backend.selected_backend()
+    caps["gpu_mode_switching"] = bool(caps.get(selected)) and (
+        selected != "cardwire" or caps.get("cardwire_wayland"))
     caps["nvidia_powermizer_modes"] = (
         hardware.detect_nvidia_powermizer_modes()
         if caps["nvidia_settings"] else ())

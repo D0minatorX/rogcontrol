@@ -16,6 +16,7 @@ VERSION="$(sed -n 's/^APP_VERSION = "\(.*\)"/\1/p' "$SCRIPT_DIR/__init__.py")"
 STATE_DIR="$HOME/.local/share/rogcontrol"
 STATE_FILE="$STATE_DIR/install-state"
 APP_CONFIG="$HOME/.config/rogcontrol.json"
+BACKEND_FILE="$HOME/.config/rogcontrol-graphics-backend"
 
 # Reads one key back out of the state file written by a previous install.
 prev_get() {
@@ -118,14 +119,6 @@ from gi.repository import Gtk, Adw
 
 if [ "$GTK4_OK" = 1 ]; then
     say "GTK4 and libadwaita present"
-elif [ "$ATOMIC" = 0 ]; then
-    die "GTK4 and libadwaita are required - the ROG Control window is built on them.
-
-  Arch:   sudo pacman -S gtk4 libadwaita python-gobject
-  Fedora: sudo dnf install gtk4 libadwaita python3-gobject
-  Debian: sudo apt install libgtk-4-1 libadwaita-1-0 python3-gi
-
-Install them and run this again. Nothing has been changed."
 else
     # Missing, on a system where they cannot simply be installed. There is a
     # way round it, but every one of those ways changes the machine, and the
@@ -156,10 +149,6 @@ atomic_gui_setup() {
     step "Layering the GUI packages with rpm-ostree"
     echo "  This takes a few minutes and requires a reboot afterward."
     echo "  Packages to layer: $GUI_PKGS"
-    read -rp "  Install these with rpm-ostree now? [Y/n] " atomic_answer
-    if [[ "${atomic_answer:-Y}" =~ ^[Nn] ]]; then
-        die "Required GUI packages were not installed. Nothing else has been changed."
-    fi
     # --idempotent so a re-run after a partial install does not fail on
     # the packages that already went in.
     sudo rpm-ostree install --idempotent -y $GUI_PKGS \
@@ -173,6 +162,11 @@ atomic_gui_setup() {
 # two-minute fan calibration, no re-installing packages that are present,
 # no re-asking questions that were already answered.
 PREV_VER="$(prev_get version)"
+INSTALLED_VERSION_FILE="$HOME/.local/lib/rogcontrol/__init__.py"
+if [ -f "$INSTALLED_VERSION_FILE" ]; then
+    INSTALLED_VERSION="$(sed -n 's/^APP_VERSION = "\(.*\)"/\1/p' "$INSTALLED_VERSION_FILE")"
+    [ -z "$INSTALLED_VERSION" ] || PREV_VER="$INSTALLED_VERSION"
+fi
 if [ -n "$PREV_VER" ]; then
     MODE=update
 elif [ -f "$HOME/.local/bin/rogcontrol.py" ]; then
@@ -317,6 +311,36 @@ command -v nvidia-smi >/dev/null 2>&1 \
     && say "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)" \
     || warn "No nvidia-smi yet - GPU controls need the NVIDIA driver"
 
+# Graphics backend is chosen once per installation. An explicit X11 session
+# wins over a stale WAYLAND_DISPLAY inherited from another process.
+WAYLAND=0
+case "${XDG_SESSION_TYPE:-}" in
+    wayland) WAYLAND=1 ;;
+    x11) WAYLAND=0 ;;
+    *) [ -n "${WAYLAND_DISPLAY:-}" ] && WAYLAND=1 ;;
+esac
+step "Choose graphics switching"
+if [ "$WAYLAND" = 1 ]; then
+    echo "  1) supergfxctl — supports NVIDIA-only (AsusMuxDgpu); useful for"
+    echo "     gaming and displays wired to the NVIDIA GPU. Switching may need"
+    echo "     a logout or reboot."
+    echo "  2) Cardwire — changes GPU access live, but has no NVIDIA-only mode."
+    echo "     Smart/Integrated may be refused when NVIDIA drives a display."
+    BACKEND_DEFAULT=1
+    [ "$(cat "$BACKEND_FILE" 2>/dev/null || true)" = cardwire ] && BACKEND_DEFAULT=2
+    read -rp "  Choose [1/2, default $BACKEND_DEFAULT]: " BACKEND_CHOICE || BACKEND_CHOICE=""
+    BACKEND_CHOICE="${BACKEND_CHOICE:-$BACKEND_DEFAULT}"
+    case "$BACKEND_CHOICE" in
+        1) GRAPHICS_BACKEND=supergfxctl ;;
+        2) GRAPHICS_BACKEND=cardwire ;;
+        *) die "Choose 1 or 2 for the graphics backend." ;;
+    esac
+else
+    GRAPHICS_BACKEND=supergfxctl
+    say "No Wayland session detected — using supergfxctl"
+fi
+say "Graphics backend: $GRAPHICS_BACKEND"
+
 # The machine is an ASUS and the app is worth installing here, so the atomic
 # question deferred at the top can now be asked. Deliberately after the
 # vendor check and not before it: this is the first step in the whole script
@@ -324,6 +348,16 @@ command -v nvidia-smi >/dev/null 2>&1 \
 # should be turned away without a container or a layered package on it.
 if [ "$GTK4_OK" = 0 ] && [ "$ATOMIC" = 1 ]; then
     atomic_gui_setup
+elif [ "$GTK4_OK" = 0 ]; then
+    step "Installing required GUI packages"
+    case "$PM" in
+        pacman) sudo pacman -S --needed --noconfirm gtk4 libadwaita python-gobject ;;
+        dnf) sudo dnf install -y gtk4 libadwaita python3-gobject ;;
+        apt) sudo apt-get update && sudo apt-get install -y libgtk-4-1 libadwaita-1-0 python3-gi ;;
+        *) die "No supported package manager to install GTK4 and libadwaita" ;;
+    esac
+    python3 -c "import gi; gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1'); from gi.repository import Gtk, Adw" \
+        || die "GUI packages installed, but GTK4/libadwaita still cannot be imported"
 fi
 
 # ------------------------------------------------------------ deps: repo ----
@@ -344,6 +378,18 @@ have_ppd_or_equiv() {
     rpm -q tuned-ppd >/dev/null 2>&1
 }
 
+ensure_asus_linux_copr() {
+    local relver repo_file
+    relver="$(rpm -E %fedora 2>/dev/null)"
+    [ -n "$relver" ] || return 1
+    repo_file="/etc/yum.repos.d/lukenukem-asus-linux-fedora-$relver.repo"
+    [ -f "$repo_file" ] && return 0
+    step "Adding asus-linux COPR for supergfxctl"
+    sudo curl -fsSL \
+        "https://copr.fedorainfracloud.org/coprs/lukenukem/asus-linux/repo/fedora-$relver/lukenukem-asus-linux-fedora-$relver.repo" \
+        -o "$repo_file"
+}
+
 # name|check-command|pacman|dnf|apt
 DEPS=(
   "python-gobject|python3 -c 'import gi'|python-gobject|python3-gobject|python3-gi"
@@ -351,10 +397,10 @@ DEPS=(
   "libnotify|command -v notify-send|libnotify|libnotify|libnotify-bin"
   "nvidia-utils (nvidia-smi)|command -v nvidia-smi|nvidia-utils|nvidia-driver|nvidia-utils"
   "nvidia-settings|command -v nvidia-settings|nvidia-settings|nvidia-settings|nvidia-settings"
-  "supergfxctl|command -v supergfxctl|supergfxctl|supergfxctl|"
   "python-cairo (fan curve graphs)|python3 -c 'import cairo'|python-cairo|python3-cairo|python3-cairo"
   "power-profiles-daemon (OS power-mode sync)|have_ppd_or_equiv|power-profiles-daemon|power-profiles-daemon|power-profiles-daemon"
 )
+
 
 missing_pkgs=(); missing_names=()
 for entry in "${DEPS[@]}"; do
@@ -381,26 +427,6 @@ except ValueError: gi.require_version('AyatanaAppIndicator3','0.1')
         apt)    missing_pkgs+=("gir1.2-ayatanaappindicator3-0.1") ;;
     esac
 fi
-
-# supergfxctl is not in Fedora's own repos at all (official or
-# updates-archive) -- it only ever comes from the asus-linux COPR. Without
-# this, `rpm-ostree install supergfxctl` (and plain `dnf install` on
-# traditional Fedora) fails with "Packages not found" even on a correctly
-# imaged Bazzite box, which looks like a missing package but is really a
-# missing repo.
-ensure_asus_linux_copr() {
-    local relver repo_file
-    relver="$(rpm -E %fedora 2>/dev/null)"
-    [ -n "$relver" ] || return 1
-    repo_file="/etc/yum.repos.d/lukenukem-asus-linux-fedora-$relver.repo"
-    [ -f "$repo_file" ] && return 0
-    step "Adding asus-linux COPR (supergfxctl lives there, not in Fedora's repos)"
-    sudo curl -fsSL \
-        "https://copr.fedorainfracloud.org/coprs/lukenukem/asus-linux/repo/fedora-$relver/lukenukem-asus-linux-fedora-$relver.repo" \
-        -o "$repo_file" \
-        && say "asus-linux COPR added" \
-        || { warn "Could not add the asus-linux COPR - supergfxctl install will fail"; return 1; }
-}
 
 # rogauracore is the one dependency with no package outside the AUR: it is not
 # in Fedora's repos, not in the asus-linux COPR, and no COPR anywhere carries
@@ -480,17 +506,11 @@ elif [ "$PM_HOST" = none ]; then
     # past instead of fatal.
     warn "Missing: ${missing_names[*]}"
     if [ ${#missing_pkgs[@]} -gt 0 ]; then
-        case " ${missing_pkgs[*]} " in *" supergfxctl "*) ensure_asus_linux_copr ;; esac
         step "Layering optional packages with rpm-ostree"
         echo "  This is an atomic/ostree system: ${OS_NAME:-unknown}"
         echo "  The following missing optional packages will be layered with rpm-ostree:"
         echo "  ${missing_pkgs[*]}"
         echo "  A reboot is required before layered packages become available."
-        read -rp "  Install them with rpm-ostree now? [Y/n] " atomic_answer
-        if [[ "${atomic_answer:-Y}" =~ ^[Nn] ]]; then
-            warn "Skipped - some features will stay unavailable"
-            missing_pkgs=()
-        fi
     fi
     if [ ${#missing_pkgs[@]} -gt 0 ]; then
         if sudo rpm-ostree install --idempotent -y "${missing_pkgs[@]}"; then
@@ -506,17 +526,12 @@ else
     warn "Missing: ${missing_names[*]}"
     if [ ${#missing_pkgs[@]} -gt 0 ] && [ "$PM" != unknown ]; then
         echo "  Will install: ${missing_pkgs[*]}"
-        read -rp "  Install them now with sudo? [Y/n] " a
-        if [[ ! "${a:-Y}" =~ ^[Nn] ]]; then
-            case "$PM" in
-                pacman) sudo pacman -S --needed --noconfirm "${missing_pkgs[@]}" ;;
-                dnf)    sudo dnf install -y "${missing_pkgs[@]}" ;;
-                apt)    sudo apt-get update && sudo apt-get install -y "${missing_pkgs[@]}" ;;
-            esac
-            say "Repository dependencies installed"
-        else
-            warn "Skipped - some features will not work"
-        fi
+        case "$PM" in
+            pacman) sudo pacman -S --needed --noconfirm "${missing_pkgs[@]}" ;;
+            dnf)    sudo dnf install -y "${missing_pkgs[@]}" ;;
+            apt)    sudo apt-get update && sudo apt-get install -y "${missing_pkgs[@]}" ;;
+        esac
+        say "Repository dependencies installed"
     else
         warn "Install these manually for your distro"
     fi
@@ -554,24 +569,29 @@ fi
 # rogauracore (keyboard RGB) and ryzenadj (CPU power limits) are not in the
 # normal repos. Only attempted on Arch-family systems, and ryzenadj only on
 # AMD -- see the CPU vendor block above.
+ensure_aur_helper() {
+    local h tmp
+    for h in yay paru; do
+        if command -v "$h" >/dev/null 2>&1; then AUR="$h"; return 0; fi
+    done
+    step "Installing yay for AUR dependencies"
+    sudo pacman -S --needed --noconfirm git base-devel
+    tmp="$(mktemp -d)"
+    if ! git clone --depth 1 https://aur.archlinux.org/yay-bin.git "$tmp/yay-bin" \
+       || ! (cd "$tmp/yay-bin" && makepkg -si --noconfirm); then
+        rm -rf "$tmp"
+        return 1
+    fi
+    rm -rf "$tmp"
+    AUR=yay
+}
+
 if [ "$PM" = pacman ]; then
     if ! command -v rogauracore >/dev/null 2>&1 || \
        { [ "$CPU_IS_AMD" -eq 1 ] && ! command -v ryzenadj >/dev/null 2>&1; }; then
         step "AUR dependencies"
         AUR=""
-        for h in yay paru; do command -v "$h" >/dev/null 2>&1 && { AUR="$h"; break; }; done
-
-        if [ -z "$AUR" ]; then
-            warn "No AUR helper (yay/paru) found"
-            read -rp "  Install yay from source? [Y/n] " a
-            if [[ ! "${a:-Y}" =~ ^[Nn] ]]; then
-                sudo pacman -S --needed --noconfirm git base-devel
-                tmp="$(mktemp -d)"
-                git clone --depth 1 https://aur.archlinux.org/yay-bin.git "$tmp/yay-bin"
-                ( cd "$tmp/yay-bin" && makepkg -si --noconfirm )
-                rm -rf "$tmp"; AUR=yay; say "yay installed"
-            fi
-        fi
+        ensure_aur_helper || warn "Could not install an AUR helper"
 
         if [ -n "$AUR" ]; then
             aur_want=()
@@ -601,16 +621,126 @@ if ! command -v rogauracore >/dev/null 2>&1 && [ ! -x /usr/local/bin/rogauracore
     echo "  Installs upstream's prebuilt binary (version $ROGAURACORE_VERSION,"
     echo "  pinned to a checksum) into /usr/local/bin. Backlight brightness"
     echo "  works without it; colours and effects do not."
-    # "|| a=" so that a run with nothing on stdin takes the [Y/n] default
-    # rather than dying here: read returns non-zero at EOF, and this script
-    # runs under set -e.
-    read -rp "  Install it now? [Y/n] " a || a=""
-    if [[ ! "${a:-Y}" =~ ^[Nn] ]]; then
-        install_rogauracore_prebuilt || true
+    install_rogauracore_prebuilt || warn "Keyboard RGB dependency could not be installed"
+fi
+
+# Only install the chosen backend; an existing unchosen package is left alone.
+if [ "$GRAPHICS_BACKEND" = supergfxctl ] \
+   && ! command -v supergfxctl >/dev/null 2>&1; then
+    step "Installing supergfxctl"
+    case "$PM_HOST" in
+        none)
+            ensure_asus_linux_copr \
+                || die "Could not configure the asus-linux repository"
+            sudo rpm-ostree install --idempotent -y supergfxctl \
+                || die "Could not layer supergfxctl"
+            PENDING_REBOOT=1 ;;
+        pacman)
+            if pacman -Si supergfxctl >/dev/null 2>&1; then
+                sudo pacman -S --needed --noconfirm supergfxctl \
+                    || die "Could not install supergfxctl from repository"
+            else
+                AUR=""
+                ensure_aur_helper || die "Could not install yay for supergfxctl"
+                "$AUR" -S --needed --noconfirm supergfxctl \
+                    || die "Could not install supergfxctl from AUR"
+            fi ;;
+        dnf)
+            ensure_asus_linux_copr \
+                || die "Could not configure the asus-linux repository"
+            sudo dnf install -y supergfxctl \
+                || die "Could not install supergfxctl" ;;
+        apt)
+            sudo apt-get update && sudo apt-get install -y supergfxctl \
+                || die "supergfxctl is not available from this apt repository" ;;
+        *) die "No automatic supergfxctl package source for this distribution" ;;
+    esac
+fi
+
+# Cardwire is distributed outside the default repository on some distros.
+if [ "$GRAPHICS_BACKEND" = cardwire ] && ! command -v cardwire >/dev/null 2>&1; then
+    step "Installing Cardwire"
+    case "$PM_HOST" in
+        none)
+            sudo rpm-ostree install --idempotent -y cardwire \
+                || die "Could not layer Cardwire; configure Terra and retry"
+            PENDING_REBOOT=1 ;;
+        pacman)
+            if pacman -Si cardwire >/dev/null 2>&1; then
+                sudo pacman -S --needed --noconfirm cardwire \
+                    || die "Cardwire installation from repository failed"
+            else
+                AUR=""
+                ensure_aur_helper || die "Could not install yay to fetch Cardwire"
+                "$AUR" -S --needed --noconfirm cardwire \
+                    || die "Cardwire installation from AUR failed"
+            fi ;;
+        dnf)
+            if ! sudo dnf install -y cardwire; then
+                step "Adding the Terra package repository for Cardwire"
+                sudo dnf install -y --nogpgcheck \
+                    --repofrompath 'terra,https://repos.fyralabs.com/terra$releasever' \
+                    terra-release terra-gpg-keys \
+                    || die "Could not configure Terra for Cardwire"
+                sudo dnf install -y cardwire \
+                    || die "Cardwire installation from Terra failed"
+            fi ;;
+        apt)
+            CARDWIRE_TMP="$(mktemp -d)"
+            if ! python3 - "$CARDWIRE_TMP" "$(dpkg --print-architecture)" <<'PY'
+import json
+import pathlib
+import sys
+import urllib.request
+
+target, arch = pathlib.Path(sys.argv[1]), sys.argv[2]
+request = urllib.request.Request(
+    "https://api.github.com/repos/OpenGamingCollective/cardwire/releases/latest",
+    headers={"User-Agent": "rogcontrol-installer"})
+with urllib.request.urlopen(request, timeout=20) as response:
+    release = json.load(response)
+asset = next(a for a in release["assets"]
+             if a["name"].startswith("cardwire_")
+             and a["name"].endswith(f"_{arch}.deb"))
+url = asset["browser_download_url"]
+if not url.startswith("https://github.com/OpenGamingCollective/cardwire/releases/download/"):
+    raise ValueError("Unexpected Cardwire download URL")
+with urllib.request.urlopen(urllib.request.Request(
+        url, headers={"User-Agent": "rogcontrol-installer"}), timeout=120) as response:
+    (target / "cardwire.deb").write_bytes(response.read())
+PY
+            then
+                rm -rf "$CARDWIRE_TMP"
+                die "Could not download the Cardwire package for this architecture"
+            fi
+            sudo apt-get install -y "$CARDWIRE_TMP/cardwire.deb" \
+                || die "Cardwire .deb installation failed"
+            rm -rf "$CARDWIRE_TMP" ;;
+        *) die "No automatic Cardwire package source for this distribution" ;;
+    esac
+fi
+
+if [ "$PENDING_REBOOT" = 0 ]; then
+    command -v "$GRAPHICS_BACKEND" >/dev/null 2>&1 \
+        || die "$GRAPHICS_BACKEND was not installed successfully"
+fi
+
+# Record the choice before replacing the application; every app process then
+# reads the same backend. Avoid running both managers against the GPU.
+if [ "$PENDING_REBOOT" = 0 ]; then
+    if [ "$GRAPHICS_BACKEND" = cardwire ]; then
+        sudo systemctl disable --now supergfxd.service 2>/dev/null || true
+        sudo systemctl enable --now cardwired.service \
+            || die "Cardwire is installed but cardwired could not start"
     else
-        warn "Skipped - keyboard colours and effects stay unavailable"
+        sudo systemctl disable --now cardwired.service 2>/dev/null || true
+        sudo systemctl enable --now supergfxd.service \
+            || die "supergfxctl is installed but supergfxd could not start"
     fi
 fi
+mkdir -p "$(dirname "$BACKEND_FILE")"
+printf '%s\n' "$GRAPHICS_BACKEND" > "$BACKEND_FILE"
+say "$GRAPHICS_BACKEND selected and its service configured"
 
 command -v rogauracore >/dev/null 2>&1 || [ -x /usr/local/bin/rogauracore ] || warn "rogauracore missing - keyboard RGB colour/modes unavailable (brightness still works)"
 if [ "$CPU_IS_AMD" -eq 1 ]; then

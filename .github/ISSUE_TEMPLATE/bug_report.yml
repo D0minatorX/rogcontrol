@@ -67,6 +67,15 @@ body:
       required: true
 
   - type: input
+    id: cardwired
+    attributes:
+      label: Cardwire status
+      description: Which mode does `cardwire get` report, and is cardwired.service running?
+      placeholder: e.g. Smart; cardwired active
+    validations:
+      required: true
+
+  - type: input
     id: version
     attributes:
       label: Version
