@@ -50,7 +50,7 @@ STAPM, fast and slow power limits, temperature target, Curve Optimizer undervolt
 ### 🎮 GPU
 Core/memory clock offsets, a clock ceiling, NVIDIA Dynamic Boost, and temperature target. The GPU power-limit slider appears only when this GPU and driver accept a verified limit change; a reported min/max range alone is not enough. The GPU tab can also offer an experimental per-profile **Voltage Boost** slider (0–100%): it is shown only when a live same-value write confirms that the active NVIDIA GPU and driver expose the required voltage-rail control. It defaults to 0% (stock); a non-zero interactive apply always asks for confirmation because it can raise heat/power use and cause instability. Quick Access also offers the NVIDIA PowerMizer mode per profile; it is shown only when the active GPU and driver advertise the attribute, and defaults to driver-controlled Auto. Live temperature and fan speed for both CPU and GPU are also shown.
 
-*Requires: `nvidia-utils` (temperature and, where verified, power limit), `nvidia-settings` (clock offsets and PowerMizer), and a compatible installed NVIDIA driver for Voltage Boost — NVIDIA only. Voltage Boost does not require LACT or bundle a driver library.*
+*Requires: `nvidia-utils` (temperature and, where verified, power limit), `nvidia-settings` (clock offsets and PowerMizer), and a compatible installed NVIDIA driver for Voltage Boost — NVIDIA only.*
 
 Graphics mode switching between Integrated, Hybrid, and AsusMuxDgpu.
 
