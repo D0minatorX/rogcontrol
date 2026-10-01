@@ -362,9 +362,9 @@ case "${XDG_SESSION_TYPE:-}" in
 esac
 step "Choose graphics switching"
 if [ "$WAYLAND" = 1 ]; then
-    echo "  1) supergfxctl — supports NVIDIA-only (AsusMuxDgpu); useful for"
-    echo "     gaming and displays wired to the NVIDIA GPU. Switching may need"
-    echo "     a logout or reboot."
+    echo "  1) supergfxctl — better for gaming, especially with multiple monitors."
+    echo "     It supports NVIDIA-only (AsusMuxDgpu) for displays wired to the"
+    echo "     NVIDIA GPU. Switching may need a logout or reboot."
     echo "  2) Cardwire — changes GPU access live, but has no NVIDIA-only mode."
     echo "     Smart/Integrated may be refused when NVIDIA drives a display."
     BACKEND_DEFAULT=1

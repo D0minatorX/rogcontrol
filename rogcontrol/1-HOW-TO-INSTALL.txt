@@ -28,7 +28,8 @@ installer detects what is missing and installs supported dependencies:
     nvidia-settings GPU clock offsets and PowerMizer (when supported)
     NVIDIA driver   experimental Voltage Boost (when the live driver probe supports it;
                     no LACT installation is needed)
-    supergfxctl     GPU modes including NVIDIA-only; logout or reboot may be needed
+    supergfxctl     Better for gaming, especially multiple monitors; supports
+                    NVIDIA-only. Logout or reboot may be needed.
     cardwire        live GPU access modes; Wayland only, no NVIDIA-only mode
     rogauracore     keyboard colours and lighting modes
     libnotify       desktop notifications
