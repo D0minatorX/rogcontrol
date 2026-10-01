@@ -19,7 +19,7 @@ Everything else is optional and only costs the feature that needs it. The
 installer detects what is missing and offers to install it:
 
     ryzenadj        CPU power limits and undervolt (AMD only)
-    nvidia-utils    GPU temperature and power limit
+    nvidia-utils    GPU temperature and power limit when verified on this driver
     nvidia-settings GPU clock offsets and PowerMizer (when supported)
     NVIDIA driver   experimental Voltage Boost (when the live driver probe supports it;
                     no LACT installation is needed)

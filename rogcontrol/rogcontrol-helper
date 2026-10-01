@@ -176,8 +176,8 @@ take_smu_lock() {
 # serialises each individual sysfs write, not the 8-point sequence, so an
 # interleaving there can leave a channel showing a mix of two different
 # curves' points. The wait is kept short because these calls are already rare
-# and brief; a caller that cannot get in just proceeds unlocked rather than
-# fail a fan write over a lock file that could not be created.
+# and brief. If another curve sequence still holds the lock after the wait,
+# reject this write explicitly instead of interleaving its eight sysfs writes.
 FAN_LOCK_WAIT=2
 take_fan_lock() {
     local file
@@ -185,7 +185,10 @@ take_fan_lock() {
     file="${file}.fan"
     command -v flock >/dev/null 2>&1 || return 0
     { exec 8>>"$file"; } 2>/dev/null || return 0
-    flock -w "$FAN_LOCK_WAIT" 8 2>/dev/null
+    if ! flock -w "$FAN_LOCK_WAIT" 8 2>/dev/null; then
+        echo "another rogcontrol fan-curve write is in progress (waited ${FAN_LOCK_WAIT}s); nothing was changed" >&2
+        return 1
+    fi
     return 0
 }
 
@@ -657,7 +660,26 @@ case "$1" in
         # min/max -- hardcoding one laptop's 140W ceiling here would break
         # every other card.
         [ "$WATTS" -ge 1 ] && [ "$WATTS" -le 1000 ] || { echo "watts out of sane range (1-1000)" >&2; exit 1; }
-        exec nvidia-smi -pl "$WATTS"
+        # Some NVIDIA drivers print a refusal but exit 0 (and even print
+        # "All done"). Report success only when the effective limit reads
+        # back as requested, so the UI never saves an unapplied value.
+        OUTPUT=$(nvidia-smi -pl "$WATTS" 2>&1) || {
+            echo "$OUTPUT" >&2
+            exit 1
+        }
+        POWER_REPORT=$(nvidia-smi -q -d POWER 2>&1) || {
+            echo "Could not verify NVIDIA power limit: $POWER_REPORT" >&2
+            exit 1
+        }
+        HELD=$(printf '%s\n' "$POWER_REPORT" | awk '
+            /Current Power Limit/ && $5 ~ /^[0-9]+([.][0-9]+)?$/ { print $5; exit }
+        ')
+        if ! awk -v got="$HELD" -v want="$WATTS" 'BEGIN {
+            exit !(got ~ /^[0-9]+([.][0-9]+)?$/ && got+0 >= want-0.5 && got+0 <= want+0.5)
+        }'; then
+            echo "GPU power limit not applied: requested $WATTS W, current ${HELD:-unavailable} W. $OUTPUT" >&2
+            exit 1
+        fi
         ;;
 
     nvboost)

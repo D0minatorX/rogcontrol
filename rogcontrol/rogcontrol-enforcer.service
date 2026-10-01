@@ -9,6 +9,9 @@ Description=Continuously enforce ROG Control profile (CPU/GPU/fans/charge/kbd) a
 # compositor with no systemd integration) still starts the enforcer
 # rather than never starting it.
 After=graphical-session.target
+# Login apply and this enforcer can both push the same fan curves at startup.
+# Order the enforcer after the one-shot apply to avoid that initial collision.
+After=rogcontrol-apply.service
 
 [Service]
 Type=simple

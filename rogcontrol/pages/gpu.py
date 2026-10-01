@@ -67,7 +67,7 @@ APPLY_ORDER = ("watts", "clock_limit", "dyn_boost", "temp_target",
 # the four back ends fail independently: a machine can have nvidia-smi
 # without nvidia-settings, and the asus-wmi knobs are absent on every
 # non-ASUS machine regardless of the card.
-CAPABILITY = {"watts": "nvidia",
+CAPABILITY = {"watts": "gpu_power_limit",
               "clock_limit": "nvidia",
               "clock_offset": "nvidia_settings",
               "mem_clock_offset": "nvidia_settings",
@@ -461,9 +461,10 @@ class GpuPage(Gtk.Box):
         on the page at all -- see the CPU page's version of this method for
         the fuller reasoning."""
         if not self.caps.get("nvidia"):
-            for key in ("watts", "clock_limit"):
-                self.rows[key].set_visible(False)
+            self.rows["clock_limit"].set_visible(False)
             self.temp_cell.set_note("nvidia-smi is not installed.")
+        if not self.caps.get("gpu_power_limit"):
+            self.rows["watts"].set_visible(False)
         if not self.caps.get("fan_rpm"):
             # The tachometer is on the asus hwmon, not the card, so it can be
             # missing on a machine whose GPU controls all work.

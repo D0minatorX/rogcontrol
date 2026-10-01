@@ -546,7 +546,7 @@ class MainWindow(Adw.ApplicationWindow):
         gpu = profile.get("gpu") or {}
         if gpu:
             step("Applying the GPU settings…")
-            if "watts" in gpu and self.caps.get("nvidia"):
+            if "watts" in gpu and self.caps.get("gpu_power_limit"):
                 do("GPU power limit",
                    lambda: hardware.run_helper("gpu", gpu["watts"]))
             if "clock_limit" in gpu and self.caps.get("nvidia"):

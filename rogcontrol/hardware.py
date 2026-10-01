@@ -1090,6 +1090,30 @@ def read_nvidia_stats(timeout=5):
                              timeout=timeout)
 
 
+def gpu_power_limit_supported():
+    """Probe the actual NVIDIA setter and restore the original limit.
+
+    Min/max metadata alone does not imply that NVML permits writes. Some
+    laptop drivers report a range but refuse ``-pl`` with exit status zero.
+    Reapplying the current limit can falsely succeed when the driver refuses
+    a change. Require a one-watt change and verified restoration instead.
+    """
+    current, minimum, maximum = read_nvidia_query(
+        ("enforced.power.limit", "power.min_limit", "power.max_limit"))
+    if (current is None or minimum is None or maximum is None
+            or not current.is_integer()):
+        return False
+    original = int(current)
+    candidate = original - 1 if original - 1 >= minimum else original + 1
+    if candidate > maximum or candidate == original:
+        return False
+    changed, _ = run_helper("gpu", candidate)
+    if not changed:
+        return False
+    restored, _ = run_helper("gpu", original)
+    return restored
+
+
 PCI_DEVICES_DIR = "/sys/bus/pci/devices"
 NVIDIA_PCI_VENDOR = "0x10de"
 
@@ -3335,6 +3359,8 @@ def detect_capabilities(root=None):
         and have_cmd("limine-update")
         and have_cmd("limine-enroll-config"))
     caps["nvidia"] = have_cmd("nvidia-smi")
+    caps["gpu_power_limit"] = (caps["nvidia"]
+                               and gpu_power_limit_supported())
     # A separate question from nvidia-smi: the two clock offsets go through
     # nvidia-settings, which is its own package and is missing on plenty of
     # machines that have a working driver.

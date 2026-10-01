@@ -889,11 +889,9 @@ fi
 # just telling you up front what you will and will not see.
 echo
 echo "  Feature support on this machine:"
-# Probing is just a handful of sysfs and PATH checks, so it costs nothing
-# and always runs -- that way a package installed since last time is picked
-# up instead of a stale "missing" being carried forward. What an update
-# skips is the expensive, user-visible work: package installs that are
-# already satisfied, and the fan calibration.
+# Probe on every run so a changed driver, kernel, package, or session can
+# change the feature report. An update preserves settings and fan calibration,
+# but does not reuse old capability answers.
 #
 # cap <label> <0|1> <state-key> [note]
 CAP_STATE=""
@@ -911,68 +909,23 @@ cap() {
     printf '    %s %s%s%s\n' "$mark" "$label" \
         "$( [ "$now" -eq 1 ] || printf '%s' "${note:+ - $note}" )" "$suffix"
 }
-grep -qx asus_custom_fan_curve /sys/class/hwmon/*/name 2>/dev/null && f=1 || f=0
-cap "Fan curves" $f fan_curve "no asus_custom_fan_curve on this kernel/model"
-grep -qx asus /sys/class/hwmon/*/name 2>/dev/null && f=1 || f=0
-cap "Fan RPM readout" $f fan_rpm "no asus hwmon"
-[ -e "$ASUS_DIR/nv_temp_target" ]   && f=1 || f=0
-cap "GPU temperature target" $f nv_temp_target "asus-wmi does not expose it"
-[ -e "$ASUS_DIR/nv_dynamic_boost" ] && f=1 || f=0
-cap "GPU dynamic boost" $f nv_dynamic_boost "asus-wmi does not expose it"
-command -v nvidia-smi >/dev/null 2>&1      && f=1 || f=0
-cap "GPU power / clock limit" $f nvidia "nvidia-smi missing"
-command -v nvidia-settings >/dev/null 2>&1 && f=1 || f=0
-cap "GPU clock offsets" $f nvidia_settings "nvidia-settings missing"
-# The undocumented NVAPI rail interface is not related to nvidia-settings.
-# A readable rail can still reject writes, so re-apply the current value via
-# the root-owned bridge. This verifies support without altering the user's
-# boost setting.
-f=0
-if command -v nvidia-smi >/dev/null 2>&1; then
-    # sed reads the complete output, unlike head which can make nvidia-smi
-    # fail with SIGPIPE under this script's `set -o pipefail` on multi-GPU
-    # systems.
-    pci_bus="$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader 2>/dev/null | sed -n '1p')"
-    if [ -n "$pci_bus" ]; then
-        voltage_answer="$(sudo -n /usr/local/bin/rogcontrol-helper nvvoltage read \
-            --pci-bus "$pci_bus" 2>/dev/null)"
-        voltage_value="$(printf '%s' "$voltage_answer" \
-            | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p')"
-        case "$voltage_value" in
-            ''|*[!0-9]*) ;;
-            *) if sudo -n /usr/local/bin/rogcontrol-helper nvvoltage set \
-                    "$voltage_value" --pci-bus "$pci_bus" 2>/dev/null \
-                    | grep -q '"ok": true'; then
-                   f=1
-               fi ;;
-        esac
-    fi
-fi
-cap "GPU Voltage Boost (experimental)" $f nvidia_voltage_boost \
-    "active NVIDIA GPU/driver does not expose the voltage-rail control"
-command -v supergfxctl >/dev/null 2>&1     && f=1 || f=0
-cap "GPU mode switching" $f supergfxctl "supergfxctl missing"
-# Vendor first, exactly as hardware.detect_capabilities gates it: the binary
-# being installed on an Intel machine is not a capability, it is a leftover.
-if [ "$CPU_IS_AMD" -eq 1 ]; then
-    { command -v ryzenadj >/dev/null 2>&1 || [ -x /usr/local/bin/ryzenadj ]; } && f=1 || f=0
-    cap "CPU power limits / undervolt" $f ryzenadj "ryzenadj missing (AMD Ryzen only)"
-elif [ -e "$ASUS_DIR/ppt_pl1_spl" ] && [ -e "$ASUS_DIR/ppt_pl2_sppt" ]; then
-    # No Curve Optimizer either way -- there is no Intel equivalent -- so
-    # this reads as "PL1/PL2" rather than reusing the ryzenadj wording above.
-    cap "CPU power limits (PL1/PL2), no undervolt" 1 cpu_ppt ""
+# The window and installer share these probes. Run them unconditionally after
+# installing the new package, so an update checks the new driver/kernel and
+# newly added features just as a fresh install does. The report is read-only
+# apart from the same-value/restore checks used to verify writable GPU knobs.
+FEATURE_REPORT=""
+if FEATURE_REPORT="$(PYTHONPATH="$HOME/.local/lib" python3 -m rogcontrol.feature_report 2>/dev/null)" \
+    && [ -n "$FEATURE_REPORT" ]; then
+    while IFS='|' read -r key label available; do
+        [ -n "$key" ] || continue
+        cap "$label" "$available" "$key" "unavailable on this device or session"
+    done <<< "$FEATURE_REPORT"
 else
-    cap "CPU power limits (PL1/PL2), no undervolt" 0 cpu_ppt \
-        "no PL1/PL2 firmware nodes found; RAPL may still work as a fallback"
+    warn "Feature detection failed; open ROG Control to retry the live checks."
+    # A transient probe failure must not erase the last recorded capabilities.
+    CAP_STATE="$(grep '^cap_' "$STATE_FILE" 2>/dev/null || true)"
+    [ -z "$CAP_STATE" ] || CAP_STATE+=$'\n'
 fi
-{ command -v rogauracore >/dev/null 2>&1 || [ -x /usr/local/bin/rogauracore ]; } && f=1 || f=0
-cap "Keyboard RGB colours/modes" $f rogauracore "rogauracore missing"
-[ -e /sys/class/leds/asus::kbd_backlight/brightness ] && f=1 || f=0
-cap "Keyboard backlight brightness" $f kbd_backlight "no asus::kbd_backlight LED"
-f=0; for b in /sys/class/power_supply/*/charge_control_end_threshold; do [ -e "$b" ] && f=1; done
-cap "Battery charge limit" $f charge_limit "battery has no charge threshold"
-[ -e "$ASUS_DIR/panel_od" ] && f=1 || f=0
-cap "Panel overdrive" $f panel_od "asus-wmi does not expose it"
 
 # --- fan calibration status -------------------------------------------------
 # The calibration lives in the app's own config and is never touched by the

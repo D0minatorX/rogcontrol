@@ -40,7 +40,7 @@ def apply_profile(profile):
     gpu = profile.get("gpu")
     if gpu:
         # Optional GPU fields are only applied when present.
-        if "watts" in gpu:
+        if "watts" in gpu and hardware.gpu_power_limit_supported():
             run_helper("gpu", gpu["watts"])
         # Apply all configured GPU controls; the enforcer does not continuously restore them.
         if "clock_limit" in gpu:

@@ -413,7 +413,7 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
                 # KeyError is caught by the cycle's own handler and logged as
                 # "cycle failed", which is true but says nothing about which
                 # profile or which key, once a minute forever.
-                if "watts" in gpu:
+                if "watts" in gpu and hardware.gpu_power_limit_supported():
                     run_nvidia_helper("gpu", gpu["watts"])
                 apply_gpu_clock_offsets(gpu)
 
@@ -443,6 +443,7 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
                               json.dumps(fans, sort_keys=True))
         stale = (time.monotonic() - _last_fan_apply_time) >= FAN_REVERIFY_SECONDS
         if force_fan_reapply or stale or fans_signature != _last_applied_fans:
+            fan_apply_ok = True
             for i, (channel, points) in enumerate(fans.items()):
                 if i > 0:
                     # The asus-wmi embedded controller can silently drop
@@ -467,9 +468,14 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
                 flat = []
                 for t, pct in expanded:
                     flat += [t, pct_to_pwm255(pct)]
-                hardware.run_fan_helper_logged(channel, *flat, source="enforcer")
-            _last_applied_fans = fans_signature
-            _last_fan_apply_time = time.monotonic()
+                ok, _message = hardware.run_fan_helper_logged(
+                    channel, *flat, source="enforcer")
+                fan_apply_ok = fan_apply_ok and ok
+            # Only cache curves that the helper actually applied. A timeout
+            # or busy-lock error must be retried on the next enforcement pass.
+            if fan_apply_ok:
+                _last_applied_fans = fans_signature
+                _last_fan_apply_time = time.monotonic()
 
 def mode_change_is_settled(service_name, actual_mode):
     """True when an external mode change is worth acting on.

@@ -272,7 +272,7 @@ def apply_once(config, profile_only=False, force_stock_undervolt=False):
             # crash silently took the charge limit, the boot chime and the
             # panel overdrive below it down as well. The window has always
             # guarded this; the three background copies did not.
-            if "watts" in gpu:
+            if "watts" in gpu and hardware.gpu_power_limit_supported():
                 run_nvidia_helper("gpu", gpu["watts"])
             apply_gpu_clock_offsets(gpu, profile_only=profile_only)
 

@@ -88,10 +88,11 @@ time and test.
 
 GPU
 
-Power limit, core and memory clock offsets, a clock ceiling, NVIDIA Dynamic
-Boost and temperature target. The GPU tab also shows experimental, per-profile
-Voltage Boost (0–100%) only when a read-only probe confirms that this NVIDIA
-GPU and driver expose the required voltage-rail control. 0% is stock; any
+Core and memory clock offsets, a clock ceiling, NVIDIA Dynamic Boost and
+temperature target. The power-limit slider is shown only when this GPU and
+driver accept a verified limit change. The GPU tab also shows experimental,
+per-profile Voltage Boost (0–100%) only when a same-value write confirms that
+this NVIDIA GPU and driver expose the required voltage-rail control. 0% is stock; any
 non-zero Apply asks for confirmation because it can increase heat/power and
 cause instability. It uses the installed NVIDIA driver directly and never
 requires LACT. Quick Access also provides the NVIDIA PowerMizer mode per
