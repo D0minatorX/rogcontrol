@@ -709,6 +709,18 @@ case "$1" in
         echo "$VAL" > "$NODE"
         ;;
 
+    nvclock)
+        shift
+        [ "$#" -ge 3 ] && [ "$#" -le 4 ] || { echo "invalid clock request" >&2; exit 1; }
+        ACTION="$1"; KIND="$2"; PCI_BUS="$3"
+        case "$ACTION" in read|probe) [ "$#" -eq 3 ] || exit 1 ;;
+            set) [ "$#" -eq 4 ] && is_signed_int "$4" || exit 1 ;;
+            *) exit 1 ;; esac
+        case "$KIND" in core|memory) ;; *) exit 1 ;; esac
+        [[ "$PCI_BUS" =~ ^[0-9A-Fa-f]{4,8}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}\.[0-7]$ ]] || exit 1
+        exec /usr/bin/python3 -I /usr/local/lib/rogcontrol/nvidia_clocks.py "$@"
+        ;;
+
     nvvoltage)
         # NVIDIA's undocumented voltage-rail API accepts writes only from a
         # privileged process on current drivers.  The bridge is installed

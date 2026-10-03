@@ -104,13 +104,14 @@ class ClockCeilingCapabilityTests(unittest.TestCase):
 class CapabilityAggregationTests(unittest.TestCase):
     def test_each_control_reports_its_own_result(self):
         with (mock.patch.object(hardware, "gpu_clock_limit_supported", return_value=True),
-              mock.patch.object(hardware, "probe_nvidia_clock_offset",
-                                side_effect=[True, False])):
+              mock.patch.object(hardware, "detect_nvidia_offset",
+                                side_effect=[{"ok": True}, {"ok": False}])):
             self.assertEqual(hardware.probe_gpu_tuning_capabilities(
                 {"nvidia": True, "nvidia_settings": True}), {
                 "gpu_clock_limit": True,
                 "nvidia_core_clock_offset": True,
                 "nvidia_memory_clock_offset": False,
+                "gpu_offset_limits": {"core": {"ok": True}, "memory": {"ok": False}},
             })
 
     def test_installer_reports_each_verified_clock_control(self):
@@ -137,6 +138,26 @@ class CapabilityAggregationTests(unittest.TestCase):
 
 
 class ClockControlVisibilityTests(unittest.TestCase):
+    def test_both_backends_restrict_sliders_to_driver_ranges(self):
+        from rogcontrol.ui import Adw
+        from rogcontrol.pages.gpu import GpuPage
+        from rogcontrol.pages.gpu_supergfx import GpuPage as SupergfxPage
+        Adw.init()
+        for page_type in (GpuPage, SupergfxPage):
+            caps = {"nvidia_core_clock_offset": True,
+                    "nvidia_memory_clock_offset": True,
+                    "gpu_offset_limits": {
+                        "core": dict(ok=True, minimum=-200, maximum=500),
+                        "memory": dict(ok=True, minimum=-2000, maximum=6000)}}
+            window = SimpleNamespace(caps=caps, current_profile=lambda: {"gpu": {}},
+                                     apply_async=mock.Mock())
+            page = page_type(window)
+            self.addCleanup(page._on_destroy, None)
+            core = page.rows["clock_offset"].get_adjustment()
+            memory = page.rows["mem_clock_offset"].get_adjustment()
+            self.assertEqual((core.get_lower(), core.get_upper()), (-200, 500))
+            self.assertEqual((memory.get_lower(), memory.get_upper()), (-1000, 1000))
+
     def test_each_clock_row_follows_its_own_capability(self):
         from rogcontrol.ui import Adw
         from rogcontrol.pages.gpu import GpuPage

@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 
 from . import kbdcolor, graphics_backend
 from .profiles import PROFILE_TO_PPD_MODE
@@ -274,7 +275,7 @@ def run_helper(*args, timeout=10):
     # Both actions reach nvidia-smi in the privileged helper. Cardwire can
     # block new NVIDIA clients without unloading the driver, so stop before
     # spawning sudo rather than relying on a failing nvidia-smi invocation.
-    if args and args[0] in ("gpu", "gpuclocklimit"):
+    if args and args[0] in ("gpu", "gpuclocklimit", "nvclock"):
         access_error = nvidia_access_error()
         if access_error:
             return False, access_error
@@ -299,8 +300,17 @@ def run_helper(*args, timeout=10):
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        if args and args[0] == "nvclock":
+            # Let the isolated clock bridge unwind its restoration finally
+            # block before resorting to a hard kill for a wedged driver.
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+                proc.communicate(timeout=3)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                pass
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         proc.communicate()
@@ -1970,23 +1980,174 @@ def probe_nvidia_clock_offset(kind, timeout=10):
     return changed and restored
 
 
+_nvidia_offset_backends = {}
+_nvidia_offset_thread_lock = threading.RLock()
+NVIDIA_CLOCK_BUSY_MESSAGE = "clock controls busy"
+
+
+@contextmanager
+def _nvidia_offset_transaction():
+    """Serialize this user's GUI/service transactions across both backends."""
+    with _nvidia_offset_thread_lock:
+        directory = os.path.expanduser("~/.cache/rogcontrol")
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        with open(os.path.join(directory, "nvidia-offsets.lock"), "a") as lock:
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(NVIDIA_CLOCK_BUSY_MESSAGE)
+                    time.sleep(0.05)
+            yield
+
+
+def _offset_pci_bus(timeout):
+    pci_bus = primary_nvidia_pci_bus(timeout)
+    if pci_bus:
+        return pci_bus
+    # When nvidia-smi/NVML is unavailable, a single bound GPU is still
+    # unambiguous. Do not guess a different primary GPU on multi-GPU hosts.
+    try:
+        buses = os.listdir(NVIDIA_PROC_GPUS)
+        if len(buses) == 1 and re.fullmatch(
+                r"[0-9a-fA-F]{4,8}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]", buses[0]):
+            return buses[0]
+    except OSError:
+        pass
+    return None
+
+
+def _run_nvml_offset(action, kind, pci_bus, value=None, timeout=10):
+    args = ["nvclock", action, kind, pci_bus]
+    if value is not None:
+        args.append(int(value))
+    ok, output = run_helper(*args, timeout=timeout)
+    if not ok:
+        # A transport timeout can interrupt a write; do not switch backends.
+        result = {"ok": False, "error": output}
+        if "sudo: a password is required" in output:
+            result["unavailable"] = True
+        return result
+    try:
+        result = json.loads(output)
+        if not isinstance(result, dict):
+            raise ValueError("invalid response")
+        return result
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "invalid NVML helper response"}
+
+
+def detect_nvidia_offset(kind, timeout=10):
+    """Select a verified global-offset backend independently of session type."""
+    try:
+        with _nvidia_offset_transaction():
+            return _detect_nvidia_offset(kind, timeout)
+    except (OSError, RuntimeError) as error:
+        return {"ok": False, "error": str(error)}
+
+
+def _detect_nvidia_offset(kind, timeout=10):
+    if kind not in NV_CLOCK_ATTRIBUTES:
+        return {"ok": False, "error": "invalid clock domain"}
+    access = nvidia_access_error(timeout=timeout)
+    if access:
+        return {"ok": False, "error": access}
+    pci_bus = _offset_pci_bus(timeout)
+    if not pci_bus:
+        return {"ok": False, "error": NO_DRIVER_MESSAGE}
+    _nvidia_offset_backends.pop((pci_bus, kind), None)
+    result = _run_nvml_offset("probe", kind, pci_bus, timeout=timeout)
+    if result.get("ok"):
+        result.update(backend="nvml", pci_bus=pci_bus)
+    elif (result.get("unavailable") or result.get("code") in (3, 4, 13)):
+        # Only a missing/unsupported/permission-denied NVML path may fall
+        # back. A failed restoration or unexpected write result must stop.
+        if probe_nvidia_clock_offset(kind, timeout):
+            env, _ = _nvidia_settings_session()
+            target = nvidia_settings_gpu_target(env, timeout) if env else None
+            limits = (_read_nvidia_clock_offset(kind, env, target, timeout)
+                      if target else None)
+            if limits:
+                value, low, high = limits
+                result = {"ok": True, "backend": "nvidia-settings",
+                          "pci_bus": pci_bus, "value": value,
+                          "minimum": low, "maximum": high}
+        elif not session_display_ready():
+            result = {"ok": False, "error": NO_DISPLAY_MESSAGE}
+    if result.get("code") in (9, 15, 27):
+        result["error"] = NO_DRIVER_MESSAGE
+    if result.get("ok"):
+        _nvidia_offset_backends[pci_bus, kind] = result
+    return result
+
+
 def probe_gpu_tuning_capabilities(caps):
     """Probe the three writable clock controls for the UI and installer.
 
     Kept out of detect_capabilities: services and headless callers must not
     change clock settings merely to inspect general hardware availability.
     """
+    offsets = {kind: detect_nvidia_offset(kind) for kind in ("core", "memory")}
     return {
         "gpu_clock_limit": bool(caps.get("nvidia") and
                                 gpu_clock_limit_supported()),
-        "nvidia_core_clock_offset": bool(
-            caps.get("nvidia_settings") and probe_nvidia_clock_offset("core")),
-        "nvidia_memory_clock_offset": bool(
-            caps.get("nvidia_settings") and probe_nvidia_clock_offset("memory")),
+        "nvidia_core_clock_offset": bool(offsets["core"].get("ok")),
+        "nvidia_memory_clock_offset": bool(offsets["memory"].get("ok")),
+        "gpu_offset_limits": offsets,
     }
 
 
 def set_nvidia_clock_offset(kind, mhz, timeout=10, wait_seconds=0):
+    """Use the same verified backend for interactive and background writes."""
+    try:
+        with _nvidia_offset_transaction():
+            return _set_nvidia_clock_offset(kind, mhz, timeout, wait_seconds)
+    except (OSError, RuntimeError) as error:
+        return False, str(error)
+
+
+def _set_nvidia_clock_offset(kind, mhz, timeout=10, wait_seconds=0):
+    if kind not in NV_CLOCK_ATTRIBUTES:
+        return False, "invalid clock domain"
+    access = nvidia_access_error(timeout=timeout)
+    if access:
+        return False, access
+    pci_bus = _offset_pci_bus(timeout)
+    if not pci_bus:
+        return False, NO_DRIVER_MESSAGE
+    selected = _nvidia_offset_backends.get((pci_bus, kind))
+    if selected is None:
+        selected = _detect_nvidia_offset(kind, timeout)
+    if (not selected.get("ok") and wait_seconds > 0
+            and selected.get("error") == NO_DISPLAY_MESSAGE):
+        env, _ = _nvidia_settings_session(wait_seconds)
+        if env is not None:
+            selected = _detect_nvidia_offset(kind, timeout)
+    if not selected.get("ok"):
+        if not session_display_ready() and selected.get("unavailable"):
+            return False, NO_DISPLAY_MESSAGE
+        return False, selected.get("error", "NVIDIA clock offset unavailable")
+    try:
+        value = int(mhz)
+    except (TypeError, ValueError):
+        return False, "invalid clock offset"
+    if not selected["minimum"] <= value <= selected["maximum"]:
+        return False, "clock offset is outside this GPU's supported range"
+    if selected["backend"] == "nvml":
+        result = _run_nvml_offset("set", kind, pci_bus, value, timeout)
+        if not result.get("ok"):
+            _nvidia_offset_backends.pop((pci_bus, kind), None)
+            if result.get("code") in (9, 15, 27):
+                result["error"] = NO_DRIVER_MESSAGE
+        return bool(result.get("ok")), str(result.get("value") if result.get("ok")
+                                           else result.get("error"))
+    return _set_nvidia_settings_offset(kind, value, timeout, wait_seconds)
+
+
+def _set_nvidia_settings_offset(kind, mhz, timeout=10, wait_seconds=0):
     """Apply one clock offset, returning ``(ok, message)`` like run_helper.
 
     ``wait_seconds`` is for one-shot callers only -- the login apply, which
@@ -2016,7 +2177,10 @@ def set_nvidia_clock_offset(kind, mhz, timeout=10, wait_seconds=0):
         return False, str(e)
     if result.returncode != 0:
         return False, (result.stderr or result.stdout or "unknown error").strip()
-    return True, result.stdout.strip()
+    actual = _read_nvidia_clock_offset(kind, env, target, timeout)
+    if actual is None or actual[0] != int(mhz) or "ERROR:" in result.stderr:
+        return False, (result.stderr or "NVIDIA offset readback did not match").strip()
+    return True, str(actual[0])
 
 
 def set_nvidia_powermizer_mode(mode, timeout=10, wait_seconds=0):

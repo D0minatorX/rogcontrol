@@ -1396,8 +1396,8 @@ def thermal_state_changed():
 
 # -- GPU clock offsets that arrived before the graphical session -------------
 #
-# nvidia-settings is the only way to move these two offsets and it needs the
-# user's X/Xwayland display, so an offset written before the session exists
+# The nvidia-settings fallback needs the user's X/Xwayland display; NVML
+# does not. An offset on the fallback path written before the session exists
 # cannot land. That is not rare and it is not an error: this service is
 # Restart=always, is wanted by default.target, and its first full apply is
 # routinely reached at boot seconds before the compositor has published a
@@ -1506,12 +1506,15 @@ def retry_pending_gpu_offsets():
         return
     # Voltage Boost goes straight to the NVIDIA driver rather than the
     # display-server-bound nvidia-settings, so it can be retried before a
-    # graphical session exists. The other pending controls still need one.
+    # graphical session exists. NVML clock offsets can also work headlessly.
     if _pending_voltage_boost is not None:
         percent = _pending_voltage_boost
         if set_voltage_boost(percent):
             log("GPU Voltage Boost applied now that the NVIDIA driver is up",
                 "INFO")
+    for kind, mhz in list(_pending_gpu_offsets.items()):
+        if set_clock_offset(kind, mhz):
+            log(f"GPU {kind} clock offset applied ({mhz} MHz)", "INFO")
     if (not _pending_gpu_offsets and _pending_powermizer_mode is None):
         if _pending_voltage_boost is None:
             _pending_offsets_since = None
@@ -1523,10 +1526,6 @@ def retry_pending_gpu_offsets():
                 f"minutes: {hardware.NO_DISPLAY_MESSAGE}", "WARN",
                 dedupe_key="nvpending", dedupe_seconds=3600)
         return
-    for kind, mhz in list(_pending_gpu_offsets.items()):
-        if set_clock_offset(kind, mhz):
-            log(f"GPU {kind} clock offset applied ({mhz} MHz) now that the "
-                "graphical session is up", "INFO")
     if _pending_powermizer_mode is not None:
         mode = _pending_powermizer_mode
         if set_powermizer_mode(mode):
@@ -1556,7 +1555,8 @@ def set_clock_offset(kind, mhz):
         _pending_gpu_offsets.pop(kind, None)
         return True
     if message in (hardware.NO_DISPLAY_MESSAGE, hardware.NO_DRIVER_MESSAGE,
-                   hardware.CARDWIRE_BLOCKED_MESSAGE):
+                   hardware.CARDWIRE_BLOCKED_MESSAGE,
+                   hardware.NVIDIA_CLOCK_BUSY_MESSAGE):
         # Both are "not yet", not "no". The card being gone is the same shape
         # of wait as the session being gone -- Integrated mode, or a switch
         # part-way through -- and the retry costs one procfs read while it

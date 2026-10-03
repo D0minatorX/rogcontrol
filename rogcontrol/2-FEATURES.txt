@@ -97,7 +97,15 @@ non-zero Apply asks for confirmation because it can increase heat/power and
 cause instability. It uses the installed NVIDIA driver directly and never
 requires LACT. Quick Access also provides the NVIDIA PowerMizer mode per
 profile when the active GPU and driver support it. Ranges are read from your
-card, not hardcoded.
+card, with clock offsets additionally limited to the existing +/-1000 MHz
+UI range.
+
+Core and memory offsets are detected independently using a temporary write,
+readback and restoration. They prefer privileged NVIDIA NVML global offsets
+on Wayland and X11; verified nvidia-settings is the fallback. Both Cardwire
+and supergfxctl use this same path. Unsupported controls remain hidden.
+NVML offsets can be applied and retried without a graphical session. Avoid
+running another clock-management tool while probing or applying settings.
 
 Applied on the same terms as the CPU page: an Apply button, a banner naming
 what is not on the card yet, and a profile that is only written once the card

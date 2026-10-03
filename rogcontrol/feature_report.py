@@ -47,7 +47,7 @@ LABELS = {
     "kbd_ambient": "Ambient keyboard mode",
 }
 
-METADATA = {"cpu_vendor", "aura_id", "gpu_limits"}
+METADATA = {"cpu_vendor", "aura_id", "gpu_limits", "gpu_offset_limits"}
 
 
 def feature_rows(caps):

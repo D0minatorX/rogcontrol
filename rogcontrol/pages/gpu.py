@@ -471,6 +471,17 @@ class GpuPage(Gtk.Box):
                                    "machine.")
         for key in ("clock_offset", "mem_clock_offset"):
             self.rows[key].set_visible(bool(self.caps.get(CAPABILITY[key])))
+            kind = "core" if key == "clock_offset" else "memory"
+            limits = self.caps.get("gpu_offset_limits", {}).get(kind, {})
+            if limits.get("ok"):
+                was_loading = self._loading
+                self._loading = True
+                try:
+                    adj = self.rows[key].get_adjustment()
+                    adj.set_lower(max(-1000, limits["minimum"]))
+                    adj.set_upper(min(1000, limits["maximum"]))
+                finally:
+                    self._loading = was_loading
         self.rows["voltage_boost"].set_visible(
             bool(self.caps.get("nvidia_voltage_boost")))
         self.rows["dyn_boost"].set_visible(
