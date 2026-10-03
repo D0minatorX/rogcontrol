@@ -60,7 +60,8 @@ Graphics access switching uses the backend selected during installation:
   on Wayland. Already-running applications can retain their existing GPU
   access until restarted. Direct NVIDIA controls are parked while Integrated
   or Smart blocks the card; returning to Hybrid redetects the card's real
-  limits and supported controls.
+  limits and supported controls. The background service also retries saved
+  power and clock limits after access returns when the window is closed.
 
 The installer asks which backend to use on Wayland. Outside Wayland it selects
 Supergfx automatically. External-monitor routing still depends on the laptop's

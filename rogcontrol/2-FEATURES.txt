@@ -108,7 +108,9 @@ Hybrid and NVIDIA-only (AsusMuxDgpu); switching can require a logout or
 reboot. Cardwire offers live Integrated, Hybrid and Smart access policies,
 but no NVIDIA-only mode. Applications already running can retain access until
 restarted. Cardwire requires Wayland. The installer's choice controls the GPU
-picker, and daemon refusals remain visible on the page.
+picker, and daemon refusals remain visible on the page. Saved NVIDIA power
+and clock limits are retried by the background service after Hybrid access
+returns, even when the window is closed.
 
 Live CPU and GPU temperatures and the speed of the fan cooling each are shown
 on their own pages, refreshed every two seconds. The GPU reads "Idle" while
