@@ -13,6 +13,11 @@ import signal
 import time
 
 
+# Memory offsets may quantize odd MHz requests. Use an even UI/probe step
+# rather than weakening exact readback checks or accepting a no-op write.
+CLOCK_OFFSET_STEPS = {"core": 25, "memory": 50}
+
+
 class NvmlError(RuntimeError):
     def __init__(self, code, message):
         super().__init__(message)
@@ -72,9 +77,10 @@ def operate(api, action, kind, value=None):
         return original
     if action == "probe":
         # Prefer a downward step, avoiding an automatic positive overclock.
-        candidate = original["value"] - 25
+        step = CLOCK_OFFSET_STEPS[kind]
+        candidate = original["value"] - step
         if candidate < low:
-            candidate = original["value"] + 25
+            candidate = original["value"] + step
         if not low <= candidate <= high:
             raise ValueError("no testable offset range")
     else:

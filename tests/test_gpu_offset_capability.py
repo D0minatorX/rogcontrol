@@ -65,11 +65,11 @@ class OffsetCapabilityTests(unittest.TestCase):
                 [], 0, f"Attribute '{memory}' (host:0[gpu:2]): {value}.\n"
                 f"The valid values for '{memory}' are in the range -2000 - 6000 (inclusive).", "")
         replies = [reply(0), subprocess.CompletedProcess([], 0, "", ""),
-                   reply(25), subprocess.CompletedProcess([], 0, "", ""), reply(0)]
+                   reply(50), subprocess.CompletedProcess([], 0, "", ""), reply(0)]
         with mock.patch.object(hardware.subprocess, "run", side_effect=replies) as run:
             self.assertTrue(hardware.probe_nvidia_clock_offset("memory"))
         self.assertEqual(run.call_args_list[1].args[0],
-                         ["nvidia-settings", "-a", f"[gpu:2]/{memory}=25"])
+                         ["nvidia-settings", "-a", f"[gpu:2]/{memory}=50"])
 
 
 class ClockCeilingCapabilityTests(unittest.TestCase):
@@ -157,6 +157,8 @@ class ClockControlVisibilityTests(unittest.TestCase):
             memory = page.rows["mem_clock_offset"].get_adjustment()
             self.assertEqual((core.get_lower(), core.get_upper()), (-200, 500))
             self.assertEqual((memory.get_lower(), memory.get_upper()), (-1000, 1000))
+            self.assertEqual(core.get_step_increment(), 25)
+            self.assertEqual(memory.get_step_increment(), 50)
 
     def test_each_clock_row_follows_its_own_capability(self):
         from rogcontrol.ui import Adw

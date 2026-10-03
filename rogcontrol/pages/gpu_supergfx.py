@@ -330,7 +330,7 @@ class GpuPage(Gtk.Box):
             tooltip=OFFSET_TOOLTIP,
             minimum=hardware.CLOCK_OFFSET_MIN,
             maximum=hardware.CLOCK_OFFSET_MAX,
-            step=25, unit="MHz", settle_ms=SETTLE_MS)
+            step=hardware.CLOCK_OFFSET_STEPS["core"], unit="MHz", settle_ms=SETTLE_MS)
         core.connect("changed", self._on_changed)
         clocks.add(core)
         self.rows["clock_offset"] = core
@@ -340,7 +340,7 @@ class GpuPage(Gtk.Box):
             tooltip=OFFSET_TOOLTIP,
             minimum=hardware.MEM_CLOCK_OFFSET_MIN,
             maximum=hardware.MEM_CLOCK_OFFSET_MAX,
-            step=25, unit="MHz", settle_ms=SETTLE_MS)
+            step=hardware.CLOCK_OFFSET_STEPS["memory"], unit="MHz", settle_ms=SETTLE_MS)
         memory.connect("changed", self._on_changed)
         clocks.add(memory)
         self.rows["mem_clock_offset"] = memory

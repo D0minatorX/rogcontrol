@@ -26,6 +26,7 @@ import time
 from contextlib import contextmanager
 
 from . import kbdcolor, graphics_backend
+from .nvidia_clocks import CLOCK_OFFSET_STEPS
 from .profiles import PROFILE_TO_PPD_MODE
 
 HELPER = "/usr/local/bin/rogcontrol-helper"
@@ -1951,9 +1952,10 @@ def probe_nvidia_clock_offset(kind, timeout=10):
     if original is None:
         return False
     value, minimum, maximum = original
-    # Match the 25 MHz steps the UI can actually request. A one-MHz write
+    # Match each domain's UI step. A one-MHz write
     # may be rounded away even when useful slider values are supported.
-    candidate = value + 25 if value + 25 <= maximum else value - 25
+    step = CLOCK_OFFSET_STEPS[kind]
+    candidate = value + step if value + step <= maximum else value - step
     if candidate < minimum or candidate == value:
         return False
     changed = False

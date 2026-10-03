@@ -27,8 +27,18 @@ class BridgeTests(unittest.TestCase):
             api = FakeNvml()
             result = nvidia_clocks.operate(api, "probe", kind)
             self.assertEqual(result["value"], 0)
-            self.assertEqual(api.writes, [(kind, -25), (kind, 0)])
+            expected = -50 if kind == "memory" else -25
+            self.assertEqual(api.writes, [(kind, expected), (kind, 0)])
             self.assertEqual(api.value, 0)
+
+    def test_memory_probe_survives_odd_offset_quantization(self):
+        api = FakeNvml()
+        def quantized_write(kind, value):
+            api.value = int(value / 2) * 2
+        api.write = quantized_write
+        result = nvidia_clocks.operate(api, "probe", "memory")
+        self.assertEqual(result["value"], 0)
+        self.assertEqual(api.value, 0)
 
     def test_set_retains_verified_value(self):
         api = FakeNvml()
