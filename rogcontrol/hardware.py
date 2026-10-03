@@ -271,6 +271,13 @@ def run_helper(*args, timeout=10):
     Failure is a non-zero exit code and nothing else. Output on stderr is not
     failure: the one call that matters here, ``cpu``, writes to stderr on
     every single run."""
+    # Both actions reach nvidia-smi in the privileged helper. Cardwire can
+    # block new NVIDIA clients without unloading the driver, so stop before
+    # spawning sudo rather than relying on a failing nvidia-smi invocation.
+    if args and args[0] in ("gpu", "gpuclocklimit"):
+        access_error = nvidia_access_error()
+        if access_error:
+            return False, access_error
     cmd = " ".join(str(a) for a in args)
     # A separate process group (start_new_session) so a timeout can kill
     # sudo's whole child tree, not just sudo itself. sudo -n execs the helper
@@ -1831,6 +1838,8 @@ def nvidia_settings_gpu_target(env, timeout):
     tools are available; otherwise use the first actual target advertised by
     nvidia-settings rather than assuming an index.
     """
+    if nvidia_access_error(timeout=timeout):
+        return None
     try:
         result = subprocess.run(["nvidia-settings", "-q", "gpus"], env=env,
                                 capture_output=True, text=True, timeout=timeout)

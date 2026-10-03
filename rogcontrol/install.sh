@@ -307,10 +307,6 @@ if ! lsmod 2>/dev/null | grep -q '^asus_nb_wmi\|^asus_wmi' \
     warn "It normally loads automatically on supported ASUS laptops."
 fi
 
-command -v nvidia-smi >/dev/null 2>&1 \
-    && say "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)" \
-    || warn "No nvidia-smi yet - GPU controls need the NVIDIA driver"
-
 # Graphics backend is chosen once per installation. An explicit X11 session
 # wins over a stale WAYLAND_DISPLAY inherited from another process.
 WAYLAND=0
@@ -340,6 +336,13 @@ else
     say "No Wayland session detected — using supergfxctl"
 fi
 say "Graphics backend: $GRAPHICS_BACKEND"
+if [ "$GRAPHICS_BACKEND" = cardwire ]; then
+    say "GPU: Cardwire access will be checked when the app starts"
+elif command -v nvidia-smi >/dev/null 2>&1; then
+    say "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+else
+    warn "No nvidia-smi yet - GPU controls need the NVIDIA driver"
+fi
 
 # The machine is an ASUS and the app is worth installing here, so the atomic
 # question deferred at the top can now be asked. Deliberately after the
