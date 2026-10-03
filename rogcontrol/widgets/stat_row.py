@@ -63,9 +63,13 @@ class StatCell:
         The note goes in front of the description rather than replacing it:
         why the value is a dash is the more useful half, but what the
         reading would have been is still worth having."""
-        self.value.add_css_class("dim-label")
-        self.box.set_tooltip_text(
-            text + (f"\n\n{self._tooltip}" if self._tooltip else ""))
+        if text:
+            self.value.add_css_class("dim-label")
+            self.box.set_tooltip_text(
+                text + (f"\n\n{self._tooltip}" if self._tooltip else ""))
+        else:
+            self.value.remove_css_class("dim-label")
+            self.box.set_tooltip_text(self._tooltip or None)
 
 
 def build_stat_row(group, cells):

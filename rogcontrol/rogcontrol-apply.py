@@ -82,11 +82,10 @@ def run_nvidia_helper(*args):
 
     Same call, two differences that belong to the card rather than the value:
     a runtime-suspended card is given a moment to come back first, and "the
-    card is not reachable" is logged at INFO rather than ERROR. Measured on
-    2026-09-04: supergfxd unbound and removed the dGPU mid mode-switch, and
-    the writes landing in that window put two red lines in the log for
-    settings that were never wrong and are re-applied by the enforcer on its
-    next pass."""
+    card is not reachable" is logged at INFO rather than ERROR. Cardwire's
+    Integrated and Smart policies can intentionally hide the dGPU from this
+    process, so a deferred write is expected and the enforcer reapplies it
+    when Hybrid access becomes available."""
     return hardware.run_nvidia_helper_logged(
         *args, source="apply", timeout=30,
         wait_seconds=DGPU_WAKE_WAIT_SECONDS)[0]
@@ -162,6 +161,7 @@ def _offset_failure_level(message):
     return ("INFO"
             if message in (hardware.NO_DISPLAY_MESSAGE,
                            hardware.NO_DRIVER_MESSAGE,
+                           hardware.CARDWIRE_BLOCKED_MESSAGE,
                            hardware.NVIDIA_POWERMIZER_QUERY_MESSAGE)
             else "ERROR")
 

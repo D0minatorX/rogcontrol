@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 
-from . import kbdcolor
+from . import kbdcolor, graphics_backend
 from .profiles import PROFILE_TO_PPD_MODE
 
 HELPER = "/usr/local/bin/rogcontrol-helper"
@@ -65,6 +65,12 @@ LOG_MAX_BYTES = 256 * 1024
 # it, and the lock would then be on the backup rather than on the live log.
 LOG_LOCK_PATH = LOG_PATH + ".lock"
 _last_logged = {}
+# All fan writers run as this user, but in separate processes. Runtime state
+# makes a successful retry in the enforcer clear a timeout from the tray and
+# disappears on reboot instead of carrying an old failure into a new session.
+FAN_TIMEOUT_STATE_PATH = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
+    "rogcontrol-fan-timeouts")
 
 
 def log(message, level="INFO", source="app", dedupe_key=None, dedupe_seconds=300):
@@ -418,7 +424,7 @@ def parse_service_state(unit_files="", is_active="", is_enabled="",
     """What a systemd unit is doing, from three systemctl answers plus PATH.
 
     Pure, so the states can be tested without a machine that has the package
-    on it. Shared by asusd and supergfxd rather than written twice: the
+    on it. Shared by asusd and cardwired rather than written twice: the
     question ("installed? running? will it come back at boot?") and all four
     answers are the same for both, and the only difference is the unit name.
 
@@ -1050,17 +1056,19 @@ def read_memory(root=None):
 
 # -- GPU ---------------------------------------------------------------------
 
-def read_nvidia_query(fields, timeout=5):
+def read_nvidia_query(fields, timeout=5, check_access=True):
     """The named ``--query-gpu`` fields as floats, in order, each None if the
     card had no number for it.
 
     One nvidia-smi call per group of fields, because each invocation costs a
     couple of hundred milliseconds and the callers run on a 2-second timer.
     Every failure mode -- no driver, no binary, card powered down under
-    supergfxctl, '[N/A]' where a number should be -- lands on None rather
+    cardwire, '[N/A]' where a number should be -- lands on None rather
     than an exception, since a laptop with the dGPU asleep is a normal state
     and not a reason for the overview to stop updating."""
     blanks = tuple(None for _ in fields)
+    if check_access and not dgpu_available(timeout):
+        return blanks
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=" + ",".join(fields),
@@ -1084,10 +1092,10 @@ def read_nvidia_query(fields, timeout=5):
     return tuple(out)
 
 
-def read_nvidia_stats(timeout=5):
+def read_nvidia_stats(timeout=5, check_access=True):
     """(temp_c, power_w) for the NVIDIA card, either of which may be None."""
     return read_nvidia_query(("temperature.gpu", "power.draw"),
-                             timeout=timeout)
+                             timeout=timeout, check_access=check_access)
 
 
 def gpu_power_limit_supported():
@@ -1240,6 +1248,31 @@ def run_nvidia_helper_logged(*args, source="app", timeout=30, wait_seconds=0):
 CPU_FAN_CHANNEL = "1"
 
 
+def _fan_timeout_repeated(channel, timed_out):
+    """Track consecutive timeouts for one fan across writer processes.
+
+    A success or another failure breaks the streak. If runtime state cannot
+    be written, report a timeout immediately instead of hiding an error.
+    """
+    try:
+        with open(FAN_TIMEOUT_STATE_PATH, "a+") as state:
+            fcntl.flock(state.fileno(), fcntl.LOCK_EX)
+            state.seek(0)
+            pending = set(state.read().strip()) & set(FAN_CHANNELS)
+            repeated = channel in pending
+            if timed_out:
+                pending.add(channel)
+            else:
+                pending.discard(channel)
+            state.seek(0)
+            state.truncate()
+            state.write("".join(sorted(pending)))
+            state.flush()
+            return repeated if timed_out else False
+    except OSError:
+        return timed_out
+
+
 def run_fan_helper_logged(channel, *values, source="app", timeout=30):
     """A fan-curve write, reported with the state of the dGPU taken into account.
 
@@ -1248,7 +1281,9 @@ def run_fan_helper_logged(channel, *values, source="app", timeout=30):
     That is expected in Integrated mode and while a mode switch is in
     progress, and on 2026-09-04 it put three ERROR lines in the log for fans
     behaving exactly as they should. So it is logged at INFO in that state
-    and stays an ERROR in every other.
+    and stays an ERROR in every other. Timeouts are different: the first is
+    INFO for every channel and a consecutive timeout is ERROR even if the
+    GPU driver is down.
 
     The write is still ATTEMPTED rather than skipped when the card is down.
     Which channels are GPU-side is model-specific -- FAN_LABELS is this
@@ -1258,15 +1293,21 @@ def run_fan_helper_logged(channel, *values, source="app", timeout=30):
 
     Returns ``(ok, message)`` like run_helper_logged."""
     ok, message = run_helper("fan", channel, *values, timeout=timeout)
+    timed_out = not ok and message == "timed out"
+    repeated_timeout = _fan_timeout_repeated(str(channel), timed_out)
     if not ok:
         gpu_side_while_card_down = (str(channel) != CPU_FAN_CHANNEL
                                     and not nvidia_driver_loaded())
-        level = "INFO" if gpu_side_while_card_down else "ERROR"
+        level = ("INFO" if (timed_out and not repeated_timeout)
+                 or (gpu_side_while_card_down and not timed_out) else "ERROR")
         label = FAN_LABELS.get(str(channel), f"fan {channel}")
         suffix = (" -- expected while the card is powered down"
-                  if gpu_side_while_card_down else "")
+                  if gpu_side_while_card_down and not timed_out else "")
+        if timed_out and not repeated_timeout:
+            suffix += " -- will retry; repeated timeout is an error"
         log(f"fan {channel} ({label}) curve failed: {message}{suffix}",
-            level, source=source, dedupe_key=f"fan{channel}")
+            level, source=source,
+            dedupe_key=None if timed_out else f"fan{channel}:other")
     return ok, message
 
 
@@ -1366,6 +1407,8 @@ def detect_gpu_limits(timeout=5):
     back independently -- a driver that answers the CSV query but not the
     CLOCK dump still gets its true wattage range."""
     limits = default_gpu_limits()
+    if not dgpu_available(timeout):
+        return limits
     try:
         result = subprocess.run(
             ["nvidia-smi",
@@ -1391,6 +1434,8 @@ def detect_gpu_max_clock(timeout=5):
     Separate from detect_gpu_limits because the difference between "the card
     says 2100" and "the card did not answer" is exactly what that one throws
     away by falling back, and gpu_clock_limit_max needs it."""
+    if not dgpu_available(timeout):
+        return None
     try:
         result = subprocess.run(["nvidia-smi", "-q", "-d", "CLOCK"],
                                 capture_output=True, text=True, timeout=timeout)
@@ -1519,6 +1564,8 @@ def nvidia_voltage_boost_args(action, value, pci_bus):
 
 def primary_nvidia_pci_bus(timeout=5):
     """The primary NVIDIA PCI address, or None when the driver cannot say."""
+    if not dgpu_available(timeout):
+        return None
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=pci.bus_id", "--format=csv,noheader"],
@@ -1532,8 +1579,9 @@ def primary_nvidia_pci_bus(timeout=5):
 
 
 def _run_nvidia_voltage_boost(action, value=None, timeout=10):
-    if not nvidia_driver_loaded():
-        return False, NO_DRIVER_MESSAGE
+    access_error = nvidia_access_error(timeout=timeout)
+    if access_error:
+        return False, access_error
     pci_bus = primary_nvidia_pci_bus(timeout)
     if not pci_bus:
         return False, NVIDIA_VOLTAGE_BOOST_UNSUPPORTED_MESSAGE
@@ -1620,6 +1668,14 @@ NO_DISPLAY_MESSAGE = ("no graphical session yet -- nvidia-settings needs "
 # offset is work to do when it comes back rather than a fault to report.
 NO_DRIVER_MESSAGE = ("nvidia driver not loaded -- the card is powered down "
                      "or a graphics-mode switch has not finished")
+
+# Cardwire can deliberately deny new NVIDIA clients while leaving the kernel
+# module loaded.  Keep that state distinct from a missing driver: callers can
+# defer profile settings until Hybrid mode returns instead of reporting a
+# hardware failure that did not occur.
+CARDWIRE_BLOCKED_MESSAGE = (
+    "Cardwire is blocking NVIDIA access in the current GPU mode -- switch "
+    "to Hybrid to apply NVIDIA settings")
 
 # Processes whose environment is worth trusting first when harvesting a
 # display below: each one IS the graphical session (or is started by it), so
@@ -1738,8 +1794,9 @@ def session_display_ready():
 
 def _nvidia_settings_session(wait_seconds=0):
     """Return an nvidia-settings-ready environment or its user-facing error."""
-    if not nvidia_driver_loaded():
-        return None, NO_DRIVER_MESSAGE
+    access_error = nvidia_access_error()
+    if access_error:
+        return None, access_error
     env = session_display_env()
     deadline = time.monotonic() + wait_seconds
     while not env.get("DISPLAY") and time.monotonic() < deadline:
@@ -2074,8 +2131,7 @@ def read_panel_od(root=None):
     return val if val in (0, 1) else None
 
 
-# -- Graphics mode (supergfxctl) ---------------------------------------------
-
+# -- supergfxctl backend retained alongside Cardwire -------------------------
 SUPERGFXD_SERVICE = "supergfxd.service"
 
 
@@ -2128,10 +2184,10 @@ def set_supergfxd_running(timeout=30):
 
 # The three modes this app offers, always, in the order a user thinks about
 # them: least power, both, most power. Same list the GTK3 app had.
-GPU_MODES = ("Integrated", "Hybrid", "AsusMuxDgpu")
+SUPERGFX_GPU_MODES = ("Integrated", "Hybrid", "AsusMuxDgpu")
 
 
-def gpu_mode_choices(active=None, supported=()):
+def supergfx_gpu_mode_choices(active=None, supported=()):
     """Every mode to offer: the three above, plus anything else in play.
 
     ``supergfxctl -s`` deliberately does **not** filter this. It answers
@@ -2148,7 +2204,7 @@ def gpu_mode_choices(active=None, supported=()):
     that have them -- and so is the mode actually in force, which must always
     be selectable or the picker would show some other mode as current.
     """
-    modes = list(GPU_MODES)
+    modes = list(SUPERGFX_GPU_MODES)
     for extra in list(supported or ()) + [active]:
         if extra and extra not in modes:
             modes.append(extra)
@@ -2164,7 +2220,7 @@ def parse_supergfx_modes(text):
             if part.strip()]
 
 
-def read_gpu_mode(timeout=5):
+def read_supergfx_mode(timeout=5):
     """The graphics mode in force, as supergfxctl spells it, or None."""
     try:
         result = subprocess.run(["supergfxctl", "-g"],
@@ -2176,44 +2232,7 @@ def read_gpu_mode(timeout=5):
     return result.stdout.strip() or None
 
 
-# The kernel's own answer to "is there a GPU the nvidia driver can talk to".
-# One entry per bound card, and the directory disappears with the module.
-NVIDIA_PROC_GPUS = "/proc/driver/nvidia/gpus"
-
-
-def nvidia_driver_loaded(root=None):
-    """True when the nvidia module is loaded and has a card bound to it.
-
-    Two reads of a procfs directory, no subprocess -- which is what makes it
-    usable as a guard in front of every nvidia-smi call rather than only at
-    startup."""
-    try:
-        return bool(os.listdir(_under(root, NVIDIA_PROC_GPUS)))
-    except OSError:
-        return False
-
-
-def dgpu_available(timeout=5):
-    """Whether a GPU write can land: not Integrated, and driver actually up.
-
-    The mode question alone is not enough, and 2026-09-04 is why. supergfxd
-    reports the mode it has ACCEPTED, not the one in force: asked for
-    AsusMuxDgpu at 20:22 with the reboot still pending, `supergfxctl -g`
-    answered AsusMuxDgpu immediately while the machine went on running
-    Integrated with the nvidia module unloaded and the card off the PCI bus.
-    This returned True for that, and the apply and the enforcer between them
-    put eight ERROR lines in the log writing to a driver that was not there.
-    The same gap opens at boot, where the login apply can beat supergfxd to
-    the point of answering at all.
-
-    So the daemon is asked what it intends and the kernel is asked what is
-    actually loaded, and both have to agree before anything is written."""
-    if read_gpu_mode(timeout) == "Integrated":
-        return False
-    return nvidia_driver_loaded()
-
-
-def read_supported_gpu_modes(timeout=5):
+def read_supergfx_modes(timeout=5):
     """The modes this machine can actually be switched to, or []."""
     try:
         result = subprocess.run(["supergfxctl", "-s"],
@@ -2377,6 +2396,182 @@ def mode_needs_hybrid_first(current, target, root=None):
     return gpu_mux_is_dgpu(root) is True
 
 
+def set_supergfx_mode(mode, timeout=10):
+    """Switch graphics mode, returning ``(ok, message)``.
+
+    Not run through the helper: supergfxctl talks to supergfxd over the
+    system bus and does its own authorisation."""
+    try:
+        result = subprocess.run(["supergfxctl", "-m", str(mode)],
+                                capture_output=True, text=True, timeout=timeout)
+    except Exception as e:
+        return False, str(e)
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout or "unknown error").strip()
+    return True, result.stdout.strip()
+
+# -- Graphics mode (Cardwire) ------------------------------------------------
+
+CARDWIRED_SERVICE = "cardwired.service"
+CARDWIRE_WAYLAND_MESSAGE = (
+    "Cardwire mode switching requires a Wayland session; log in with "
+    "Wayland instead of X11")
+
+
+def cardwire_session_supported(env=None):
+    """False only when the current desktop explicitly identifies as X11.
+
+    A missing session type is left usable for non-GUI helpers that talk to
+    cardwired over D-Bus.  The graphical app receives XDG_SESSION_TYPE from
+    the desktop and can give an exact X11 explanation.
+    """
+    env = os.environ if env is None else env
+    return str(env.get("XDG_SESSION_TYPE", "")).lower() != "x11"
+
+
+def read_cardwired_state(timeout=5):
+    """What cardwired is doing, in the same shape as read_asusd_state."""
+    def ask(*args):
+        try:
+            result = subprocess.run(["systemctl", *args],
+                                    capture_output=True, text=True,
+                                    timeout=timeout)
+        except Exception:
+            return ""
+        # Return code ignored for the same reason as read_asusd_state:
+        # is-active exits non-zero for a stopped unit and is-enabled for a
+        # disabled one, and the word on stdout is the answer either way.
+        return result.stdout or ""
+
+    return parse_service_state(
+        unit_files=ask("list-unit-files", CARDWIRED_SERVICE),
+        is_active=ask("is-active", CARDWIRED_SERVICE),
+        is_enabled=ask("is-enabled", CARDWIRED_SERVICE),
+        binary_found=have_cmd("cardwired") or have_cmd("cardwire"),
+        service=CARDWIRED_SERVICE)
+
+
+def set_cardwired_running(timeout=30):
+    """Enable and start cardwired, returning ``(ok, message)``.
+
+    Through the privileged helper, which takes no argument and names the
+    unit itself -- there is no route from here to systemctl with a unit name
+    of anyone's choosing.
+
+    There is deliberately no "stop cardwired" counterpart. This app wants
+    that daemon running: without it the GPU access picker cannot read or
+    switch anything. Turning it off is not something the window should offer
+    a button for, and a disable primitive in a passwordless helper is worth
+    not having."""
+    return run_helper("cardwired_enable", timeout=timeout)
+
+
+# Cardwire's useful laptop modes: lowest power, unrestricted offload, and
+# per-application access. Manual is appended when the daemon advertises it,
+# but is not a useful default for this high-level picker.
+CARDWIRE_GPU_MODES = ("Integrated", "Hybrid", "Smart")
+
+
+def cardwire_gpu_mode_choices(active=None, supported=()):
+    """Modes this high-level picker can configure.
+
+    Manual needs per-GPU allow/block controls that the application does not
+    expose yet, so advertising it here would let users enter a mode they
+    cannot configure.  Preserve it only when it is already active, allowing
+    the picker to report the truth and switch back to a managed mode.
+    """
+    modes = list(CARDWIRE_GPU_MODES)
+    for extra in supported or ():
+        if extra == "Manual":
+            continue
+        if extra and extra not in modes:
+            modes.append(extra)
+    if active and active not in modes:
+        modes.append(active)
+    return modes
+
+
+def parse_cardwire_status(text):
+    """Return ``(current, available)`` from ``cardwire get`` output."""
+    current = None
+    available = []
+    for line in (text or "").splitlines():
+        label, separator, value = line.partition(":")
+        if not separator:
+            continue
+        if label.strip().lower() == "current mode":
+            current = value.strip().title() or None
+        elif label.strip().lower() in ("available mode", "available modes"):
+            available = [part.strip().title() for part in value.split(",")
+                         if part.strip()]
+    return current, available
+
+
+def read_cardwire_status(timeout=5):
+    """Return Cardwire's current and available modes with one CLI call."""
+    try:
+        result = subprocess.run(["cardwire", "get"],
+                                capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None, []
+    if result.returncode != 0:
+        return None, []
+    return parse_cardwire_status(result.stdout)
+
+
+def read_cardwire_mode(timeout=5):
+    """The graphics mode currently enforced by Cardwire, or None."""
+    return read_cardwire_status(timeout)[0]
+
+
+# The kernel's own answer to "is there a GPU the nvidia driver can talk to".
+# One entry per bound card, and the directory disappears with the module.
+NVIDIA_PROC_GPUS = "/proc/driver/nvidia/gpus"
+
+
+def nvidia_driver_loaded(root=None):
+    """True when the nvidia module is loaded and has a card bound to it.
+
+    Two reads of a procfs directory, no subprocess -- which is what makes it
+    usable as a guard in front of every nvidia-smi call rather than only at
+    startup."""
+    try:
+        return bool(os.listdir(_under(root, NVIDIA_PROC_GPUS)))
+    except OSError:
+        return False
+
+
+def nvidia_access_error(timeout=5, root=None):
+    """Why NVIDIA clients cannot run now, or ``None`` when they can.
+
+    Cardwire's policy is checked before the kernel module because Smart and
+    Integrated may intentionally retain a loaded driver while refusing new
+    clients.  That is a deferred policy state, not a driver failure.
+    """
+    mode = read_gpu_mode(timeout)
+    if graphics_backend.using_cardwire() and mode in ("Integrated", "Smart"):
+        return CARDWIRE_BLOCKED_MESSAGE
+    if not graphics_backend.using_cardwire() and mode == "Integrated":
+        return NO_DRIVER_MESSAGE
+    if not nvidia_driver_loaded(root=root):
+        return NO_DRIVER_MESSAGE
+    return None
+
+
+def dgpu_available(timeout=5, root=None):
+    """Whether profile writes can reach the dGPU safely.
+
+    Integrated and Smart deliberately block ordinary dGPU access, so profile
+    writes are deferred in both modes. Hybrid still requires a live NVIDIA
+    driver and a bound card; a mode label alone is not enough."""
+    return nvidia_access_error(timeout=timeout, root=root) is None
+
+
+def read_supported_cardwire_modes(timeout=5):
+    """The modes this machine can actually be switched to, or []."""
+    return read_cardwire_status(timeout)[1]
+
+
 def _run_reboot(extra_args, timeout=10):
     try:
         result = subprocess.run(["systemctl", "reboot",
@@ -2420,19 +2615,46 @@ def reboot_system(timeout=10):
     return (True, "") if ok else (False, forced_message)
 
 
-def set_gpu_mode(mode, timeout=10):
+def set_cardwire_mode(mode, timeout=10):
     """Switch graphics mode, returning ``(ok, message)``.
 
-    Not run through the helper: supergfxctl talks to supergfxd over the
-    system bus and does its own authorisation."""
+    Cardwire talks to cardwired over the system bus and applies the policy
+    live. Existing processes keep their current GPU access; newly launched
+    processes see the new policy immediately."""
+    if not cardwire_session_supported():
+        return False, CARDWIRE_WAYLAND_MESSAGE
     try:
-        result = subprocess.run(["supergfxctl", "-m", str(mode)],
+        result = subprocess.run(["cardwire", "set", str(mode).lower()],
                                 capture_output=True, text=True, timeout=timeout)
     except Exception as e:
         return False, str(e)
     if result.returncode != 0:
         return False, (result.stderr or result.stdout or "unknown error").strip()
     return True, result.stdout.strip()
+
+
+def gpu_mode_choices(active=None, supported=()):
+    if graphics_backend.using_cardwire():
+        return cardwire_gpu_mode_choices(active, supported)
+    return supergfx_gpu_mode_choices(active, supported)
+
+
+def read_gpu_mode(timeout=5):
+    if graphics_backend.using_cardwire():
+        return read_cardwire_mode(timeout)
+    return read_supergfx_mode(timeout)
+
+
+def read_supported_gpu_modes(timeout=5):
+    if graphics_backend.using_cardwire():
+        return read_supported_cardwire_modes(timeout)
+    return read_supergfx_modes(timeout)
+
+
+def set_gpu_mode(mode, timeout=10):
+    if graphics_backend.using_cardwire():
+        return set_cardwire_mode(mode, timeout)
+    return set_supergfx_mode(mode, timeout)
 
 
 # -- Panel self-refresh (amdgpu boot parameter) ------------------------------
@@ -2444,13 +2666,9 @@ def set_gpu_mode(mode, timeout=10):
 # appears.
 #
 # Why it belongs in this app at all, when it is a kernel bug and not an ASUS
-# knob: the freeze is only reachable in Hybrid and Integrated, because those
-# are the modes where the internal panel hangs off the AMD iGPU. In
-# AsusMuxDgpu the panel is wired to the NVIDIA card, amdgpu reads no PSR
-# capability from it, and the faulty path never runs. So the setting that
-# decides whether the graphics-mode picker on the GPU page is usable is this
-# one -- which makes it this app's business even though nothing about it is
-# ASUS firmware.
+# knob: the faulty path is reachable when the internal panel hangs off the
+# AMD iGPU. Cardwire changes GPU access policy rather than the physical MUX,
+# so this remains relevant in every Cardwire mode.
 #
 # Measured on an ROG Strix G16 G614PR, kernel 7.2.0-1-cachyos: three Hybrid
 # boots, three hard freezes, each preceded by
@@ -2458,7 +2676,7 @@ def set_gpu_mode(mode, timeout=10):
 #     WARNING: .../display/modules/power/power_psr.c:236
 #     at mod_power_set_psr_event+0x2a1/0x310 [amdgpu]
 #
-# and three AsusMuxDgpu boots with no warning and no freeze. The frozen boots
+# and three dGPU-MUX boots with no warning and no freeze. The frozen boots
 # logged "sink PSR ver 3 DPCD caps 0x7a" for eDP-2; the clean ones logged
 # "caps 0x0", which is the panel not being on the AMD side at all. One of the
 # three froze at the GDM greeter, before any user session existed, which is
@@ -3365,7 +3583,9 @@ def detect_capabilities(root=None):
     # nvidia-settings, which is its own package and is missing on plenty of
     # machines that have a working driver.
     caps["nvidia_settings"] = have_cmd("nvidia-settings")
+    caps["cardwire"] = have_cmd("cardwire")
     caps["supergfxctl"] = have_cmd("supergfxctl")
+    caps["cardwire_wayland"] = cardwire_session_supported()
     caps["rogauracore"] = have_cmd("rogauracore")
     # Which vendor made the chip, for the page and for the gate below.
     caps["cpu_vendor"] = read_cpu_vendor(root=root)

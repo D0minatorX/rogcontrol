@@ -58,7 +58,7 @@ fallback -- turbo boost, the energy preference and the clock ceiling and
 floor work the same as on AMD. No undervolt and no temperature target;
 neither has an Intel equivalent on this platform. A model with neither the
 firmware control nor a writable RAPL limit shows a notice instead of a
-control that could only fail -- see docs/INTEL-SUPPORT-PLAN.txt. The System
+control that could only fail. The System
 page's "Save hardware report" button, or `rogcontrol --hardware-report`, is
 how to find out which this machine is.
 
@@ -103,12 +103,12 @@ Applied on the same terms as the CPU page: an Apply button, a banner naming
 what is not on the card yet, and a profile that is only written once the card
 has accepted the setting.
 
-The graphics mode: what the display is plugged into now, and a picker to
-switch between Integrated, Hybrid and AsusMuxDgpu. Integrated and Hybrid swap
-by restarting the display stack; switching into or out of AsusMuxDgpu moves
-the hardware MUX, which only the firmware can do, so that one offers to
-reboot for you. Whatever supergfxd answers is repeated on the page word for
-word, so a refusal says which of several reasons applied.
+The installer chooses one graphics backend. supergfxctl offers Integrated,
+Hybrid and NVIDIA-only (AsusMuxDgpu); switching can require a logout or
+reboot. Cardwire offers live Integrated, Hybrid and Smart access policies,
+but no NVIDIA-only mode. Applications already running can retain access until
+restarted. Cardwire requires Wayland. The installer's choice controls the GPU
+picker, and daemon refusals remain visible on the page.
 
 Live CPU and GPU temperatures and the speed of the fan cooling each are shown
 on their own pages, refreshed every two seconds. The GPU reads "Idle" while
@@ -154,12 +154,10 @@ it works whether or not the window is open.
 
 SYSTEM
 
-Whether supergfxd — the daemon the graphics-mode picker needs — is installed
-and answering. Some distributions ship the supergfxctl package with its
-service switched off, which looks from the GPU page like a broken or missing
-feature; when that is what has happened, this row says so and offers a button
-to enable and start it. There is no button to turn it off again: without it
-the graphics mode can be neither read nor changed.
+Whether the selected graphics daemon (supergfxd or cardwired) is installed
+and answering. The page distinguishes an installed but disabled service from
+a broken daemon and offers an Enable button. There is no button to turn it off
+again: without it the GPU access mode can be neither read nor changed.
 
 Whether asusctl's daemon, asusd, is installed and running. It matters because
 it drives the same hardware as this app — the same platform knobs, fan curves
