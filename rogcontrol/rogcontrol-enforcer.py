@@ -1471,9 +1471,10 @@ def retry_pending_gpu_limits(gpu, force=False):
         else:
             _pending_gpu_limits[key] = desired[key]
     if "watts" in _pending_gpu_limits:
-        if not hardware.gpu_power_limit_supported():
-            del _pending_gpu_limits["watts"]
-        elif run_nvidia_helper("gpu", _pending_gpu_limits["watts"]):
+        # A probe immediately after Hybrid returns can fail while NVML is
+        # still coming up. Keep the saved limit for the next periodic pass.
+        if (hardware.gpu_power_limit_supported()
+                and run_nvidia_helper("gpu", _pending_gpu_limits["watts"])):
             del _pending_gpu_limits["watts"]
     if "clock_limit" in _pending_gpu_limits:
         arg = hardware.gpu_clock_limit_arg(

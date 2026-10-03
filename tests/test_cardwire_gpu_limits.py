@@ -66,6 +66,21 @@ class CardwireGpuLimitTests(unittest.TestCase):
             self.assertEqual(write.call_count, 2)
             self.assertEqual(enforcer._pending_gpu_limits, {})
 
+    def test_power_capability_probe_can_recover_after_hybrid(self):
+        enforcer = load_enforcer()
+        with mock.patch.object(enforcer.hardware, "nvidia_access_error",
+                               side_effect=[hardware.CARDWIRE_BLOCKED_MESSAGE,
+                                            None, None]), \
+             mock.patch.object(enforcer.hardware, "gpu_power_limit_supported",
+                               side_effect=[False, True]), \
+             mock.patch.object(enforcer, "run_nvidia_helper",
+                               return_value=True) as write:
+            enforcer.retry_pending_gpu_limits({"watts": 95})
+            enforcer.retry_pending_gpu_limits({"watts": 95})
+            write.assert_not_called()
+            enforcer.retry_pending_gpu_limits({"watts": 95})
+            write.assert_called_once_with("gpu", 95)
+
 
 if __name__ == "__main__":
     unittest.main()
