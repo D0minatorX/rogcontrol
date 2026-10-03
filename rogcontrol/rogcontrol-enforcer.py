@@ -149,6 +149,11 @@ _last_self_apply_time = 0.0
 # another profile's colour by whatever happened while this service was down.
 _last_kbd_color_args = None
 
+# Power and clock limits skipped by Cardwire's Integrated/Smart policy. Keep
+# only the current profile's desired values; the periodic pass retries them
+# after Hybrid access returns, including when the window is closed.
+_pending_gpu_limits = {}
+
 # Which OS power mode each profile means, and the same mapping backwards for
 # adopting a mode change made outside this app (GNOME's power menu, a
 # keyboard key, powerprofilesctl).
@@ -408,14 +413,10 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
 
         if full:
             gpu = profile.get("gpu")
-            if gpu and hardware.dgpu_available():
-                # Asked for, not assumed -- see rogcontrol-apply.py. Here a
-                # KeyError is caught by the cycle's own handler and logged as
-                # "cycle failed", which is true but says nothing about which
-                # profile or which key, once a minute forever.
-                if "watts" in gpu and hardware.gpu_power_limit_supported():
-                    run_nvidia_helper("gpu", gpu["watts"])
-                apply_gpu_clock_offsets(gpu)
+            if gpu:
+                retry_pending_gpu_limits(gpu, force=True)
+                if hardware.dgpu_available():
+                    apply_gpu_clock_offsets(gpu)
 
         # The fan boost, if one is in force, replaces the profile's curves
         # for as long as it lasts. This service is what makes the boost
@@ -1444,6 +1445,43 @@ def _defer_offset(kind, mhz, reason=None):
         dedupe_key=f"nvdefer{kind}", dedupe_seconds=3600)
 
 
+def retry_pending_gpu_limits(gpu, force=False):
+    """Apply the current profile's NVIDIA limits when access is available.
+
+    A full profile apply queues both values. The ordinary upkeep pass only
+    writes if a prior pass found access blocked or a write failed, so it does
+    not continuously reassert firmware-backed limits.
+    """
+    desired = {key: gpu[key] for key in ("watts", "clock_limit") if key in gpu}
+    if not desired:
+        _pending_gpu_limits.clear()
+        return
+    access_error = hardware.nvidia_access_error()
+    if access_error:
+        _pending_gpu_limits.clear()
+        _pending_gpu_limits.update(desired)
+        return
+    if force:
+        _pending_gpu_limits.update(desired)
+    # A profile may have changed while access was blocked. Do not restore a
+    # limit belonging to the previous profile or a setting since removed.
+    for key in tuple(_pending_gpu_limits):
+        if key not in desired:
+            del _pending_gpu_limits[key]
+        else:
+            _pending_gpu_limits[key] = desired[key]
+    if "watts" in _pending_gpu_limits:
+        if not hardware.gpu_power_limit_supported():
+            del _pending_gpu_limits["watts"]
+        elif run_nvidia_helper("gpu", _pending_gpu_limits["watts"]):
+            del _pending_gpu_limits["watts"]
+    if "clock_limit" in _pending_gpu_limits:
+        arg = hardware.gpu_clock_limit_arg(
+            _pending_gpu_limits["clock_limit"], hardware.gpu_clock_limit_max())
+        if run_nvidia_helper("gpuclocklimit", arg):
+            del _pending_gpu_limits["clock_limit"]
+
+
 def retry_pending_gpu_offsets():
     """Re-apply offsets parked by _defer_offset, once a session exists.
 
@@ -1592,14 +1630,6 @@ def apply_gpu_clock_offsets(gpu):
         set_voltage_boost(gpu["voltage_boost"])
     if "clock_offset" in gpu:
         set_clock_offset("core", gpu["clock_offset"])
-    if "clock_limit" in gpu:
-        # Against the card's own maximum, not a hardcoded 3090: the top of
-        # the slider means "no ceiling", and comparing against another
-        # card's number turns that into a lock (or refuses a real cap).
-        run_nvidia_helper("gpuclocklimit",
-                          hardware.gpu_clock_limit_arg(
-                              gpu["clock_limit"],
-                              hardware.gpu_clock_limit_max()))
     if "dyn_boost" in gpu:
         run_helper("nvboost", gpu["dyn_boost"])
     if "temp_target" in gpu:
@@ -1685,6 +1715,11 @@ def main():
                                        force_fan_reapply=thermal_changed
                                        or boost_ended,
                                        full=thermal_changed)
+
+                # Recheck only limits that were deferred while the dGPU was
+                # inaccessible; a live Cardwire return to Hybrid must work
+                # even when no window or thermal change triggers a full apply.
+                retry_pending_gpu_limits((profile or {}).get("gpu") or {})
 
                 # After the apply, so an offset this cycle just deferred is
                 # not immediately retried against the same missing session.
