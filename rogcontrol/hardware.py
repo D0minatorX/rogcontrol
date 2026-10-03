@@ -65,6 +65,12 @@ LOG_MAX_BYTES = 256 * 1024
 # it, and the lock would then be on the backup rather than on the live log.
 LOG_LOCK_PATH = LOG_PATH + ".lock"
 _last_logged = {}
+# All fan writers run as this user, but in separate processes. Runtime state
+# makes a successful retry in the enforcer clear a timeout from the tray and
+# disappears on reboot instead of carrying an old failure into a new session.
+FAN_TIMEOUT_STATE_PATH = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
+    "rogcontrol-fan-timeouts")
 
 
 def log(message, level="INFO", source="app", dedupe_key=None, dedupe_seconds=300):
@@ -1242,6 +1248,31 @@ def run_nvidia_helper_logged(*args, source="app", timeout=30, wait_seconds=0):
 CPU_FAN_CHANNEL = "1"
 
 
+def _fan_timeout_repeated(channel, timed_out):
+    """Track consecutive timeouts for one fan across writer processes.
+
+    A success or another failure breaks the streak. If runtime state cannot
+    be written, report a timeout immediately instead of hiding an error.
+    """
+    try:
+        with open(FAN_TIMEOUT_STATE_PATH, "a+") as state:
+            fcntl.flock(state.fileno(), fcntl.LOCK_EX)
+            state.seek(0)
+            pending = set(state.read().strip()) & set(FAN_CHANNELS)
+            repeated = channel in pending
+            if timed_out:
+                pending.add(channel)
+            else:
+                pending.discard(channel)
+            state.seek(0)
+            state.truncate()
+            state.write("".join(sorted(pending)))
+            state.flush()
+            return repeated if timed_out else False
+    except OSError:
+        return timed_out
+
+
 def run_fan_helper_logged(channel, *values, source="app", timeout=30):
     """A fan-curve write, reported with the state of the dGPU taken into account.
 
@@ -1250,7 +1281,9 @@ def run_fan_helper_logged(channel, *values, source="app", timeout=30):
     That is expected in Integrated mode and while a mode switch is in
     progress, and on 2026-09-04 it put three ERROR lines in the log for fans
     behaving exactly as they should. So it is logged at INFO in that state
-    and stays an ERROR in every other.
+    and stays an ERROR in every other. Timeouts are different: the first is
+    INFO for every channel and a consecutive timeout is ERROR even if the
+    GPU driver is down.
 
     The write is still ATTEMPTED rather than skipped when the card is down.
     Which channels are GPU-side is model-specific -- FAN_LABELS is this
@@ -1260,15 +1293,21 @@ def run_fan_helper_logged(channel, *values, source="app", timeout=30):
 
     Returns ``(ok, message)`` like run_helper_logged."""
     ok, message = run_helper("fan", channel, *values, timeout=timeout)
+    timed_out = not ok and message == "timed out"
+    repeated_timeout = _fan_timeout_repeated(str(channel), timed_out)
     if not ok:
         gpu_side_while_card_down = (str(channel) != CPU_FAN_CHANNEL
                                     and not nvidia_driver_loaded())
-        level = "INFO" if gpu_side_while_card_down else "ERROR"
+        level = ("INFO" if (timed_out and not repeated_timeout)
+                 or (gpu_side_while_card_down and not timed_out) else "ERROR")
         label = FAN_LABELS.get(str(channel), f"fan {channel}")
         suffix = (" -- expected while the card is powered down"
-                  if gpu_side_while_card_down else "")
+                  if gpu_side_while_card_down and not timed_out else "")
+        if timed_out and not repeated_timeout:
+            suffix += " -- will retry; repeated timeout is an error"
         log(f"fan {channel} ({label}) curve failed: {message}{suffix}",
-            level, source=source, dedupe_key=f"fan{channel}")
+            level, source=source,
+            dedupe_key=None if timed_out else f"fan{channel}:other")
     return ok, message
 
 
