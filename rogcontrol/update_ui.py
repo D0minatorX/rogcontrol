@@ -71,8 +71,9 @@ class UpdateController:
             heading=f"Update to v{version}?",
             body="This downloads the release and opens a terminal running "
                 "its installer -- the same install.sh you would run by "
-                "hand, so it still asks for your sudo password there. Your "
-                "settings, profiles and fan calibration are kept.")
+                "hand, so it still asks for your sudo password there. "
+                "ROG Control closes for installation and reopens afterward. "
+                "Your settings, profiles and fan calibration are kept.")
         dialog.add_response("later", "Later")
         dialog.add_response("update", "Update")
         dialog.set_response_appearance("update",
@@ -129,7 +130,8 @@ class UpdateController:
         status_path = os.path.join(os.path.dirname(install_sh_path),
                                    ".rogcontrol-update-status")
         self.window.apply_isolated(
-            lambda: updater.launch_update_terminal(install_sh_path, status_path),
+            lambda: updater.launch_update_terminal(
+                install_sh_path, status_path, app_pid=os.getpid()),
             lambda result, error: self._on_installer_launched(
                 version, status_path, result, error), timeout=15)
 
@@ -169,7 +171,7 @@ class UpdateController:
             except (ValueError, PermissionError):
                 pass
         if status == "0":
-            self._finish_update(f"v{version} installed. Close and reopen ROG Control.")
+            self._finish_update(f"v{version} installed. ROG Control is reopening.")
         elif status.isdecimal():
             self._finish_update(
                 f"Installation failed (exit {status}). See the installer terminal.")
@@ -179,4 +181,3 @@ class UpdateController:
             return GLib.SOURCE_CONTINUE
         self._update_install_timer = None
         return GLib.SOURCE_REMOVE
-

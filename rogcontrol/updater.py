@@ -165,7 +165,7 @@ UPDATE_TERMINALS = (
 )
 
 
-def launch_update_terminal(install_sh_path, status_path=None):
+def launch_update_terminal(install_sh_path, status_path=None, app_pid=None):
     """Open a terminal running the staged installer. Returns ``(ok, message)``.
 
     install.sh cannot simply be run as a subprocess: it calls sudo per step
@@ -175,15 +175,35 @@ def launch_update_terminal(install_sh_path, status_path=None):
     script_dir = os.path.dirname(install_sh_path)
     # ZipFile.extract does not preserve executable bits. Bash can run the
     # extracted installer without requiring chmod or trusting archive modes.
-    inner_command = f"cd {shlex.quote(script_dir)} && bash ./install.sh; result=$?; "
+    installer = f"cd {shlex.quote(script_dir)} && bash ./install.sh; result=$?; "
+    if app_pid is not None:
+        app = shlex.quote(os.path.join(os.path.expanduser("~"),
+                                       ".local/bin/rogcontrol"))
+        # The installer removes the live Python package. Ask the existing
+        # single-instance app to shut down and wait for its process to exit
+        # before replacing those files.
+        installer = (
+            f"if [ -x {app} ] && {app} --quit; then "
+            "for ((attempt=0; attempt<100; attempt++)); do "
+            f"kill -0 {int(app_pid)} 2>/dev/null || break; sleep 0.1; done; "
+            f"if kill -0 {int(app_pid)} 2>/dev/null; then "
+            "echo 'ROG Control did not close; installation was not started.'; result=1; "
+            f"else {installer} fi; "
+            "else echo 'Could not close ROG Control; installation was not started.'; "
+            "result=1; fi; ")
+    inner_command = installer
     if status_path is not None:
         status = shlex.quote(status_path)
         inner_command = (
             f"printf 'running:%s\\n' \"$$\" > {status}; " + inner_command
             + f"printf '%s\\n' \"$result\" > {status}; ")
+    if app_pid is not None:
+        inner_command += (
+            f"if [ -x {app} ]; then "
+            f"nohup {app} --show </dev/null >/dev/null 2>&1 & fi; ")
     inner_command += (
         "echo; if [ \"$result\" -eq 0 ]; then "
-        "echo 'Update installed. Reopen ROG Control to use the new version.'; "
+        "echo 'Update installed. ROG Control is reopening.'; "
         "else echo \"Update failed (exit $result). See the output above.\"; fi; "
         "read -r -p 'Press Enter to close... '")
     for name, prefix in UPDATE_TERMINALS:
