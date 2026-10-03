@@ -23,6 +23,7 @@ A control panel for ASUS ROG laptops on Linux — without needing `asusctl`. One
 - [Updating](#updating)
 - [Uninstalling](#uninstalling)
 - [Warnings](#warnings)
+- [Hardware support and contributions](#hardware-support-and-contributions)
 - [Credits](#credits)
 - [License](#license)
 
@@ -70,6 +71,15 @@ Supergfx automatically. External-monitor routing still depends on the laptop's
 physical display wiring, the compositor, and the selected backend; ROG Control
 does not move display connectors between GPUs or override a mode refused by
 the backend.
+
+### Hardware support and contributions
+
+If your device supports a hardware feature or setting that ROG Control does
+not expose—or exposes incorrectly—please [report it](https://github.com/D0minatorX/rogcontrol/issues/new/choose)
+or submit a pull request with a fix. The project cannot test every laptop, so
+include your exact model, GPU, kernel and driver versions, logs, and the steps
+that reproduce the difference. Pull requests should preserve the automatic
+detection behavior and keep unsupported hardware unaffected.
 
 ### ⌨️ Keyboard
 Brightness and ten lighting modes: Static, Breathing, Pulse, Colour Cycle, Rainbow, Gradient Static, GPU Temp Colour, CPU Temp Colour, Battery Level, and Ambient (follows what's on screen, via the desktop's screen-sharing portal).
