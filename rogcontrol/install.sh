@@ -1045,7 +1045,7 @@ cap() {
 # The window and installer share these probes. Run them unconditionally after
 # installing the new package, so an update checks the new driver/kernel and
 # newly added features just as a fresh install does. The report is read-only
-# apart from the same-value/restore checks used to verify writable GPU knobs.
+# apart from temporary write/restore checks used to verify writable GPU knobs.
 FEATURE_REPORT=""
 if FEATURE_REPORT="$(PYTHONPATH="$HOME/.local/lib" python3 -m rogcontrol.feature_report 2>/dev/null)" \
     && [ -n "$FEATURE_REPORT" ]; then

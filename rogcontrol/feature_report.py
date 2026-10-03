@@ -20,7 +20,10 @@ LABELS = {
     "psr_toggle": "Panel self refresh toggle",
     "nvidia": "NVIDIA GPU monitoring and clocks",
     "gpu_power_limit": "GPU power limit",
-    "nvidia_settings": "GPU clock offsets",
+    "gpu_clock_limit": "GPU clock ceiling",
+    "nvidia_core_clock_offset": "GPU core clock offset",
+    "nvidia_memory_clock_offset": "GPU memory clock offset",
+    "nvidia_settings": "nvidia-settings installed",
     "supergfxctl": "supergfxctl installed",
     "cardwire": "Cardwire installed",
     "cardwire_wayland": "Wayland for Cardwire",
@@ -56,6 +59,7 @@ def feature_rows(caps):
 def detect_feature_rows():
     """Run the app's startup probes for an installer feature report."""
     caps = hardware.detect_capabilities()
+    caps.update(hardware.probe_gpu_tuning_capabilities(caps))
     selected = graphics_backend.selected_backend()
     caps["gpu_mode_switching"] = bool(caps.get(selected)) and (
         selected != "cardwire" or caps.get("cardwire_wayland"))

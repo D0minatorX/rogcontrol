@@ -1519,6 +1519,27 @@ def gpu_clock_limit_arg(mhz, max_mhz):
     return "reset" if mhz >= int(max_mhz) else mhz
 
 
+def gpu_clock_limit_supported():
+    """Test a real graphics-clock lock and reset it afterwards.
+
+    NVIDIA does not expose a reliable readback of an existing lock, so this
+    may clear a lock installed by another application. A successful setter
+    and reset are the strongest available capability check.
+    """
+    if not have_cmd("nvidia-smi") or nvidia_access_error():
+        return False
+    maximum = detect_gpu_max_clock()
+    if maximum is None or maximum <= CLOCK_LIMIT_MIN + 15:
+        return False
+    changed = False
+    restored = False
+    try:
+        changed, _ = run_helper("gpuclocklimit", maximum - 15)
+    finally:
+        restored, _ = run_helper("gpuclocklimit", "reset")
+    return changed and restored
+
+
 # nvidia-settings attribute names for the two offsets. These shift the whole
 # voltage/frequency curve -- a genuine over/underclock -- unlike the ceiling
 # above, and they are not a helper action: nvidia-settings needs the user's
@@ -1549,10 +1570,10 @@ NVIDIA_VOLTAGE_BOOST_MIN = 0
 NVIDIA_VOLTAGE_BOOST_MAX = 100
 
 
-def nvidia_settings_args(kind, mhz):
+def nvidia_settings_args(kind, mhz, target="[gpu:0]"):
     """The full nvidia-settings command line for one clock offset."""
     attribute = NV_CLOCK_ATTRIBUTES[kind]
-    return ["nvidia-settings", "-a", f"[gpu:0]/{attribute}={int(mhz)}"]
+    return ["nvidia-settings", "-a", f"{target}/{attribute}={int(mhz)}"]
 
 
 def nvidia_powermizer_args(mode, target="[gpu:0]"):
@@ -1885,6 +1906,86 @@ def _query_nvidia_powermizer_modes(env, target, timeout):
             if result.returncode == 0 else None)
 
 
+def _read_nvidia_clock_offset(kind, env, target, timeout):
+    """Return (value, minimum, maximum) for a writable offset attribute."""
+    attribute = NV_CLOCK_ATTRIBUTES[kind]
+    try:
+        result = subprocess.run(
+            ["nvidia-settings", "-q", f"{target}/{attribute}"], env=env,
+            capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    value = re.search(rf"Attribute '{re.escape(attribute)}'[^\n]*:\s*(-?\d+)\.",
+                      result.stdout)
+    bounds = re.search(
+        rf"valid values for '{re.escape(attribute)}' are in the range "
+        r"(-?\d+)\s+-\s+(-?\d+)", result.stdout)
+    if not value or not bounds:
+        return None
+    return int(value.group(1)), int(bounds.group(1)), int(bounds.group(2))
+
+
+def probe_nvidia_clock_offset(kind, timeout=10):
+    """Verify this GPU accepts an offset change and restore its old value."""
+    if kind not in NV_CLOCK_ATTRIBUTES or not have_cmd("nvidia-settings"):
+        return False
+    env, _message = _nvidia_settings_session()
+    if env is None:
+        return False
+    target = nvidia_settings_gpu_target(env, timeout)
+    if target is None:
+        return False
+    original = _read_nvidia_clock_offset(kind, env, target, timeout)
+    if original is None:
+        return False
+    value, minimum, maximum = original
+    # Match the 25 MHz steps the UI can actually request. A one-MHz write
+    # may be rounded away even when useful slider values are supported.
+    candidate = value + 25 if value + 25 <= maximum else value - 25
+    if candidate < minimum or candidate == value:
+        return False
+    changed = False
+    restored = False
+    try:
+        result = subprocess.run(nvidia_settings_args(kind, candidate, target),
+                                env=env, capture_output=True, text=True,
+                                timeout=timeout)
+        changed = (result.returncode == 0 and
+                   (_read_nvidia_clock_offset(kind, env, target, timeout) or (None,))[0]
+                   == candidate)
+    except Exception:
+        pass
+    finally:
+        try:
+            result = subprocess.run(nvidia_settings_args(kind, value, target),
+                                    env=env, capture_output=True, text=True,
+                                    timeout=timeout)
+            restored = (result.returncode == 0 and
+                        (_read_nvidia_clock_offset(kind, env, target, timeout)
+                         or (None,))[0] == value)
+        except Exception:
+            pass
+    return changed and restored
+
+
+def probe_gpu_tuning_capabilities(caps):
+    """Probe the three writable clock controls for the UI and installer.
+
+    Kept out of detect_capabilities: services and headless callers must not
+    change clock settings merely to inspect general hardware availability.
+    """
+    return {
+        "gpu_clock_limit": bool(caps.get("nvidia") and
+                                gpu_clock_limit_supported()),
+        "nvidia_core_clock_offset": bool(
+            caps.get("nvidia_settings") and probe_nvidia_clock_offset("core")),
+        "nvidia_memory_clock_offset": bool(
+            caps.get("nvidia_settings") and probe_nvidia_clock_offset("memory")),
+    }
+
+
 def set_nvidia_clock_offset(kind, mhz, timeout=10, wait_seconds=0):
     """Apply one clock offset, returning ``(ok, message)`` like run_helper.
 
@@ -1905,8 +2006,11 @@ def set_nvidia_clock_offset(kind, mhz, timeout=10, wait_seconds=0):
     env, message = _nvidia_settings_session(wait_seconds)
     if env is None:
         return False, message
+    target = nvidia_settings_gpu_target(env, timeout)
+    if target is None:
+        return False, "could not identify the NVIDIA GPU"
     try:
-        result = subprocess.run(nvidia_settings_args(kind, mhz), env=env,
+        result = subprocess.run(nvidia_settings_args(kind, mhz, target), env=env,
                                 capture_output=True, text=True, timeout=timeout)
     except Exception as e:
         return False, str(e)

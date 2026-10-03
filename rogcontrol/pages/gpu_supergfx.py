@@ -68,9 +68,9 @@ APPLY_ORDER = ("watts", "clock_limit", "dyn_boost", "temp_target",
 # without nvidia-settings, and the asus-wmi knobs are absent on every
 # non-ASUS machine regardless of the card.
 CAPABILITY = {"watts": "gpu_power_limit",
-              "clock_limit": "nvidia",
-              "clock_offset": "nvidia_settings",
-              "mem_clock_offset": "nvidia_settings",
+              "clock_limit": "gpu_clock_limit",
+              "clock_offset": "nvidia_core_clock_offset",
+              "mem_clock_offset": "nvidia_memory_clock_offset",
               "voltage_boost": "nvidia_voltage_boost",
               "dyn_boost": "nv_dynamic_boost",
               "temp_target": "nv_temp_target"}
@@ -460,8 +460,9 @@ class GpuPage(Gtk.Box):
         A control for a setting this machine cannot act on does not belong
         on the page at all -- see the CPU page's version of this method for
         the fuller reasoning."""
-        if not self.caps.get("nvidia"):
+        if not self.caps.get("gpu_clock_limit"):
             self.rows["clock_limit"].set_visible(False)
+        if not self.caps.get("nvidia"):
             self.temp_cell.set_note("nvidia-smi is not installed.")
         if not self.caps.get("gpu_power_limit"):
             self.rows["watts"].set_visible(False)
@@ -470,8 +471,8 @@ class GpuPage(Gtk.Box):
             # missing on a machine whose GPU controls all work.
             self.fan_cell.set_note("No asus hwmon fan reading on this "
                                    "machine.")
-        if not self.caps.get("nvidia_settings"):
-            for key in ("clock_offset", "mem_clock_offset"):
+        for key in ("clock_offset", "mem_clock_offset"):
+            if not self.caps.get(CAPABILITY[key]):
                 self.rows[key].set_visible(False)
         if not self.caps.get("nvidia_voltage_boost"):
             self.rows["voltage_boost"].set_visible(False)
