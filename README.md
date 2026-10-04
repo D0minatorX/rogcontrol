@@ -99,6 +99,9 @@ A switch for the boot chime, remembered so a boot-apply service can restore it a
 *Requires: nothing extra — always available. The asusd conflict check needs asusctl to be present to say anything.*
 
 ### ✨ Also
+- Overview offers List and compact Dashboard views; the selector remembers your choice, with List retained by default.
+- System settings are organized into General, Services, Updates, and Diagnostics sections.
+- CPU, GPU, and fan edits show a pending-change count, highlighted controls, and Discard/Apply actions. CPU/GPU edits are discarded when leaving the page, with an explicit warning; Quick Access shows the same warning for staged CPU changes.
 - Bundled interface icons that stay consistent when the desktop icon pack changes
 - System, Light, and Dark appearance under **System → Appearance**, saved between launches
 - Live RAM and VRAM use on the overview page

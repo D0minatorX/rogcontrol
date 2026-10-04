@@ -207,11 +207,11 @@ SYNC_DESCRIPTION = (
 )
 
 
-class SystemPageBase(Adw.PreferencesPage):
+class SystemPageBase(Gtk.Box):
     """Common controls; graphics backend behavior is supplied by subclasses."""
 
     def __init__(self, window):
-        super().__init__()
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.window = window
         self.caps = window.caps
         self._loading = True
@@ -274,15 +274,44 @@ class SystemPageBase(Adw.PreferencesPage):
     # -- construction --------------------------------------------------------
 
     def _build(self):
-        self._build_appearance()
-        self._build_graphics_daemon()
-        self._build_asusd()
-        self._build_sync()
-        self._build_fan_boost()
-        self._build_firmware()
-        self._build_psr()
-        self._build_log()
-        self._build_about()
+        # A single native selector stays compact at narrow widths and when
+        # text is enlarged. Each section keeps its own scroll position.
+        sections = (
+            ("general", "General", (self._build_appearance, self._build_sync,
+                                    self._build_fan_boost, self._build_firmware,
+                                    self._build_psr)),
+            ("services", "Services", (self._build_graphics_daemon,
+                                      self._build_asusd)),
+            ("updates", "Updates", (self._build_updates,)),
+            ("diagnostics", "Diagnostics", (self._build_about, self._build_log)),
+        )
+        self.section_selector = Gtk.DropDown.new_from_strings(
+            [title for _name, title, _builders in sections])
+        self.section_selector.update_property(
+            [Gtk.AccessibleProperty.LABEL], ["System section"])
+        self.section_selector.set_margin_top(12)
+        self.section_selector.set_margin_start(12)
+        self.section_selector.set_margin_end(12)
+        self.append(self.section_selector)
+        self.section_stack = Gtk.Stack(vexpand=True, hhomogeneous=False,
+                                       vhomogeneous=False)
+        self.append(self.section_stack)
+        for name, title, builders in sections:
+            self._build_section = Adw.PreferencesPage()
+            self.section_stack.add_titled(self._build_section, name, title)
+            for builder in builders:
+                builder()
+        self.section_selector.connect("notify::selected", self._on_section_changed)
+
+    def add(self, group):
+        """Keep shared and backend builders targeting the current section."""
+        self._build_section.add(group)
+
+    def _on_section_changed(self, selector, _pspec):
+        index = selector.get_selected()
+        pages = self.section_stack.get_pages()
+        if index < pages.get_n_items():
+            self.section_stack.set_visible_child(pages.get_item(index).get_child())
 
     def _build_appearance(self):
         group = Adw.PreferencesGroup(title="Appearance")
@@ -558,6 +587,10 @@ class SystemPageBase(Adw.PreferencesPage):
         report_row.set_activatable_widget(self.report_button)
         group.add(report_row)
 
+    def _build_updates(self):
+        group = Adw.PreferencesGroup(title="Updates")
+        self.add(group)
+
         self.update_row = Adw.ActionRow(title="Check for updates")
         self.update_row.set_subtitle_lines(0)
         self.updates._set_update_status(f"Running v{APP_VERSION}")
@@ -569,9 +602,9 @@ class SystemPageBase(Adw.PreferencesPage):
         self.update_row.set_activatable_widget(self.update_check_button)
         group.add(self.update_row)
 
-        auto_row = Adw.ComboRow(title="Check automatically",
-                                subtitle=UPDATE_AUTO_SUBTITLE,
-                                model=Gtk.StringList.new(UPDATE_AUTO_LABELS))
+        self.update_auto_row = auto_row = Adw.ComboRow(
+            title="Check automatically", subtitle=UPDATE_AUTO_SUBTITLE,
+            model=Gtk.StringList.new(UPDATE_AUTO_LABELS))
         auto_row.set_subtitle_lines(0)
         current = self.window.config.get("update_check", "off")
         auto_row.set_selected(UPDATE_AUTO_KEYS.index(current)

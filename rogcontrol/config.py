@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
     "usbc_profile": None,
     "window_size": [600, 700],
     "appearance": "system",
+    "overview_layout": "list",
     "fan_display_unit": "percent",
     # Whether the app has already put the fan-calibration prompt in front of
     # the user once. Set the first time it is shown, whether they run it or

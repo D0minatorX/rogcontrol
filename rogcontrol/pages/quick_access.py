@@ -13,6 +13,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gtk  # noqa: E402
 
+from ..widgets.pending_changes import PendingChanges
 from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
 from .. import graphics_backend  # noqa: E402
@@ -40,6 +41,22 @@ class QuickAccessPage(Adw.PreferencesPage):
             self.firmware_group: 0,
         }
         self._powermizer_loading = False
+
+        cpu = self.pages.get("cpu")
+        self.cpu_pending = None
+        if cpu is not None and hasattr(cpu, "pending"):
+            pending_group = Adw.PreferencesGroup()
+            self.cpu_pending = PendingChanges(
+                cpu._on_apply_clicked, cpu._on_revert_clicked, scope="CPU",
+                discard_on_leave=True)
+            pending_group.add(self.cpu_pending)
+            self.add(pending_group)
+            def sync_pending(source):
+                self.cpu_pending.set_state(source.count, source.busy)
+                pending_group.set_visible(source.count > 0)
+            cpu.pending.connect("changed", sync_pending)
+            sync_pending(cpu.pending)
+            self.connect("unmap", lambda _widget: cpu._on_unmap(None))
 
         self._move_performance_controls()
         self._move_profile_controls()
@@ -103,7 +120,10 @@ class QuickAccessPage(Adw.PreferencesPage):
     def _move_performance_controls(self):
         cpu = self.pages.get("cpu")
         if self.window.caps.get("cpu_boost") and cpu is not None:
-            self._move(cpu.rows.get("boost"), self.performance_group)
+            boost = cpu.rows.get("boost")
+            if boost is not None:
+                boost.set_subtitle("Staged with CPU settings — use Apply to save")
+            self._move(boost, self.performance_group)
 
         gpu = self.pages.get("gpu")
         backend_cap = "cardwire" if graphics_backend.using_cardwire() else "supergfxctl"
@@ -139,7 +159,7 @@ class QuickAccessPage(Adw.PreferencesPage):
         self._powermizer_modes = modes
         self.powermizer_row = Adw.ComboRow(
             title="GPU PowerMizer",
-            subtitle="GPU clock behavior for this profile")
+            subtitle="GPU clock behavior for this profile · Applies immediately")
         self.powermizer_row.set_model(Gtk.StringList.new(
             [hardware.NVIDIA_POWERMIZER_MODES[mode] for mode in modes]))
         gpu = (self.window.current_profile() or {}).get("gpu") or {}

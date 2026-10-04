@@ -47,6 +47,7 @@ from gi.repository import Adw, GLib, Gtk  # noqa: E402
 from .. import config as config_mod  # noqa: E402
 from .. import fancurve  # noqa: E402
 from .. import hardware  # noqa: E402
+from ..widgets.pending_changes import PendingChanges
 from ..sampling import SampleFailures  # noqa: E402
 from ..widgets.action_buttons import make_action_buttons  # noqa: E402
 from ..widgets.curve_editor import CurveEditor  # noqa: E402
@@ -137,12 +138,14 @@ class FansPage(Gtk.Box):
         # showing dashes forever. See sampling.py.
         self._sample_failures = SampleFailures("Fan")
         self._working = False
+        self._hardware_busy = False
         self._progress = None
         self._progress_source = None
         self._timer_id = None
         # What the last sample said the hardware holds, so the banner can be
         # recomputed after a drag without waiting two seconds for the next
         # one.
+        self._saved_points = {}
         self._hw_points = {}
         self._hw_enabled = {}
 
@@ -158,6 +161,8 @@ class FansPage(Gtk.Box):
         self.banner.set_revealed(False)
         self.banner.connect("button-clicked", self._on_apply_clicked)
         self.append(self.banner)
+        self.pending = PendingChanges(self._on_apply_clicked, self._on_revert_clicked)
+        self.append(self.pending)
 
         page = Adw.PreferencesPage()
         page.set_vexpand(True)
@@ -224,10 +229,8 @@ class FansPage(Gtk.Box):
     def _build_action_buttons(self):
         """This page's header-bar buttons: Calibrate, then Apply.
 
-        No Revert: the curve editors show the profile itself rather than a
-        staged copy of it, so there is no pending edit to discard. Calibrate
-        takes Revert's place as the non-suggested action -- see
-        widgets/action_buttons.py.
+        Discard lives in the pending-changes bar. Calibration remains a
+        separate header action, available even with no edits.
 
         The progress bar the calibration drives stays on the page below,
         because a header bar is no place for something that has to be
@@ -290,6 +293,7 @@ class FansPage(Gtk.Box):
         for channel, editor in self.editors.items():
             editor.set_rpm_cal(fancurve.get_rpm_cal(self.window.config, channel))
             editor.set_points(curves.get(channel) or [])
+            self._saved_points[channel] = editor.get_points()
         self._update_banner()
 
     # -- live readout --------------------------------------------------------
@@ -372,18 +376,31 @@ class FansPage(Gtk.Box):
         return [ch for ch, enabled in (self._hw_enabled or {}).items()
                 if enabled is False]
 
+    def _dirty_channels(self):
+        return [channel for channel, editor in self.editors.items()
+                if channel in self._saved_points
+                and editor.get_points() != self._saved_points[channel]]
+
+    def _update_pending(self):
+        self.pending.update(self.fan_groups, self._dirty_channels(),
+                            self._working or self._hardware_busy)
+
+    def _on_revert_clicked(self, _button):
+        if self._working or self._hardware_busy:
+            return
+        for channel, points in self._saved_points.items():
+            self.editors[channel].set_points(points)
+        self._update_banner()
+        self.window.toast("Unapplied fan changes discarded.")
+
     def _update_banner(self):
+        self._update_pending()
         if self._working or not self.window.caps.get("fan_curve"):
             # The banner is the progress line while a job is running; the
             # job's own code owns it until it finishes.
             return
         names = hardware.FAN_LABELS
-        # No "not applied yet" arm: Apply is in the header bar, always
-        # visible, so a banner saying a curve had been dragged but not
-        # written was repeating the button. What is kept is the case the
-        # button cannot express -- the embedded controller throwing the
-        # custom curve away on its own, behind the user's back, which is
-        # this page's reason for reading the hardware back at all.
+        # Firmware drift remains separate from explicitly staged edits.
         dropped = self._dropped_channels()
         if dropped:
             which = ", ".join(names[ch] for ch in dropped)
@@ -442,6 +459,7 @@ class FansPage(Gtk.Box):
 
     def _set_busy(self, busy):
         self._working = busy
+        self._update_pending()
         self.apply_button.set_sensitive(not busy)
         self.calibrate_button.set_sensitive(not busy)
 
@@ -450,6 +468,8 @@ class FansPage(Gtk.Box):
 
         This page cares most: its writes are the CHANNEL_GAP_S-paced ones the
         EC drops when a second writer interleaves with them."""
+        self._hardware_busy = busy
+        self._update_pending()
         if not self._working:
             self.apply_button.set_sensitive(not busy)
             self.calibrate_button.set_sensitive(not busy)
@@ -525,6 +545,10 @@ class FansPage(Gtk.Box):
                 failures.append(f"{hardware.FAN_LABELS[channel]}: {message}")
 
         refused = self._save(target, applied) if applied else None
+        if refused is None:
+            for channel, points in applied.items():
+                self._saved_points[channel] = [[int(t), int(p)] for t, p in points]
+        self._update_pending()
         if refused is not None:
             # Said before the per-channel failures, and instead of the
             # success line: which profile the curves did or did not land in

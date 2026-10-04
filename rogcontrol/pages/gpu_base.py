@@ -12,6 +12,7 @@ from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
 from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
+from ..widgets.pending_changes import PendingChanges
 from ..sampling import SampleFailures  # noqa: E402
 from ..widgets.action_buttons import apply_revert_buttons  # noqa: E402
 from ..widgets.stat_row import StatCell, build_stat_row  # noqa: E402
@@ -142,6 +143,7 @@ class GpuPageBase(Gtk.Box):
 
         self._loading = True
         self._applying = False
+        self._hardware_busy = False
         self._applied = {}
         self._sampling = False
         # Consecutive failures of the sampler below, so a page whose
@@ -170,8 +172,7 @@ class GpuPageBase(Gtk.Box):
         self._start_sample()
         self._timer_id = GLib.timeout_add_seconds(REFRESH_SECONDS, self._tick)
         self.connect("destroy", self._on_destroy)
-        # Walking away from unapplied changes discards them rather than
-        # applying them behind the user's back.
+        # The pending bar warns that navigation discards staged changes.
         self.connect("unmap", self._on_unmap)
 
     # -- construction --------------------------------------------------------
@@ -184,6 +185,9 @@ class GpuPageBase(Gtk.Box):
         self.banner.set_revealed(False)
         self.banner.connect("button-clicked", self._on_apply_clicked)
         self.append(self.banner)
+        self.pending = PendingChanges(self._on_apply_clicked, self._on_revert_clicked,
+                                      discard_on_leave=True)
+        self.append(self.pending)
 
         page = Adw.PreferencesPage()
         page.set_vexpand(True)
@@ -380,7 +384,7 @@ class GpuPageBase(Gtk.Box):
             self._timer_id = None
 
     def _on_unmap(self, _widget):
-        """The page went off screen; unapplied edits go with it."""
+        """Discard on navigation, as the pending bar explicitly warns."""
         if self._applying or not self._dirty_keys():
             return
         self.reload()
@@ -445,11 +449,16 @@ class GpuPageBase(Gtk.Box):
             return
         self._update_banner()
 
+    def _update_pending(self):
+        self.pending.update(self.rows, self._dirty_keys(),
+                            self._applying or self._hardware_busy)
+
     def _update_banner(self):
+        self._update_pending()
         if self._applying:
             # The banner is the progress line while an apply is running.
             return
-        # See the CPU page: the header buttons replaced this banner.
+        # Pending edits have their own bar; this banner is for operations.
         self.banner.set_revealed(False)
 
     def _show_banner(self, text, button=None):
@@ -469,11 +478,14 @@ class GpuPageBase(Gtk.Box):
 
     def _set_busy(self, busy):
         self._applying = busy
+        self._update_pending()
         self.apply_button.set_sensitive(not busy)
         self.revert_button.set_sensitive(not busy)
 
     def set_hardware_busy(self, busy):
         """Something else is writing the machine -- see app.claim_hardware."""
+        self._hardware_busy = busy
+        self._update_pending()
         if not self._applying:
             self.apply_button.set_sensitive(not busy)
             self.revert_button.set_sensitive(not busy)
@@ -580,6 +592,7 @@ class GpuPageBase(Gtk.Box):
         failed = [key for key, _value, ok, _message in results if not ok]
         if failed:
             self._restore(failed)
+        self._update_pending()
 
         if refused is not None:
             self._show_banner(refused, button="Apply")
