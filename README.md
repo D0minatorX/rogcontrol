@@ -99,6 +99,7 @@ A switch for the boot chime, remembered so a boot-apply service can restore it a
 *Requires: nothing extra — always available. The asusd conflict check needs asusctl to be present to say anything.*
 
 ### ✨ Also
+- Slider values can be typed directly: Enter or leaving the field accepts the number, Escape cancels typing. Existing ranges, increments, and Apply behavior still apply.
 - Overview offers List and compact Dashboard views; the selector remembers your choice, with List retained by default.
 - System settings are organized into General, Services, Updates, and Diagnostics sections.
 - CPU, GPU, and fan edits show a pending-change count, highlighted controls, and Discard/Apply actions. CPU/GPU edits are discarded when leaving the page, with an explicit warning; Quick Access shows the same warning for staged CPU changes.
