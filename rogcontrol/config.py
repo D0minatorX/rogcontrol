@@ -39,6 +39,7 @@ DEFAULT_CONFIG = {
     # defaulting it to a profile would be a switch nobody asked for on
     # hardware that happens to expose the node.
     "usbc_profile": None,
+    "gamescope_profile": None,
     "window_size": [600, 700],
     "appearance": "system",
     "overview_layout": "list",
@@ -222,7 +223,7 @@ def delete_profile(cfg, name):
     del profiles[name]
     if cfg.get("current_profile") not in profiles:
         cfg["current_profile"] = next(iter(profiles))
-    for key in AUTO_SWITCH_KEYS.values():
+    for key in (*AUTO_SWITCH_KEYS.values(), "gamescope_profile"):
         if cfg.get(key) == name:
             cfg[key] = None
     return cfg["current_profile"]

@@ -17,10 +17,11 @@ from ..widgets.pending_changes import PendingChanges
 from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
 from .. import graphics_backend  # noqa: E402
+from .. import gamescope  # noqa: E402
 
 
 class QuickAccessPage(Adw.PreferencesPage):
-    """Relocate the frequently used controls into three compact groups."""
+    """Group frequently used controls and optional session integration."""
 
     def __init__(self, window, pages):
         super().__init__()
@@ -62,6 +63,7 @@ class QuickAccessPage(Adw.PreferencesPage):
         self._move_profile_controls()
         self._move_firmware_controls()
         self._hide_empty_groups()
+        self._build_gamescope_controls()
         # A row moved out of a PreferencesGroup keeps its last allocation in
         # GTK until the destination is mapped again. Quick Access is a stack
         # child, so returning to it can otherwise paint the first rows using
@@ -78,10 +80,68 @@ class QuickAccessPage(Adw.PreferencesPage):
             group.queue_resize()
 
     def reload(self):
-        """Follow profile switches for the one Quick Access-owned row."""
+        """Follow profile switches and changes to the available profiles."""
+        self._reload_gamescope()
         if (self.powermizer_row is not None
                 and self.powermizer_row.get_visible()):
             self._restore_powermizer_selection()
+
+    def _build_gamescope_controls(self):
+        self.gamescope_group = Adw.PreferencesGroup(title="Gamescope")
+        self.add(self.gamescope_group)
+        self.gamescope_row = Adw.ComboRow(
+            title="Gamescope profile",
+            subtitle="Switch on session entry; restore the previous profile on exit")
+        self.gamescope_group.add(self.gamescope_row)
+        self.gamescope_check_row = Adw.ActionRow(title="Gamescope not detected")
+        self.gamescope_recheck = Gtk.Button(
+            label="Recheck for Gamescope", valign=Gtk.Align.CENTER)
+        self.gamescope_recheck.connect("clicked", self._on_gamescope_recheck)
+        self.gamescope_check_row.add_suffix(self.gamescope_recheck)
+        self.gamescope_group.add(self.gamescope_check_row)
+        self._reload_gamescope()
+        self.gamescope_row.connect("notify::selected", self._on_gamescope_changed)
+
+    def _reload_gamescope(self):
+        cfg = getattr(self.window, "config", {})
+        self._gamescope_loading = True
+        try:
+            self.gamescope_row.set_model(Gtk.StringList.new(
+                config_mod.auto_switch_choices(cfg)))
+            self.gamescope_row.set_selected(config_mod.auto_switch_selected(
+                cfg, "gamescope_profile"))
+        finally:
+            self._gamescope_loading = False
+        available = bool(self.window.caps.get("gamescope"))
+        self.gamescope_row.set_visible(available)
+        self.gamescope_check_row.set_title(
+            "Gamescope detected" if available else "Gamescope not detected")
+        self.gamescope_check_row.set_subtitle(
+            "Uses the Gamescope login session; restores even with this window closed"
+            if available else "Install Gamescope, then recheck to enable profile settings")
+
+    def _on_gamescope_changed(self, row, _param):
+        if self._gamescope_loading:
+            return
+        item = row.get_selected_item()
+        if item is None:
+            return
+        self.window.config["gamescope_profile"] = config_mod.auto_switch_value(
+            item.get_string())
+        config_mod.save_config(self.window.config)
+
+    def _on_gamescope_recheck(self, _button):
+        self.gamescope_recheck.set_sensitive(False)
+        self.window.apply_async(gamescope.detect_installed,
+                                self._on_gamescope_checked)
+
+    def _on_gamescope_checked(self, available, error):
+        self.gamescope_recheck.set_sensitive(True)
+        if error is not None:
+            self.window.toast(f"Gamescope detection failed: {error}")
+            return
+        self.window.caps["gamescope"] = bool(available)
+        self._reload_gamescope()
 
     def refresh_gpu_capabilities(self, accessible):
         """Refresh the runtime-only PowerMizer row after a Cardwire switch."""

@@ -3815,7 +3815,9 @@ def detect_capabilities(root=None):
     What is *installed* (ryzenadj, nvidia-smi) is still probed via PATH and
     ignores ``root`` -- there is no meaningful way to re-base a PATH lookup,
     and a test that cares passes the dict in rather than calling this."""
-    caps = {}
+    from . import gamescope
+
+    caps = {"gamescope": gamescope.detect_installed()}
     caps["fan_curve"] = find_hwmon_by_name("asus_custom_fan_curve", root=root) is not None
     caps["fan_rpm"] = find_hwmon_by_name("asus", root=root) is not None
     # The same sensor names read_cpu_temp falls back through, in the same

@@ -8,6 +8,7 @@ from . import graphics_backend, hardware
 
 
 LABELS = {
+    "gamescope": "Gamescope installed",
     "fan_curve": "Fan curves",
     "fan_rpm": "Fan RPM readout",
     "cpu_temp": "CPU temperature",

@@ -74,6 +74,7 @@ from rogcontrol import fancurve  # noqa: E402
 from rogcontrol import hardware  # noqa: E402
 from rogcontrol import kbdcolor  # noqa: E402
 from rogcontrol import profiles as profiles_mod  # noqa: E402
+from rogcontrol import gamescope  # noqa: E402
 
 # One copy of the curve maths, in the package. See rogcontrol-apply.py.
 interpolate_curve = fancurve.interpolate_curve
@@ -87,6 +88,7 @@ CONFIG_PATH = config_mod.CONFIG_PATH
 # re-check run on this interval now, so it can be far slower than
 # the old 15s without losing anything.
 INTERVAL_SECONDS = 60
+_cycle_wakeup = threading.Event()
 
 # See pages/fans.py: retested down to 0.5s with no failures, kept at 5s for
 # margin over the retested floor.
@@ -983,6 +985,49 @@ def charger_flash(config, event):
     return True
 
 
+def gamescope_watcher_thread():
+    """Wake the existing cycle on session/setting changes without applying.
+
+    Poll only the two small systemd properties while enabled. All profile
+    writes remain under the same lock as AC/battery switching.
+    """
+    previous = None
+    while True:
+        try:
+            with open(CONFIG_PATH) as stream:
+                selected = json.load(stream).get("gamescope_profile")
+            pending = gamescope.has_saved_profile()
+            active = gamescope.session_active() if selected or pending else False
+            signature = (active, selected, pending)
+            if signature != previous:
+                previous = signature
+                _cycle_wakeup.set()
+        except (OSError, ValueError) as error:
+            log(f"Gamescope monitor: {error}", "WARN", dedupe_key="gamescope-watch")
+        time.sleep(2)
+
+
+def check_gamescope_profile(config, service_name):
+    """Reconcile the session before deciding whether the charger may switch."""
+    if not config.get("gamescope_profile") and not gamescope.has_saved_profile():
+        return False
+    target = gamescope.reconcile(gamescope.session_active(), config_path=CONFIG_PATH)
+    if target is None:
+        return False
+    with open(CONFIG_PATH) as stream:
+        fresh = json.load(stream)
+    config.clear()
+    config.update(fresh)
+    log(f"Gamescope session transition -- switched to '{target}'")
+    mode = PROFILE_TO_PPD_MODE.get(target)
+    if mode and service_name:
+        set_ppd_active_profile(service_name, mode)
+    apply_full_profile(config, config["profiles"][target],
+                       force_fan_reapply=True, full=True)
+    gamescope.complete_transition()
+    return True
+
+
 def check_ac_auto_switch(config, service_name, trigger="poll"):
     """Sample the power source and switch profile if it has just changed.
 
@@ -1000,10 +1045,24 @@ def check_ac_auto_switch(config, service_name, trigger="poll"):
     Returns True if a profile was switched and applied, so the caller knows
     the hardware has already been dealt with this cycle."""
     with _ac_lock:
-        return _check_ac_auto_switch(config, service_name, trigger)
+        # Both callers read before acquiring this lock. The other caller may
+        # have finished a session transition while this one waited for it.
+        try:
+            with open(CONFIG_PATH) as stream:
+                fresh = json.load(stream)
+            if isinstance(fresh, dict):
+                config.clear()
+                config.update(fresh)
+        except (OSError, ValueError):
+            pass
+        switched = check_gamescope_profile(config, service_name)
+        ac_switched = _check_ac_auto_switch(
+            config, service_name, trigger,
+            suppress_switch=switched or gamescope.has_saved_profile())
+        return switched or ac_switched
 
 
-def _check_ac_auto_switch(config, service_name, trigger):
+def _check_ac_auto_switch(config, service_name, trigger, suppress_switch=False):
     global _last_ac_state, _last_charger_kind
     current_ac, current_kind = hardware.read_power_source()
 
@@ -1035,6 +1094,10 @@ def _check_ac_auto_switch(config, service_name, trigger):
             # did not happen.
             log(f"charger flash failed: {e}", "WARN", dedupe_key="flash")
 
+    # Keep tracking plug changes (and showing the optional flash), so logout
+    # cannot replay an old charger event over the restored desktop profile.
+    if suppress_switch:
+        return False
     target = ac_switch_target(previous_ac, current_ac, config, current_kind)
     if target is None:
         return False
@@ -1679,7 +1742,10 @@ def main():
                                   args=(ppd_service_name,), daemon=True)
     ac_watcher.start()
 
+    threading.Thread(target=gamescope_watcher_thread, daemon=True).start()
+
     while True:
+        _cycle_wakeup.clear()
         try:
             if os.path.exists(CONFIG_PATH):
                 with open(CONFIG_PATH) as f:
@@ -1758,7 +1824,7 @@ def main():
             # Never let one bad cycle kill the service, but do not hide it
             # either -- this was a silent 'pass' before.
             log(f"cycle failed: {e}", "ERROR", dedupe_key="cycle")
-        time.sleep(seconds_until_next_cycle())
+        _cycle_wakeup.wait(seconds_until_next_cycle())
 
 
 if __name__ == "__main__":

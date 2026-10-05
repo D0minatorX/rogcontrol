@@ -38,6 +38,22 @@ Export writes everything — every profile, the charge limit, keyboard settings,
 
 *Requires: nothing extra — always available.*
 
+Quick Access detects Gamescope at installation and app startup. When detected,
+**Gamescope profile** lets you choose a profile for the Gamescope login session,
+or **Don't auto-switch** (the default). On logout it restores the profile that
+was selected before entry, even with the window closed. AC/battery switching
+pauses during the session and resumes afterward. The saved desktop profile
+survives an enforcer restart; if that profile was deleted, the current profile
+is kept instead. Choosing **Don't auto-switch** during a session restores it
+immediately.
+
+Without Gamescope, the settings are hidden and **Recheck for Gamescope** remains
+available. Session switching uses `gamescope-session.target` or
+`gamescope-session.service`, as in the standalone `rogcontrol-gamescope-profile`
+add-on; launching an individual game inside nested Gamescope is not a login
+session. Uninstall the standalone add-on before enabling this built-in option
+to avoid duplicate switching.
+
 ### 🌀 Fans
 An eight-point curve per fan, dragged on a graph showing real RPM. "Calibrate fan RPM" measures how your own fans respond so the graph is accurate for your machine, not the developer's.
 
