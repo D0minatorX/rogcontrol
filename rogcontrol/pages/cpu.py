@@ -2,9 +2,8 @@
 
 Nothing on this page reaches the hardware until Apply. Moving a slider
 changes a pending value and nothing else: Apply and Revert live in the
-header bar, visible at every scroll position, so all three tuning pages
-behave alike and none of them push the page down with a banner to say a
-change is waiting.
+header bar. A separate pending-changes bar counts staged edits and keeps
+Discard and Apply visible while scrolling.
 
 That is a deliberate reversal. This page used to apply a control 400 ms after
 it stopped moving, which meant dragging STAPM from 25 to 75 W could push a
@@ -28,9 +27,8 @@ Two hardware facts shape the code:
   the ceiling as well. The order lives in ``hardware.cpu_apply_plan`` where
   it can be tested without a display.
 
-Leaving the page, or switching profile, with unapplied changes discards them
-and puts the profile's own values back. Silently applying settings the user
-walked away from is the behaviour this page exists to remove.
+Leaving the page or switching profiles discards unapplied edits, as the
+pending bar warns. Navigation never applies settings implicitly.
 
 The "Apply power limits" checkbox is stored per profile as ``limits_enabled``
 and is read by ``hardware.cpu_apply_plan``, not by this page, so unticking it
@@ -54,6 +52,7 @@ from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
+from ..widgets.pending_changes import PendingChanges
 from ..sampling import SampleFailures  # noqa: E402
 from ..ui import icon_image  # noqa: E402
 from ..widgets.action_buttons import apply_revert_buttons  # noqa: E402
@@ -375,6 +374,7 @@ class CpuPage(Gtk.Box):
         # dial and raise the banner for every row on the page.
         self._loading = True
         self._applying = False
+        self._hardware_busy = False
         # Last values known to have reached the hardware, for deciding what is
         # unapplied and for putting a control back after a rejected apply.
         self._applied = {}
@@ -394,9 +394,7 @@ class CpuPage(Gtk.Box):
         self._start_sample()
         self._timer_id = GLib.timeout_add_seconds(REFRESH_SECONDS, self._tick)
         self.connect("destroy", self._on_destroy)
-        # Walking away from unapplied changes discards them. See the module
-        # docstring: the one thing this page must never do is apply something
-        # the user left behind.
+        # The pending bar warns that navigation discards staged changes.
         self.connect("unmap", self._on_unmap)
 
     # -- construction --------------------------------------------------------
@@ -406,6 +404,9 @@ class CpuPage(Gtk.Box):
         self.banner.set_revealed(False)
         self.banner.connect("button-clicked", self._on_apply_clicked)
         self.append(self.banner)
+        self.pending = PendingChanges(self._on_apply_clicked, self._on_revert_clicked,
+                                      discard_on_leave=True)
+        self.append(self.pending)
 
         page = Adw.PreferencesPage()
         page.set_vexpand(True)
@@ -745,12 +746,7 @@ class CpuPage(Gtk.Box):
             self._timer_id = None
 
     def _on_unmap(self, _widget):
-        """The page went off screen. Unapplied edits go with it.
-
-        Not applied, and not kept: a slider left half-dragged on a page
-        nobody is looking at must not be able to reach the chip later, and a
-        page that comes back still claiming a value the hardware never took
-        is lying about the machine."""
+        """Discard on navigation, as the pending bar explicitly warns."""
         if self._applying or not self._dirty_keys():
             return
         self.reload()
@@ -936,7 +932,17 @@ class CpuPage(Gtk.Box):
             return
         self._update_banner()
 
+    def _update_pending(self):
+        highlights = {
+            key: (row.get_ancestor(Adw.ActionRow) or row)
+            if isinstance(row, Gtk.CheckButton) else row
+            for key, row in self.rows.items()
+        }
+        self.pending.update(highlights, self._dirty_keys(),
+                            self._applying or self._hardware_busy)
+
     def _update_banner(self):
+        self._update_pending()
         if self._applying:
             # The banner is the progress line while an apply is running; the
             # apply owns it until it finishes.
@@ -955,13 +961,7 @@ class CpuPage(Gtk.Box):
                 "is running stock. Adjust it and Apply to try again.",
                 "Apply")
             return
-        # No "not applied yet" banner. Apply and Revert are in the header
-        # bar now, visible on every page and at every scroll position, so a
-        # full-width bar appearing the instant a slider moves said nothing
-        # the buttons were not already saying -- and it said it by pushing
-        # the whole page down a line. The banner is kept for the things the
-        # buttons cannot say: an apply that failed, and a machine that
-        # cannot do this at all.
+        # Pending edits have their own bar; this banner is for operations.
         self.banner.set_revealed(False)
 
     def _show_banner(self, text, button=None):
@@ -1042,6 +1042,7 @@ class CpuPage(Gtk.Box):
 
     def _set_busy(self, busy):
         self._applying = busy
+        self._update_pending()
         self.apply_button.set_sensitive(not busy)
         self.revert_button.set_sensitive(not busy)
 
@@ -1051,6 +1052,8 @@ class CpuPage(Gtk.Box):
         Not folded into _set_busy: that one owns this page's own state, and
         the two can disagree (a profile switch greys these buttons without
         this page applying anything)."""
+        self._hardware_busy = busy
+        self._update_pending()
         if not self._applying:
             self.apply_button.set_sensitive(not busy)
             self.revert_button.set_sensitive(not busy)
@@ -1158,6 +1161,7 @@ class CpuPage(Gtk.Box):
                        for key in self.step_rows[step]]
         if failed_rows:
             self._restore(failed_rows)
+        self._update_pending()
 
         if refused is not None:
             self._show_banner(refused, button="Apply")

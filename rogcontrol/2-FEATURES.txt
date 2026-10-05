@@ -97,7 +97,15 @@ non-zero Apply asks for confirmation because it can increase heat/power and
 cause instability. It uses the installed NVIDIA driver directly and never
 requires LACT. Quick Access also provides the NVIDIA PowerMizer mode per
 profile when the active GPU and driver support it. Ranges are read from your
-card, not hardcoded.
+card, with clock offsets additionally limited to the existing +/-1000 MHz
+UI range.
+
+Core and memory offsets are detected independently using a temporary write,
+readback and restoration. They prefer privileged NVIDIA NVML global offsets
+on Wayland and X11; verified nvidia-settings is the fallback. Both Cardwire
+and supergfxctl use this same path. Unsupported controls remain hidden.
+NVML offsets can be applied and retried without a graphical session. Avoid
+running another clock-management tool while probing or applying settings.
 
 Applied on the same terms as the CPU page: an Apply button, a banner naming
 what is not on the card yet, and a profile that is only written once the card
@@ -108,7 +116,9 @@ Hybrid and NVIDIA-only (AsusMuxDgpu); switching can require a logout or
 reboot. Cardwire offers live Integrated, Hybrid and Smart access policies,
 but no NVIDIA-only mode. Applications already running can retain access until
 restarted. Cardwire requires Wayland. The installer's choice controls the GPU
-picker, and daemon refusals remain visible on the page.
+picker, and daemon refusals remain visible on the page. Saved NVIDIA power
+and clock limits are retried by the background service after Hybrid access
+returns, even when the window is closed.
 
 Live CPU and GPU temperatures and the speed of the fan cooling each are shown
 on their own pages, refreshed every two seconds. The GPU reads "Idle" while

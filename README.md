@@ -49,9 +49,11 @@ STAPM, fast and slow power limits, temperature target, Curve Optimizer undervolt
 *Requires: `ryzenadj` (AMD only) — and on some kernels, the `ryzen_smu` module.*
 
 ### 🎮 GPU
-Core/memory clock offsets, a clock ceiling, NVIDIA Dynamic Boost, and temperature target. The GPU power-limit slider appears only when this GPU and driver accept a verified limit change; a reported min/max range alone is not enough. The GPU tab can also offer an experimental per-profile **Voltage Boost** slider (0–100%): it is shown only when a live same-value write confirms that the active NVIDIA GPU and driver expose the required voltage-rail control. It defaults to 0% (stock); a non-zero interactive apply always asks for confirmation because it can raise heat/power use and cause instability. Quick Access also offers the NVIDIA PowerMizer mode per profile; it is shown only when the active GPU and driver advertise the attribute, and defaults to driver-controlled Auto. Live temperature and fan speed for both CPU and GPU are also shown.
+Core/memory clock offsets, a clock ceiling, NVIDIA Dynamic Boost, and temperature target. The GPU power-limit slider appears only when this GPU and driver accept a verified limit change; a reported min/max range alone is not enough. Clock ceiling, core offset, and memory offset are detected independently using temporary writes; unsupported controls stay hidden. Offset probes read back the changed value and restore the original. The clock-ceiling probe resets the lock afterward because NVIDIA does not provide a reliable readback of a pre-existing lock, so installing or opening the app may clear a clock lock set by another tool. The GPU tab can also offer an experimental per-profile **Voltage Boost** slider (0–100%): it is shown only when a live same-value write confirms that the active NVIDIA GPU and driver expose the required voltage-rail control. It defaults to 0% (stock); a non-zero interactive apply always asks for confirmation because it can raise heat/power use and cause instability. Quick Access also offers the NVIDIA PowerMizer mode per profile; it is shown only when the active GPU and driver advertise the attribute, and defaults to driver-controlled Auto. Live temperature and fan speed for both CPU and GPU are also shown.
 
-*Requires: `nvidia-utils` (temperature and, where verified, power limit), `nvidia-settings` (clock offsets and PowerMizer), and a compatible installed NVIDIA driver for Voltage Boost — NVIDIA only.*
+Clock offsets prefer a privileged NVML backend, on both Wayland and X11, with verified `nvidia-settings` fallback where available. Each GPU/domain must pass a temporary write, readback and restoration check. The global NVML offset APIs preserve all-performance-level behavior; a P0-only API is not silently substituted. Both Cardwire and Supergfx use this backend, including background profile application. Blocked/offline GPUs defer writes; NVML retries do not require a graphical session. Slider ranges stay within the driver's range and the existing ±1000 MHz UI limits. Avoid concurrent clock management by other tools while probing or applying offsets.
+
+*Requires: `nvidia-utils` (temperature and, where verified, power limit), NVIDIA's NVML library (preferred clock-offset backend), `nvidia-settings` (offset fallback and PowerMizer), and a compatible installed NVIDIA driver for Voltage Boost — NVIDIA only.*
 
 Graphics access switching uses the backend selected during installation:
 
@@ -61,7 +63,8 @@ Graphics access switching uses the backend selected during installation:
   on Wayland. Already-running applications can retain their existing GPU
   access until restarted. Direct NVIDIA controls are parked while Integrated
   or Smart blocks the card; returning to Hybrid redetects the card's real
-  limits and supported controls.
+  limits and supported controls. The background service also retries saved
+  power and clock limits after access returns when the window is closed.
 
 The installer asks which backend to use on Wayland. Outside Wayland it selects
 Supergfx automatically. External-monitor routing still depends on the laptop's
@@ -96,6 +99,10 @@ A switch for the boot chime, remembered so a boot-apply service can restore it a
 *Requires: nothing extra — always available. The asusd conflict check needs asusctl to be present to say anything.*
 
 ### ✨ Also
+- Slider values can be typed directly: Enter or leaving the field accepts the number, Escape cancels typing. Existing ranges, increments, and Apply behavior still apply.
+- Overview offers List and compact Dashboard views; the selector remembers your choice, with List retained by default.
+- System settings are organized into General, Services, Updates, and Diagnostics sections.
+- CPU, GPU, and fan edits show a pending-change count, highlighted controls, and Discard/Apply actions. CPU/GPU edits are discarded when leaving the page, with an explicit warning; Quick Access shows the same warning for staged CPU changes.
 - Bundled interface icons that stay consistent when the desktop icon pack changes
 - System, Light, and Dark appearance under **System → Appearance**, saved between launches
 - Live RAM and VRAM use on the overview page

@@ -17,9 +17,10 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, GLib, GObject, Gtk  # noqa: E402
 
 from .. import hardware  # noqa: E402
+from .. import config as config_mod  # noqa: E402
 from ..sampling import SampleFailures  # noqa: E402
 from ..fancurve import get_rpm_cal, interpolate_curve, pct_to_rpm  # noqa: E402
 
@@ -117,6 +118,7 @@ class OverviewPage(Adw.PreferencesPage):
         return row, label
 
     def _build(self):
+        self._build_layout_selector()
         cpu = Adw.PreferencesGroup(title="CPU")
         self.add(cpu)
         # Tctl is k10temp's name for the sensor the embedded controller
@@ -182,6 +184,107 @@ class OverviewPage(Adw.PreferencesPage):
         self.add(status)
         self.curve_row, self.curve_val = self._value_row(
             status, "Custom fan curve")
+        self._list_groups = (cpu, gpu, memory, fans, battery, status)
+        self._build_dashboard()
+        self._show_layout()
+
+    def _build_layout_selector(self):
+        group = Adw.PreferencesGroup()
+        bar = Gtk.Box(spacing=12)
+        title = Gtk.Label(label="View", xalign=0, hexpand=True)
+        title.add_css_class("heading")
+        bar.append(title)
+        selector = Gtk.Box()
+        selector.add_css_class("linked")
+        self.list_button = Gtk.ToggleButton(label="List")
+        self.dashboard_button = Gtk.ToggleButton(label="Dashboard")
+        self.dashboard_button.set_group(self.list_button)
+        selector.append(self.list_button)
+        selector.append(self.dashboard_button)
+        bar.append(selector)
+        group.add(bar)
+        self.add(group)
+        dashboard = self.window.config.get("overview_layout") == "dashboard"
+        (self.dashboard_button if dashboard else self.list_button).set_active(True)
+        self.list_button.connect("toggled", self._on_layout_changed, "list")
+        self.dashboard_button.connect("toggled", self._on_layout_changed, "dashboard")
+
+    def _show_layout(self):
+        dashboard = self.dashboard_button.get_active()
+        for group in self._list_groups:
+            group.set_visible(not dashboard)
+        self.dashboard_group.set_visible(dashboard)
+
+    def _on_layout_changed(self, button, layout):
+        if not button.get_active():
+            return
+        self.window.config["overview_layout"] = layout
+        self._show_layout()
+        config_mod.save_config(self.window.config)
+
+    def _build_dashboard(self):
+        # Bind to the existing readouts: switching layouts never samples,
+        # starts another timer, or loses the last successful reading.
+        self.dashboard_values = {}
+        self.dashboard_details = {}
+        self._dashboard_bindings = []
+        self.dashboard_group = Adw.PreferencesGroup()
+        self.dashboard_flow = Gtk.FlowBox(
+            selection_mode=Gtk.SelectionMode.NONE,
+            min_children_per_line=1, max_children_per_line=2,
+            column_spacing=12, row_spacing=12, homogeneous=False)
+        self.dashboard_flow.add_css_class("overview-dashboard")
+        self.dashboard_group.add(self.dashboard_flow)
+        self.add(self.dashboard_group)
+        cards = (
+            ("CPU", (("cpu_temp", True), ("cpu_clock", False), ("cpu_power", False))),
+            ("GPU", (("gpu_temp", True), ("gpu_power", False), ("vram", False))),
+            ("Battery", (("battery", True), ("limit", False), ("power", False))),
+            ("Memory", (("ram", True),)),
+            ("Fans", tuple(("fan_" + ch, False) for ch in hardware.FAN_CHANNELS)),
+            ("Fan curve status", (("curve", True),)),
+        )
+        for title, readings in cards:
+            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
+                           hexpand=True, width_request=240)
+            card.add_css_class("card")
+            card.add_css_class("overview-card")
+            heading = Gtk.Label(label=title, xalign=0)
+            heading.add_css_class("heading")
+            card.append(heading)
+            for name, primary in readings:
+                if name.startswith("fan_"):
+                    channel = name[4:]
+                    row, source = self.fan_rows[channel], self.fan_vals[channel]
+                else:
+                    row, source = getattr(self, name + "_row"), getattr(self, name + "_val")
+                reading = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+                label = Gtk.Label(label=row.get_title(), xalign=0, wrap=True)
+                label.add_css_class("dim-label")
+                label.add_css_class("caption")
+                reading.append(label)
+                value = Gtk.Label(xalign=0, wrap=True)
+                value.add_css_class("numeric")
+                value.add_css_class("overview-primary" if primary else "overview-secondary")
+                self._dashboard_bindings.append(source.bind_property(
+                    "label", value, "label", GObject.BindingFlags.SYNC_CREATE))
+                reading.append(value)
+                self.dashboard_values[name] = value
+                # Fan targets and warnings must remain visible; longer
+                # static sensor explanations remain available as tooltips.
+                if name.startswith("fan_") or name in ("battery", "curve", "ram"):
+                    detail = Gtk.Label(xalign=0, wrap=True, max_width_chars=28)
+                    detail.add_css_class("caption")
+                    detail.add_css_class("dim-label")
+                    self._dashboard_bindings.append(row.bind_property(
+                        "subtitle", detail, "label", GObject.BindingFlags.SYNC_CREATE))
+                    reading.append(detail)
+                    self.dashboard_details[name] = detail
+                else:
+                    self._dashboard_bindings.append(row.bind_property(
+                        "subtitle", reading, "tooltip-text", GObject.BindingFlags.SYNC_CREATE))
+                card.append(reading)
+            self.dashboard_flow.insert(card, -1)
 
     # -- refresh -------------------------------------------------------------
 
@@ -282,6 +385,12 @@ class OverviewPage(Adw.PreferencesPage):
         self._render_fans(data.get("fan_rpm") or {}, cpu_temp)
         self._render_battery(data)
         self._render_curve_state(data.get("curve_enabled") or {})
+        status = self.dashboard_values["curve"]
+        for css in ("success", "warning", "error"):
+            if self.curve_val.has_css_class(css):
+                status.add_css_class(css)
+            else:
+                status.remove_css_class(css)
 
     def _render_fans(self, rpms, cpu_temp):
         curves = (self.window.current_profile() or {}).get("fans") or {}

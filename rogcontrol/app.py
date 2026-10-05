@@ -490,12 +490,14 @@ class MainWindow(Adw.ApplicationWindow):
         if hardware.nvidia_access_error() is not None:
             return None
         limits = hardware.detect_gpu_limits()
+        tuning = hardware.probe_gpu_tuning_capabilities(self.caps)
         powermizer = (hardware.detect_nvidia_powermizer_modes()
                       if self.caps.get("nvidia_settings") else ())
         voltage = (hardware.probe_nvidia_voltage_boost() is not None
                    if self.caps.get("nvidia") else False)
         return {
             "gpu_limits": limits,
+            **tuning,
             "nvidia_powermizer_modes": powermizer,
             "nvidia_voltage_boost": voltage,
         }
@@ -731,7 +733,7 @@ class MainWindow(Adw.ApplicationWindow):
                 and not nvidia_access):
             do("GPU power limit",
                lambda: hardware.run_helper("gpu", gpu["watts"]))
-        if ("clock_limit" in gpu and self.caps.get("nvidia")
+        if ("clock_limit" in gpu and self.caps.get("gpu_clock_limit")
                 and not nvidia_access):
             arg = hardware.gpu_clock_limit_arg(
                 gpu["clock_limit"],
@@ -757,12 +759,14 @@ class MainWindow(Adw.ApplicationWindow):
             do("GPU PowerMizer mode",
                lambda: hardware.set_nvidia_powermizer_mode(
                    gpu["powermizer_mode"]))
-        if self.caps.get("nvidia_settings") and not nvidia_access:
-            if "clock_offset" in gpu:
+        if not nvidia_access:
+            if ("clock_offset" in gpu
+                    and self.caps.get("nvidia_core_clock_offset")):
                 do("GPU core clock offset",
                    lambda: hardware.set_nvidia_clock_offset(
                        "core", gpu["clock_offset"]))
-            if "mem_clock_offset" in gpu:
+            if ("mem_clock_offset" in gpu
+                    and self.caps.get("nvidia_memory_clock_offset")):
                 do("GPU memory clock offset",
                    lambda: hardware.set_nvidia_clock_offset(
                        "memory", gpu["mem_clock_offset"]))
@@ -1144,6 +1148,7 @@ class RogControlApp(Adw.Application):
                                             gpu_max_w=gpu_limits["max_w"])
             caps = hardware.detect_capabilities()
             caps["gpu_limits"] = gpu_limits
+            caps.update(hardware.probe_gpu_tuning_capabilities(caps))
             # GPUPowerMizerMode is a per-GPU driver attribute, not proof of
             # nvidia-settings being installed. Probe it in this graphical
             # session so unsupported NVIDIA cards and AMD systems get no row.

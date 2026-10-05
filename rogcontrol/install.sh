@@ -307,10 +307,6 @@ if ! lsmod 2>/dev/null | grep -q '^asus_nb_wmi\|^asus_wmi' \
     warn "It normally loads automatically on supported ASUS laptops."
 fi
 
-command -v nvidia-smi >/dev/null 2>&1 \
-    && say "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)" \
-    || warn "No nvidia-smi yet - GPU controls need the NVIDIA driver"
-
 # Graphics backend is chosen once per installation. An explicit X11 session
 # wins over a stale WAYLAND_DISPLAY inherited from another process.
 WAYLAND=0
@@ -340,6 +336,13 @@ else
     say "No Wayland session detected — using supergfxctl"
 fi
 say "Graphics backend: $GRAPHICS_BACKEND"
+if [ "$GRAPHICS_BACKEND" = cardwire ]; then
+    say "GPU: Cardwire access will be checked when the app starts"
+elif command -v nvidia-smi >/dev/null 2>&1; then
+    say "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+else
+    warn "No nvidia-smi yet - GPU controls need the NVIDIA driver"
+fi
 
 # The machine is an ASUS and the app is worth installing here, so the atomic
 # question deferred at the top can now be asked. Deliberately after the
@@ -766,6 +769,8 @@ sudo install -o root -g root -m 755 "$SCRIPT_DIR/rogcontrol-helper" /usr/local/b
 sudo install -d -o root -g root -m 755 /usr/local/lib/rogcontrol
 sudo install -o root -g root -m 644 "$SCRIPT_DIR/nvidia_api.py" \
     /usr/local/lib/rogcontrol/nvidia_api.py
+sudo install -o root -g root -m 644 "$SCRIPT_DIR/nvidia_clocks.py" \
+    /usr/local/lib/rogcontrol/nvidia_clocks.py
 say "Helper installed at /usr/local/bin/rogcontrol-helper"
 
 # The app calls the helper through `sudo -n` (non-interactive) from a
@@ -1042,7 +1047,7 @@ cap() {
 # The window and installer share these probes. Run them unconditionally after
 # installing the new package, so an update checks the new driver/kernel and
 # newly added features just as a fresh install does. The report is read-only
-# apart from the same-value/restore checks used to verify writable GPU knobs.
+# apart from temporary write/restore checks used to verify writable GPU knobs.
 FEATURE_REPORT=""
 if FEATURE_REPORT="$(PYTHONPATH="$HOME/.local/lib" python3 -m rogcontrol.feature_report 2>/dev/null)" \
     && [ -n "$FEATURE_REPORT" ]; then

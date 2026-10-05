@@ -134,3 +134,18 @@ headerbar menubutton > button {
   padding: 0 4px;
 }
 headerbar menubutton > button:hover { background-color: @rog_hover_color; }
+
+/* Staged values remain distinct from hardware errors and progress. */
+.pending-bar {
+  padding: 10px 12px;
+  background-color: alpha(@accent_bg_color, 0.12);
+  border-bottom: 1px solid alpha(@accent_bg_color, 0.35);
+}
+.pending-change {
+  box-shadow: inset 3px 0 @accent_bg_color;
+  background-color: alpha(@accent_bg_color, 0.08);
+}
+.overview-dashboard > flowboxchild { padding: 0; }
+.overview-card { padding: 14px; }
+.overview-primary { font-size: 1.5em; font-weight: 700; }
+.overview-secondary { font-weight: 500; }

@@ -1,12 +1,9 @@
 """A slider row: the numeric control every page in this app uses.
 
-libadwaita ships ``AdwSpinRow`` but no slider equivalent, and a spin row is
-the wrong shape for these settings twice over. Every number here is a
-position on a range -- 15 to 150 watts, 60 to 100 degrees -- and a spin
-button hides that range behind two arrows, so finding the middle of it means
-clicking thirty times. Worse for a settings list, a spin button's width comes
-from its digits, so a column of them has a ragged left edge: the entry beside
-"3.2" is narrower than the one beside "150", and the arrows never line up.
+The scale gives a quick overview of the range; the adjacent numeric entry
+allows precise input. Enter or leaving the field accepts a number, Escape
+restores the current value. Typed numbers use the same clamp, step snapping,
+and change signal as the scale. Programmatic profile loads remain silent.
 
 The layout is deliberately vertical -- title and readout, then the (short)
 subtitle, then a full-width scale beneath both:
@@ -33,6 +30,8 @@ spacing and minimum height -- so building the same node names means a
 SliderRow lines up with the AdwSwitchRow above it exactly, rather than being
 a hand-tuned approximation that drifts the next time the stylesheet moves.
 """
+
+import math
 
 import gi
 
@@ -88,12 +87,11 @@ def _load_row_css():
 
 
 class SliderRow(Adw.PreferencesRow):
-    """A titled row holding a horizontal scale and a stable value readout.
+    """A titled row with a scale and an editable numeric value.
 
-    Emits ``changed(value)`` once the user has left the scale alone for
-    ``settle_ms``. It never emits while dragging, and never for a value put
-    there by :meth:`set_value` -- loading a profile into a page must not look
-    like the user turning a dial.
+    Emits ``changed(value)`` after ``settle_ms`` for scale changes and
+    accepted numeric input (immediately when zero). Never emits for a value
+    put there by :meth:`set_value`: profile loading is not a user edit.
     """
 
     __gtype_name__ = "RogSliderRow"
@@ -159,13 +157,33 @@ class SliderRow(Adw.PreferencesRow):
         self._title_label.set_hexpand(True)
         line.append(self._title_label)
 
-        self._value_label = Gtk.Label(xalign=1.0)
-        # "numeric" is tabular figures: without it a 1 is narrower than a 0
-        # and the readout shuffles sideways as you drag.
-        self._value_label.add_css_class("numeric")
+        value_box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        self.value_entry = Gtk.Entry(xalign=1.0)
+        self.value_entry.add_css_class("numeric")
+        self.value_entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        self.value_entry.update_property(
+            [Gtk.AccessibleProperty.LABEL], [f"{title} ({self._unit})" if self._unit else title])
+        self.value_entry.set_tooltip_text(
+            "Type a number. Enter or Tab accepts it; Escape cancels.")
+        self.value_entry.connect("activate", self._accept_entry)
+        focus = Gtk.EventControllerFocus()
+        focus.connect("leave", self._on_entry_focus_leave)
+        self.value_entry.add_controller(focus)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self._on_entry_key)
+        self.value_entry.add_controller(keys)
         self.set_value_width_chars()
-        line.append(self._value_label)
+        value_box.append(self.value_entry)
+        self._unit_label = Gtk.Label(label=self._unit)
+        self._unit_label.set_visible(bool(self._unit))
+        value_box.append(self._unit_label)
+        line.append(value_box)
         text.append(line)
+        self.input_error = self._text_label("")
+        self.input_error.add_css_class("error")
+        self.input_error.add_css_class("caption")
+        self.input_error.set_visible(False)
+        text.append(self.input_error)
 
         self._subtitle_label = self._text_label(subtitle)
         self._subtitle_label.add_css_class("subtitle")
@@ -215,8 +233,9 @@ class SliderRow(Adw.PreferencesRow):
         if width_chars is None:
             width_chars = max(len(self.format_value(self._adj.get_lower())),
                               len(self.format_value(self._adj.get_upper())))
-        self._value_label.set_width_chars(width_chars)
-        self._value_label.set_max_width_chars(width_chars)
+        number_width = max(3, width_chars - (len(self._unit) + 1 if self._unit else 0))
+        self.value_entry.set_width_chars(number_width)
+        self.value_entry.set_max_width_chars(number_width)
 
     # -- value ---------------------------------------------------------------
 
@@ -248,6 +267,7 @@ class SliderRow(Adw.PreferencesRow):
         self._cancel_settle()
         try:
             self._adj.set_value(self._snap(value))
+            self._update_label()
         finally:
             self._programmatic = was
 
@@ -284,7 +304,42 @@ class SliderRow(Adw.PreferencesRow):
         self._arm_settle()
 
     def _update_label(self):
-        self._value_label.set_text(self.get_display_value())
+        value = self.get_value()
+        self.value_entry.set_text(f"{0.0 if value == 0 else value:.{self._digits}f}")
+        # Keyboard level rows override format_value with names such as
+        # Medium. Keep those meanings visible beside their editable index.
+        display = self.get_display_value()
+        suffix = self._unit if display == SliderRow.format_value(self, value) else display
+        self._unit_label.set_text(suffix)
+        self._unit_label.set_visible(bool(suffix))
+        self.value_entry.remove_css_class("error")
+        self.input_error.set_visible(False)
+
+    def _accept_entry(self, _entry=None):
+        """Commit a complete numeric draft through the existing slider path."""
+        try:
+            value = float(self.value_entry.get_text().strip().replace(MINUS, "-"))
+            if not math.isfinite(value):
+                raise ValueError("not finite")
+        except ValueError:
+            self.value_entry.add_css_class("error")
+            self.input_error.set_text(
+                f"Enter a number from {SliderRow.format_value(self, self._adj.get_lower())} "
+                f"to {SliderRow.format_value(self, self._adj.get_upper())}.")
+            self.input_error.set_visible(True)
+            return
+        self._adj.set_value(self._snap(value))
+        # A same-value entry still needs normalization, even without a signal.
+        self._update_label()
+
+    def _on_entry_focus_leave(self, _controller):
+        self._accept_entry()
+
+    def _on_entry_key(self, _controller, keyval, _keycode, _state):
+        if keyval != Gdk.KEY_Escape:
+            return False
+        self._update_label()
+        return True
 
     def _arm_settle(self):
         self._cancel_settle()
@@ -318,6 +373,9 @@ class SliderRow(Adw.PreferencesRow):
         if label is not None:
             label.set_text(title)
             self.scale.update_property([Gtk.AccessibleProperty.LABEL], [title])
+            self.value_entry.update_property(
+                [Gtk.AccessibleProperty.LABEL],
+                [f"{title} ({self._unit})" if self._unit else title])
 
     def set_tooltip_text(self, text):
         """The explanation, on hover, from anywhere on the row.
