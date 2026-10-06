@@ -672,8 +672,9 @@
     "b2": 255,
     "speed": 3
   },
-  "kbd_timeout_ac": 1,
-  "kbd_timeout_battery": 1,
+  "kbd_idle_timeout_ac_seconds": 0,
+  "kbd_idle_timeout_battery_seconds": 0,
+  "auto_display_refresh": false,
   "fan_calibration_prompted": true,
   "fan_rpm_cal": {
     "1": [

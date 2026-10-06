@@ -105,7 +105,37 @@ Brightness and ten lighting modes: Static, Breathing, Pulse, Colour Cycle, Rainb
 ### 🔋 Battery
 A charge limit, and automatic profile switching on plug/unplug — runs in the background so it works whether or not the window is open.
 
+**Charge to 100% once** temporarily overrides your usual limit for a trip.
+The Battery page shows whether the override is confirmed or still pending,
+and lets you cancel it. Your usual limit returns after a full charge or after
+unplugging once external power has been detected. The request survives app
+and service restarts; a failed restore is retried in the background.
+
 *Requires: nothing extra — always available.*
+
+### Daily automation
+
+- **Keyboard → Backlight inactivity timeout:** choose separate timeouts in
+  seconds for external power and battery. Zero disables a timeout (the
+  default). Keyboard or pointer activity restores the previous brightness.
+  Supports GNOME on Wayland/X11, KDE on X11, and KDE Wayland through
+  `ext-idle-notify` (detected from the compositor, with no extra package).
+  Protocol version 2 tracks input inactivity even during video playback;
+  version 1 respects idle inhibitors, so playback may keep the keys lit.
+  Other Wayland compositors exposing the same protocol can also work.
+  Missing protocols or unusual multi-seat sessions leave the light unchanged.
+- **Quick Access → Automatic display refresh:** optionally select the
+  highest supported internal-panel refresh rate on AC/USB-C and the lowest
+  on battery, keeping the current resolution. Requires GNOME's `gdctl` or
+  KDE Plasma's `kscreen-doctor` in a graphical user session. Mirrored panels
+  are skipped; external monitor modes and layout are preserved. Turning the
+  option off leaves the current refresh rate in place.
+
+Both automatic features default to off and run in the existing user enforcer
+service with the window closed. Display and charging changes are checked
+about every five seconds; keyboard inactivity about once a second. Unsupported
+desktop interfaces are explained in the app. Hardware behavior still depends
+on the model, firmware, and compositor.
 
 ### ⚙️ System
 Shows whether `asusd` (asusctl's daemon) is installed and running, since it drives the same hardware and the two will fight over fans and lighting if both run. Buttons to stop/disable it and put it back — no uninstall button, since removing a package is shown to you as the exact command to run yourself.
