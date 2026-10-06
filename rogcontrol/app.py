@@ -205,6 +205,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _build_content(self):
         self.content_title = Adw.WindowTitle(title="Overview", subtitle="")
         header = Adw.HeaderBar()
+        header.set_margin_top(6)
         header.set_title_widget(self.content_title)
         # Packed menu-first, so the menu button sits at the very end and the
         # profile drop-down to its left -- the order every GNOME app uses.
