@@ -57,7 +57,7 @@ DASH = "—"
 
 # Seconds between one channel's curve write and the next. See the module
 # docstring: retested down to 0.5s with no failures, kept at 5s for margin.
-CHANNEL_GAP_S = 5
+CHANNEL_GAP_S = 0.5
 
 # Percentages the calibration drives the fans to. The three-point version
 # of this (20/45/70, no 100%) shipped first and undersold itself: a

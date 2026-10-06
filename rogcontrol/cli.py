@@ -23,7 +23,10 @@ def run_helper(*args):
 
 # See pages/fans.py: retested down to 0.5s with no failures, kept at 5s for
 # margin over the retested floor.
-CHANNEL_GAP_S = 5
+# The EC accepted 0.5s gaps across repeated hardware tests.  Keeping this
+# at the measured floor makes shortcut profile changes responsive while still
+# separating channel writes.
+CHANNEL_GAP_S = 0.5
 
 # Use shared desktop notifications for shortcut results.
 notify = hardware.notify
@@ -109,6 +112,11 @@ def cycle_profile():
     next_name = picked.get("next_name")
     if next_name is None:
         return
+
+    # The profile selection itself is instantaneous.  Hardware writes below
+    # may take several seconds, so tell the user which profile was selected
+    # before starting the slow part.
+    notify("ROG Control", f"Switching to {next_name}…")
 
     # Set OS mode before fan curves: changing the mode resets the EC curves.
     hardware.set_power_mode_for_profile(next_name)

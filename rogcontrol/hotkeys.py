@@ -236,6 +236,7 @@ class ActionRunner:
         self.session_check = session_check
         self.process = None
         self.gui_processes = []
+        self.pending_profile = None
         self.started = 0
 
     def poll(self):
@@ -249,11 +250,24 @@ class ActionRunner:
                 self.process = None
             elif time.monotonic() - self.started > 120:
                 self.process.terminate()
+            if self.process is None and self.pending_profile is not None:
+                action = self.pending_profile
+                self.pending_profile = None
+                self.execute(action)
 
     def execute(self, action):
         self.poll()
         args = command(action)
-        if (not args or (self.process is not None and action != 'toggle')
+        if not args or not self.session_check():
+            return
+        if self.process is not None and action != 'toggle':
+            if action == 'profile':
+                # M-button presses can arrive faster than fan/EC writes.
+                # Keep the newest request and launch it as soon as the
+                # current apply completes.
+                self.pending_profile = action
+            return
+        if (not args
                 or not self.session_check()):
             return
         env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent))

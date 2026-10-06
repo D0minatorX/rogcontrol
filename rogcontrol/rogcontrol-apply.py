@@ -115,7 +115,7 @@ DGPU_WAKE_WAIT_SECONDS = 5
 
 # See pages/fans.py: retested down to 0.5s with no failures, kept at 5s for
 # margin over the retested floor.
-CHANNEL_GAP_S = 5
+CHANNEL_GAP_S = 0.5
 
 
 
