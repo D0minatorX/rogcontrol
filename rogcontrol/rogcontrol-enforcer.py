@@ -6,10 +6,9 @@ offsets) - to fight the BIOS/firmware periodically resetting things back to
 its own defaults. Runs as a long-lived systemd --user service
 (Restart=always).
 
-It has not written the charge limit or the keyboard brightness for some
-time -- see the note beside the upkeep pass -- and this line said it did,
-which is exactly the wrong thing for the file to claim while someone is
-hunting for what keeps changing the keyboard.
+The profile upkeep pass leaves charge limits and keyboard brightness alone.
+Independent workers handle an explicitly requested one-time full charge and
+opt-in keyboard inactivity/display refresh policies, including while closed.
 
 FAN CURVES ARE THE EXCEPTION: they are only re-pushed when the curve data
 actually changes, or when an external power-mode change is detected. Each
@@ -75,6 +74,7 @@ from rogcontrol import hardware  # noqa: E402
 from rogcontrol import kbdcolor  # noqa: E402
 from rogcontrol import profiles as profiles_mod  # noqa: E402
 from rogcontrol import gamescope  # noqa: E402
+from rogcontrol import daily_automation, keyboard_idle  # noqa: E402
 
 # One copy of the curve maths, in the package. See rogcontrol-apply.py.
 interpolate_curve = fancurve.interpolate_curve
@@ -89,6 +89,8 @@ CONFIG_PATH = config_mod.CONFIG_PATH
 # the old 15s without losing anything.
 INTERVAL_SECONDS = 60
 _cycle_wakeup = threading.Event()
+_automation_stop = threading.Event()
+_automation_threads = []
 
 # See pages/fans.py: retested down to 0.5s with no failures, kept at 5s for
 # margin over the retested floor.
@@ -1711,6 +1713,9 @@ def _on_terminate(_signum, _frame):
     the two straight crashes that force the undervolt back to stock.
     Re-raised as SystemExit rather than swallowed, so this still shuts the
     service down the way it would have with no handler installed."""
+    _automation_stop.set()
+    for worker in _automation_threads:
+        worker.join(timeout=6)
     try:
         config_mod.mark_clean_shutdown()
     except OSError:
@@ -1720,6 +1725,11 @@ def _on_terminate(_signum, _frame):
 
 def main():
     signal.signal(signal.SIGTERM, _on_terminate)
+    for target in (daily_automation.run, keyboard_idle.run):
+        worker = threading.Thread(target=target, args=(_automation_stop,),
+                                  daemon=True)
+        _automation_threads.append(worker)
+        worker.start()
     # Background thread reacts to power-mode changes immediately; the
     # main loop below is the periodic fallback in case a signal is missed.
     watcher = threading.Thread(target=ppd_watcher_thread, daemon=True)
@@ -1806,7 +1816,10 @@ def main():
                 # them: it goes through apply_full_profile, which writes the
                 # profile and only the profile. The charge limit is applied
                 # at boot and on a profile switch; the keyboard is applied at
-                # boot and when the user changes it, and nowhere else -- a
+                # boot and when the user changes it. Separate convenience
+                # workers own charge-once restoration and opt-in keyboard
+                # idle dimming; they do not reset preferences on profile
+                # changes. Previously, a
                 # profile switch that reset the backlight to the config's
                 # last value was the same fight in a different place.
 

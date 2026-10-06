@@ -32,6 +32,9 @@ DEFAULT_CONFIG = {
     "current_profile": "Balanced Performance",
     "kbd_brightness": 2,
     "charge_limit": 100,
+    "kbd_idle_timeout_ac_seconds": 0,
+    "kbd_idle_timeout_battery_seconds": 0,
+    "auto_display_refresh": False,
     "ac_profile": "Performance",
     "battery_profile": "Quiet",
     # None, not a stock profile: unlike ac_profile/battery_profile this is a

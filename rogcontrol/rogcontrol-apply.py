@@ -58,7 +58,7 @@ for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
 
 from rogcontrol import config as config_mod  # noqa: E402
 from rogcontrol import fancurve  # noqa: E402
-from rogcontrol import gamescope  # noqa: E402
+from rogcontrol import gamescope, charge_once  # noqa: E402
 from rogcontrol import hardware  # noqa: E402
 
 # The curve maths and the helper call are the package's, not this script's.
@@ -319,7 +319,9 @@ def apply_once(config, profile_only=False, force_stock_undervolt=False):
     if "kbd_brightness" in config and not profile_only:
         run_helper("kbd", config["kbd_brightness"])
     if "charge_limit" in config:
-        run_helper("charge", config["charge_limit"])
+        ok, message = charge_once.tick(config_path=CONFIG_PATH, enforce_normal=True)
+        if not ok:
+            hardware.log(f"charge limit pending: {message}", "ERROR", source="apply")
     # Absent means the user has never set it, so the firmware's own value is
     # left alone -- there is no sensible default to assert over a setting
     # that lives in the firmware and that this app did not choose. Once set,

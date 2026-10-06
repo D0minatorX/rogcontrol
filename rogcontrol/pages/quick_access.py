@@ -18,6 +18,7 @@ from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
 from .. import graphics_backend  # noqa: E402
 from .. import gamescope  # noqa: E402
+from .display_settings import DisplayRefreshControls  # noqa: E402
 
 
 class QuickAccessPage(Adw.PreferencesPage):
@@ -64,6 +65,8 @@ class QuickAccessPage(Adw.PreferencesPage):
         self._move_firmware_controls()
         self._hide_empty_groups()
         self._build_gamescope_controls()
+        self.display_refresh_controls = DisplayRefreshControls(window)
+        self.add(self.display_refresh_controls)
         # A row moved out of a PreferencesGroup keeps its last allocation in
         # GTK until the destination is mapped again. Quick Access is a stack
         # child, so returning to it can otherwise paint the first rows using
@@ -82,6 +85,7 @@ class QuickAccessPage(Adw.PreferencesPage):
     def reload(self):
         """Follow profile switches and changes to the available profiles."""
         self._reload_gamescope()
+        self.display_refresh_controls.reload()
         if (self.powermizer_row is not None
                 and self.powermizer_row.get_visible()):
             self._restore_powermizer_selection()

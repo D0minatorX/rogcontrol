@@ -51,6 +51,7 @@ from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
 from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
 from .. import kbdcolor  # noqa: E402
+from .. import keyboard_idle  # noqa: E402
 from ..widgets.ambient import AmbientSampler  # noqa: E402
 from ..widgets.color_picker import ColorButton  # noqa: E402
 from ..widgets.slider_row import SliderRow  # noqa: E402
@@ -249,6 +250,24 @@ class KeyboardPage(Adw.PreferencesPage):
         self.brightness_row.connect("changed", self._on_brightness_changed)
         backlight.add(self.brightness_row)
 
+        self.timeout_group = Adw.PreferencesGroup(
+            title="Backlight inactivity timeout",
+            description="Checking desktop idle support… 0 seconds disables the timeout.")
+        self.add(self.timeout_group)
+        self._idle_supported = None
+        self.timeout_disable_button = Gtk.Button(label="Turn off saved timeouts")
+        self.timeout_disable_button.set_visible(False)
+        self.timeout_disable_button.connect("clicked", self._disable_timeouts)
+        self.timeout_group.set_header_suffix(self.timeout_disable_button)
+        for source, title in (("ac", "On external power"), ("battery", "On battery")):
+            row = SliderRow(title=title, minimum=0, maximum=3600, step=1, unit="s",
+                            tooltip="Turn off after this many seconds without keyboard or pointer activity. 0 disables it.")
+            row.connect("changed", self._on_timeout_changed, source)
+            setattr(self, f"timeout_{source}_row", row)
+            self.timeout_group.add(row)
+        window = self.window
+        window.apply_async(keyboard_idle.support_status, self._idle_support_done)
+
         lighting = Adw.PreferencesGroup(title="Lighting",
                                         description=EFFECT_DESCRIPTION)
         lighting.set_tooltip_text(EFFECT_TOOLTIP)
@@ -331,6 +350,8 @@ class KeyboardPage(Adw.PreferencesPage):
         try:
             saved = self.window.config.get("kbd_rgb") or {}
             self.brightness_row.set_value(self._current_brightness())
+            self.timeout_ac_row.set_value(keyboard_idle.timeout_seconds(self.window.config, True))
+            self.timeout_battery_row.set_value(keyboard_idle.timeout_seconds(self.window.config, False))
             self._select_mode(saved.get("mode") or "Static")
             self._set_button(self.color_button,
                              kbdcolor.saved_color(saved))
@@ -376,12 +397,24 @@ class KeyboardPage(Adw.PreferencesPage):
         if self._brightness_busy:
             return
         self._brightness_busy = True
-        self.window.apply_async(hardware.read_kbd_brightness,
-                                self._brightness_refreshed)
+        self.window.apply_async(self._read_brightness, self._brightness_refreshed)
+
+    @staticmethod
+    def _read_brightness():
+        # Sample the marker around the hardware read; retain it through the
+        # asynchronous callback even if activity restores the light meanwhile.
+        before = keyboard_idle.is_dimmed()
+        level = hardware.read_kbd_brightness()
+        return level, before or keyboard_idle.is_dimmed()
 
     def _brightness_refreshed(self, level, error):
         self._brightness_busy = False
         if error is not None or level is None:
+            return
+        transient = False
+        if isinstance(level, tuple):
+            level, transient = level
+        if level is None:
             return
         self._brightness = _clamp_level(level)
         # Keep the config honest with whatever the LED is actually holding.
@@ -389,7 +422,8 @@ class KeyboardPage(Adw.PreferencesPage):
         # saved kbd_brightness stays at its old value, and the login-time
         # apply service reasserts that stale value and undoes the Fn-key
         # change the next time the user logs in.
-        if self._brightness != self.window.config.get("kbd_brightness"):
+        if (not transient
+                and self._brightness != self.window.config.get("kbd_brightness")):
             self.window.config["kbd_brightness"] = self._brightness
             config_mod.save_config(self.window.config)
         self._loading = True
@@ -445,6 +479,47 @@ class KeyboardPage(Adw.PreferencesPage):
             self.flash_row.set_subtitle(
                 CHARGER_FLASH_UNRESTORABLE_HINT
                 if mode in kbdcolor.FLASH_UNRESTORABLE_MODES else "")
+
+    def _idle_support_done(self, status, error):
+        status = keyboard_idle.UNAVAILABLE if error is not None else status
+        self.timeout_group.set_description(status)
+        self._idle_supported = status != keyboard_idle.UNAVAILABLE
+        self.timeout_ac_row.set_sensitive(self._idle_supported)
+        self.timeout_battery_row.set_sensitive(self._idle_supported)
+        self._update_timeout_disable()
+
+    def _update_timeout_disable(self):
+        enabled = any(keyboard_idle.timeout_seconds(self.window.config, ac)
+                      for ac in (True, False))
+        self.timeout_disable_button.set_visible(
+            self._idle_supported is False and enabled)
+
+    def _disable_timeouts(self, _button):
+        values = {"kbd_idle_timeout_ac_seconds": 0,
+                  "kbd_idle_timeout_battery_seconds": 0}
+        try:
+            config_mod.update_config(lambda cfg: cfg.update(values))
+        except OSError as exc:
+            self.window.toast(f"Could not save keyboard timeouts: {exc}")
+            return
+        self.window.config.update(values)
+        self.timeout_ac_row.set_value(0)
+        self.timeout_battery_row.set_value(0)
+        self._update_timeout_disable()
+
+    def _on_timeout_changed(self, row, _value, source):
+        if self._loading:
+            return
+        value = int(round(row.get_value()))
+        key = f"kbd_idle_timeout_{source}_seconds"
+        try:
+            config_mod.update_config(lambda cfg: cfg.update({key: value}))
+        except OSError as exc:
+            row.set_value(keyboard_idle.timeout_seconds(self.window.config, source == "ac"))
+            self.window.toast(f"Could not save keyboard timeout: {exc}")
+            return
+        self.window.config[key] = value
+        self._update_timeout_disable()
 
     # -- brightness ----------------------------------------------------------
 

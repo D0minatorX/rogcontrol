@@ -22,7 +22,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from .. import config as config_mod  # noqa: E402
-from .. import hardware  # noqa: E402
+from .. import hardware, charge_once  # noqa: E402
 from ..sampling import SampleFailures  # noqa: E402
 from ..widgets.slider_row import SliderRow  # noqa: E402
 from ..widgets.stat_row import StatCell, build_stat_row  # noqa: E402
@@ -142,6 +142,13 @@ class BatteryPage(Adw.PreferencesPage):
             minimum=0, maximum=100, step=1, unit="%", settle_ms=DEBOUNCE_MS)
         self.limit_row.connect("changed", self._on_limit_changed)
         limit.add(self.limit_row)
+        self.once_row = Adw.ActionRow(title="Charge to 100% once")
+        self.once_row.set_subtitle("Restore the normal limit at 100% or after unplugging")
+        self.once_button = Gtk.Button(label="Start", valign=Gtk.Align.CENTER)
+        self.once_button.connect("clicked", self._on_once_clicked)
+        self.once_row.add_suffix(self.once_button)
+        limit.add(self.once_row)
+        self._once_state = None
         if not self.caps.get("charge_limit"):
             # The only row "Charging" has -- nothing left in the group.
             self.limit_group.set_visible(False)
@@ -237,6 +244,7 @@ class BatteryPage(Adw.PreferencesPage):
         return {"percent": percent, "charging": charging,
                 "ac": hardware.is_ac_connected(),
                 "limit": hardware.read_charge_limit(),
+                "charge_once": charge_once.read_state(),
                 # Re-read every tick rather than once at construction: the
                 # firmware re-learns full-charge capacity after a deep
                 # cycle, and three small sysfs reads every five seconds is
@@ -256,6 +264,7 @@ class BatteryPage(Adw.PreferencesPage):
         self._render(data)
 
     def _render(self, data):
+        self._render_once(data)
         self._render_health(data.get("health"))
         percent = data.get("percent")
         self.charge_value.set_text(
@@ -276,6 +285,37 @@ class BatteryPage(Adw.PreferencesPage):
         if limit is not None and limit < 100:
             state += f" — firmware is holding a {limit}% limit"
         self.charge_row.set_subtitle(state)
+
+    def _render_once(self, data):
+        self._once_state = state = data.get("charge_once")
+        self.once_button.set_label("Cancel" if state else "Start")
+        if state and state.get("restoring"):
+            message = "Restoring the normal charge limit — retrying until confirmed"
+        elif state and data.get("limit") != 100:
+            message = "100% request pending — firmware has not confirmed it yet"
+        elif state:
+            message = ("100% limit active — restores at full charge or after unplugging"
+                       if state.get("seen_ac") else
+                       "100% limit active — waiting for a charger")
+        else:
+            message = "Restore the normal limit at 100% or after unplugging"
+        self.once_row.set_subtitle(message)
+
+    def _on_once_clicked(self, _button):
+        if self._busy:
+            return
+        self._busy = True
+        self.once_button.set_sensitive(False)
+        action = charge_once.cancel if self._once_state else charge_once.start
+        self.window.apply_async(action, self._finish_once)
+
+    def _finish_once(self, result, error):
+        self._busy = False
+        self.once_button.set_sensitive(True)
+        ok, message = (False, str(error)) if error is not None else result
+        if not ok:
+            self.window.toast(f"Charge request failed: {message}")
+        self._refresh_now()
 
     def _render_health(self, health):
         """Draw the wear row, or hide it on hardware that cannot say.
@@ -319,30 +359,31 @@ class BatteryPage(Adw.PreferencesPage):
         percent = int(self.limit_row.get_value())
         self._busy = True
         self.window.apply_async(
-            lambda: hardware.run_helper("charge", percent),
+            lambda: charge_once.set_limit(percent),
             lambda result, error: self._finish(label, percent, result, error))
         return GLib.SOURCE_REMOVE
 
     def _finish(self, label, percent, result, error):
         self._busy = False
         ok, message = (False, str(error)) if error is not None else result
-        if ok:
-            # Top level, not inside the profile: see the module docstring.
-            self.window.config["charge_limit"] = percent
-            config_mod.save_config(self.window.config)
-            self._applied = self.limit_row.get_value()
-            self.window.toast(f"{label}.")
-            # The firmware clamps and reports back; show what it took rather
-            # than waiting five seconds to contradict the toast.
-            self._refresh_now()
+        # The worker saves only this setting against fresh disk config. Never
+        # write the window's stale profile snapshot after a helper call.
+        saved = config_mod.load_config()
+        self.window.config["charge_limit"] = saved.get("charge_limit", 100)
+        self._applied = self.window.config["charge_limit"]
+        if error is not None:
+            self.window.toast(f"Charge limit request failed: {message}")
+            self._loading = True
+            try:
+                self.limit_row.set_value(self._applied)
+            finally:
+                self._loading = False
+        elif ok:
+            suffix = " Normal limit saved for after this charge." if self._once_state else ""
+            self.window.toast(f"{label}.{suffix}")
         else:
-            self.window.toast(f"{label} failed: {message}")
-            if self._applied is not None:
-                self._loading = True
-                try:
-                    self.limit_row.set_value(self._applied)
-                finally:
-                    self._loading = False
+            self.window.toast(f"Charge limit saved; apply pending: {message}")
+        self._refresh_now()
 
     # -- automatic switching -------------------------------------------------
 
