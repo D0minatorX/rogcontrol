@@ -14,6 +14,7 @@ APPEARANCE_LABELS = ("System", "Light", "Dark")
 
 _appearance_provider = None
 _appearance_display = None
+_widget_provider = None
 
 
 def _appearance_css(dark):
@@ -78,7 +79,7 @@ def appearance_index(config):
 
 
 def apply_appearance(config):
-    global _appearance_provider, _appearance_display
+    global _appearance_provider, _appearance_display, _widget_provider
     index = appearance_index(config)
     schemes = (Adw.ColorScheme.DEFAULT, Adw.ColorScheme.FORCE_LIGHT,
                Adw.ColorScheme.FORCE_DARK)
@@ -90,6 +91,13 @@ def apply_appearance(config):
         _appearance_provider = None
         _appearance_display = None
     display = Gdk.Display.get_default()
+    # Structural widget styles belong to every theme, including System.
+    if display is not None and _widget_provider is None:
+        _widget_provider = Gtk.CssProvider()
+        _widget_provider.load_from_data(
+            (Path(__file__).resolve().parent / "widgets.css").read_bytes())
+        Gtk.StyleContext.add_provider_for_display(
+            display, _widget_provider, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
     if index and display is not None:
         provider = Gtk.CssProvider()
         provider.load_from_data(_appearance_css(index == 2))

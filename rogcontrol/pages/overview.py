@@ -194,8 +194,7 @@ class OverviewPage(Adw.PreferencesPage):
         title = Gtk.Label(label="View", xalign=0, hexpand=True)
         title.add_css_class("heading")
         bar.append(title)
-        selector = Gtk.Box()
-        selector.add_css_class("linked")
+        selector = Gtk.Box(spacing=8)
         self.list_button = Gtk.ToggleButton(label="List")
         self.dashboard_button = Gtk.ToggleButton(label="Dashboard")
         self.dashboard_button.set_group(self.list_button)
@@ -231,8 +230,8 @@ class OverviewPage(Adw.PreferencesPage):
         self.dashboard_group = Adw.PreferencesGroup()
         self.dashboard_flow = Gtk.FlowBox(
             selection_mode=Gtk.SelectionMode.NONE,
-            min_children_per_line=1, max_children_per_line=2,
-            column_spacing=12, row_spacing=12, homogeneous=False)
+            min_children_per_line=2, max_children_per_line=2,
+            column_spacing=12, row_spacing=12, homogeneous=True)
         self.dashboard_flow.add_css_class("overview-dashboard")
         self.dashboard_group.add(self.dashboard_flow)
         self.add(self.dashboard_group)
@@ -246,7 +245,7 @@ class OverviewPage(Adw.PreferencesPage):
         )
         for title, readings in cards:
             card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
-                           hexpand=True, width_request=240)
+                           hexpand=True)
             card.add_css_class("card")
             card.add_css_class("overview-card")
             heading = Gtk.Label(label=title, xalign=0)

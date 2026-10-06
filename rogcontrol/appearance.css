@@ -145,7 +145,3 @@ headerbar menubutton > button:hover { background-color: @rog_hover_color; }
   box-shadow: inset 3px 0 @accent_bg_color;
   background-color: alpha(@accent_bg_color, 0.08);
 }
-.overview-dashboard > flowboxchild { padding: 0; }
-.overview-card { padding: 14px; }
-.overview-primary { font-size: 1.5em; font-weight: 700; }
-.overview-secondary { font-weight: 500; }

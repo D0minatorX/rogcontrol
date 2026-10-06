@@ -865,7 +865,7 @@ for sub in pages widgets; do
 done
 # UI icons are loaded directly from these files, independent of OS themes.
 install -m 644 "$SCRIPT_DIR"/icons/*.svg "$LIBDIR/icons/"
-install -m 644 "$SCRIPT_DIR/appearance.css" "$LIBDIR/appearance.css"
+install -m 644 "$SCRIPT_DIR"/*.css "$LIBDIR/"
 say "Application package installed to ~/.local/lib/rogcontrol"
 
 # The launcher. `python3 -m rogcontrol` with ~/.local/lib on the path, which
