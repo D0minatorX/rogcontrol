@@ -58,6 +58,7 @@ for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
 
 from rogcontrol import config as config_mod  # noqa: E402
 from rogcontrol import fancurve  # noqa: E402
+from rogcontrol import gamescope  # noqa: E402
 from rogcontrol import hardware  # noqa: E402
 
 # The curve maths and the helper call are the package's, not this script's.
@@ -378,6 +379,17 @@ def main(argv=None):
     # undervolt that is actually the problem.
     force_stock_undervolt = False
     if not profile_only:
+        # After shutdown in Gamescope, current_profile still names its
+        # temporary profile. The enforcer starts AFTER this service's slow
+        # hardware retries, so restore before the first login apply. Leave
+        # the journal pending for the enforcer to apply and acknowledge;
+        # interruption here must not lose the original profile.
+        if gamescope.has_saved_profile() and gamescope.session_active() is False:
+            try:
+                gamescope.reconcile(False, config_path=CONFIG_PATH)
+            except (OSError, ValueError) as error:
+                hardware.log(f"Gamescope login restore deferred: {error}",
+                             "WARN", source="apply")
         cfg = config_mod.load_config()
         force_stock_undervolt = config_mod.record_boot_attempt(cfg)
         # Written now, before the risky write below, not after this

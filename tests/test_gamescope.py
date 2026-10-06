@@ -94,6 +94,37 @@ class GamescopeTests(unittest.TestCase):
         self.assertEqual(self.saved()["current_profile"], "Performance")
         self.assertTrue(self.state_path.exists())
 
+    def test_login_restores_before_first_hardware_apply(self):
+        spec = importlib.util.spec_from_file_location(
+            "gamescope_test_apply", Path(__file__).parents[1] /
+            "rogcontrol" / "rogcontrol-apply.py")
+        login = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(login)
+        for active, args, expected in (
+                (False, [], "Balanced Power"),
+                (True, [], "Performance"),
+                (None, [], "Performance"),
+                (False, ["--profile-only"], "Performance")):
+            with self.subTest(active=active, args=args):
+                config.save_config(self.cfg, str(self.config_path))
+                self.state_path.unlink(missing_ok=True)
+                self.tick(True)  # Power off without an exit transition.
+                applied = []
+                with patch.object(login, "CONFIG_PATH", str(self.config_path)), \
+                        patch.object(config, "CONFIG_PATH", str(self.config_path)), \
+                        patch.object(self.gamescope, "STATE_PATH", str(self.state_path)), \
+                        patch.object(self.gamescope, "session_active", return_value=active), \
+                        patch.object(config, "record_boot_attempt", return_value=False), \
+                        patch.object(login, "_spawn_survival_watchdog"), \
+                        patch.object(login, "RETRIES", 1), \
+                        patch.object(login, "apply_once", side_effect=lambda cfg, **kw:
+                                     applied.append(cfg["current_profile"])):
+                    login.main(args)
+                self.assertEqual(applied, [expected])
+                self.assertEqual(self.saved()["current_profile"], expected)
+                # Keep recovery pending until the enforcer acknowledges it.
+                self.assertTrue(self.state_path.exists())
+
     def test_deleted_previous_profile_keeps_valid_current_profile(self):
         self.tick(True)
         cfg = self.saved()
