@@ -58,7 +58,7 @@ for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
 
 from rogcontrol import config as config_mod  # noqa: E402
 from rogcontrol import fancurve  # noqa: E402
-from rogcontrol import gamescope, charge_once  # noqa: E402
+from rogcontrol import gamescope, charge_once, keyboard_power  # noqa: E402
 from rogcontrol import hardware  # noqa: E402
 
 # The curve maths and the helper call are the package's, not this script's.
@@ -318,6 +318,10 @@ def apply_once(config, profile_only=False, force_stock_undervolt=False):
     # profile switch.
     if "kbd_brightness" in config and not profile_only:
         run_helper("kbd", config["kbd_brightness"])
+    if not profile_only:
+        ok, message = keyboard_power.apply_saved()
+        if not ok:
+            hardware.log(f"lighting power settings pending: {message}", "WARN", source="apply")
     if "charge_limit" in config:
         ok, message = charge_once.tick(config_path=CONFIG_PATH, enforce_normal=True)
         if not ok:

@@ -1,10 +1,11 @@
 """Small background conveniences, independent of slow fan/profile writes."""
 
-from . import charge_once, config, display_refresh, hardware
+from . import charge_once, config, display_refresh, hardware, keyboard_power
 
 
 def run(stop_event):
-    """Reconcile charging and display policy every five seconds."""
+    """Reconcile charging, display and lighting policies every five seconds."""
+    lighting = keyboard_power.Controller()
     while not stop_event.is_set():
         try:
             ok, message = charge_once.tick()
@@ -23,5 +24,14 @@ def run(stop_event):
         except Exception as error:
             hardware.log(f'Automatic display refresh: {error}', 'ERROR',
                          source='automation', dedupe_key='display-refresh')
+        try:
+            cfg = config.load_config()
+            ok, message = lighting.tick(cfg, hardware.is_ac_connected())
+            if not ok:
+                hardware.log(message, 'WARN', source='automation',
+                             dedupe_key='keyboard-power')
+        except Exception as error:
+            hardware.log(f'Lighting power states: {error}', 'ERROR',
+                         source='automation', dedupe_key='keyboard-power')
         if stop_event.wait(5):
             break

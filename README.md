@@ -100,6 +100,25 @@ detection behavior and keep unsupported hardware unaffected.
 ### ⌨️ Keyboard
 Brightness and ten lighting modes: Static, Breathing, Pulse, Colour Cycle, Rainbow, Gradient Static, GPU Temp Colour, CPU Temp Colour, Battery Level, and Ambient (follows what's on screen, via the desktop's screen-sharing portal).
 
+On the **G614PR with the ASUS 19b6 controller**, **Lighting power states**
+adds separate Keyboard and Lightbar controls for Boot, Sleep, Shutdown,
+Awake on AC/USB-C, and Awake on Battery. Enable **Manage lighting power
+states** to apply them; existing firmware settings are left untouched until
+you opt in. These checkboxes show saved preferences, because the controller
+does not provide verified power-state readback. Turning management off stops
+applying the policy and leaves its last settings in place.
+
+The Battery checkbox replaces that zone's Awake setting while unplugged.
+The background service detects power changes within about five seconds,
+even with the window closed and automatic profile switching disabled.
+Saved settings are also applied at login, and failed writes are retried.
+Power-state controls allow lighting; they do not raise zero brightness or
+replace the selected effect. Avoid enabling lighting management in both
+ROG Control and G-Helper at the same time, since they control the same device.
+
+Power-zone support is intentionally limited to this identified controller
+and model; other ASUS models need their own verified zone/protocol mapping.
+
 *Requires: `rogauracore`. Modes your hardware can't perform are not offered.*
 
 ### 🔋 Battery

@@ -135,6 +135,7 @@ say "Launchers, autostart and icon removed"
 
 step "Removing the privileged helper"
 sudo rm -f /usr/local/lib/rogcontrol/nvidia_clocks.py
+sudo rm -f /usr/local/lib/rogcontrol/aura_power.py
 if [ -e /usr/local/bin/rogcontrol-helper ] || sudo test -e "$SUDOERS" 2>/dev/null; then
     sudo rm -f /usr/local/bin/rogcontrol-helper
     sudo rm -f "$SUDOERS"

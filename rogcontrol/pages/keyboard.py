@@ -52,6 +52,7 @@ from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
 from .. import kbdcolor  # noqa: E402
 from .. import keyboard_idle  # noqa: E402
+from .keyboard_power import KeyboardPowerControls  # noqa: E402
 from ..widgets.ambient import AmbientSampler  # noqa: E402
 from ..widgets.color_picker import ColorButton  # noqa: E402
 from ..widgets.slider_row import SliderRow  # noqa: E402
@@ -268,6 +269,9 @@ class KeyboardPage(Adw.PreferencesPage):
         window = self.window
         window.apply_async(keyboard_idle.support_status, self._idle_support_done)
 
+        self.power_controls = KeyboardPowerControls(self.window)
+        self.add(self.power_controls)
+
         lighting = Adw.PreferencesGroup(title="Lighting",
                                         description=EFFECT_DESCRIPTION)
         lighting.set_tooltip_text(EFFECT_TOOLTIP)
@@ -352,6 +356,7 @@ class KeyboardPage(Adw.PreferencesPage):
             self.brightness_row.set_value(self._current_brightness())
             self.timeout_ac_row.set_value(keyboard_idle.timeout_seconds(self.window.config, True))
             self.timeout_battery_row.set_value(keyboard_idle.timeout_seconds(self.window.config, False))
+            self.power_controls.reload()
             self._select_mode(saved.get("mode") or "Static")
             self._set_button(self.color_button,
                              kbdcolor.saved_color(saved))

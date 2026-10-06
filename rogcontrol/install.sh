@@ -771,6 +771,8 @@ sudo install -o root -g root -m 644 "$SCRIPT_DIR/nvidia_api.py" \
     /usr/local/lib/rogcontrol/nvidia_api.py
 sudo install -o root -g root -m 644 "$SCRIPT_DIR/nvidia_clocks.py" \
     /usr/local/lib/rogcontrol/nvidia_clocks.py
+sudo install -o root -g root -m 644 "$SCRIPT_DIR/aura_power.py" \
+    /usr/local/lib/rogcontrol/aura_power.py
 say "Helper installed at /usr/local/bin/rogcontrol-helper"
 
 # The app calls the helper through `sudo -n` (non-interactive) from a
