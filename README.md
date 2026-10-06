@@ -275,7 +275,7 @@ Full details, including binding the keyboard shortcuts, are in [1-HOW-TO-INSTALL
 
 ## ⌨️ Keyboard shortcuts
 
-**Built-in ASUS bindings and Fn Lock:** open **Keyboard → Key bindings and Fn Lock**.
+**Built-in ASUS bindings and Fn Lock:** open **Keyboard → Key bindings and FN lock**.
 Both features are disabled by default. Quit G-Helper and remove overlapping desktop
 shortcuts before enabling them; passive button assignments do not suppress actions
 performed by other applications or the firmware.
@@ -283,14 +283,13 @@ performed by other applications or the firmware.
 - Assign the ROG/M5, Fn+F4 (Aura), and Fn+F5/M4 (Performance) buttons to show/hide
   ROG Control, cycle profiles or lighting effects, adjust lighting brightness/speed,
   or take no ROG Control action.
-- Enable **software Fn Lock** for the ASUS `0b05:19b6` built-in keyboard, then choose
+- Enable **FN lock** for the ASUS `0b05:19b6` built-in keyboard, then choose
   media actions for F1–F12. **Super+F2** switches between normal F-keys and media
   actions. Ctrl/Alt/Shift/Super shortcuts keep their F-key behavior (except Super+F2).
   The physical Fn modifier remains controlled by the firmware.
 - The enforcer handles input with the window closed, on X11 or Wayland. It pauses
   while logind reports a locked/inactive local graphical session and reconnects
-  after resume. Release held keys before enabling Fn Lock. The status row reports
-  permission, device-grab and background-service problems.
+  after resume. Release held keys before enabling Fn Lock. Input availability is checked before enabling the controls.
 
 Run the updated installer to install `python-evdev`, load `uinput`, and update the
 background service. Its udev rules grant the active local session access to the

@@ -252,30 +252,6 @@ class KeyboardPage(Adw.PreferencesPage):
         self.brightness_row.connect("changed", self._on_brightness_changed)
         backlight.add(self.brightness_row)
 
-        self.timeout_group = Adw.PreferencesGroup(
-            title="Backlight inactivity timeout",
-            description="Checking desktop idle support… 0 seconds disables the timeout.")
-        self.add(self.timeout_group)
-        self._idle_supported = None
-        self.timeout_disable_button = Gtk.Button(label="Turn off saved timeouts")
-        self.timeout_disable_button.set_visible(False)
-        self.timeout_disable_button.connect("clicked", self._disable_timeouts)
-        self.timeout_group.set_header_suffix(self.timeout_disable_button)
-        for source, title in (("ac", "On external power"), ("battery", "On battery")):
-            row = SliderRow(title=title, minimum=0, maximum=3600, step=1, unit="s",
-                            tooltip="Turn off after this many seconds without keyboard or pointer activity. 0 disables it.")
-            row.connect("changed", self._on_timeout_changed, source)
-            setattr(self, f"timeout_{source}_row", row)
-            self.timeout_group.add(row)
-        window = self.window
-        window.apply_async(keyboard_idle.support_status, self._idle_support_done)
-
-        self.binding_controls = KeyboardBindingsControls(self.window)
-        self.add(self.binding_controls)
-
-        self.power_controls = KeyboardPowerControls(self.window)
-        self.add(self.power_controls)
-
         lighting = Adw.PreferencesGroup(title="Lighting",
                                         description=EFFECT_DESCRIPTION)
         lighting.set_tooltip_text(EFFECT_TOOLTIP)
@@ -312,6 +288,38 @@ class KeyboardPage(Adw.PreferencesPage):
         self.add(self.profile_group)
 
         self._build_charger_flash()
+
+        self.timeout_group = Adw.PreferencesGroup(
+            title="Backlight inactivity timeout",
+            description="Checking desktop idle support… 0 seconds disables the timeout.")
+        self.add(self.timeout_group)
+        self._idle_supported = None
+        self.timeout_disable_button = Gtk.Button(label="Turn off saved timeouts")
+        self.timeout_disable_button.set_visible(False)
+        self.timeout_disable_button.connect("clicked", self._disable_timeouts)
+        self.timeout_group.set_header_suffix(self.timeout_disable_button)
+        timeouts = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
+                           homogeneous=True)
+        self.timeout_group.add(timeouts)
+        for source, title in (("ac", "On external power"), ("battery", "On battery")):
+            row = Adw.SpinRow(title=title, subtitle="Seconds · 0 = off",
+                              adjustment=Gtk.Adjustment(lower=0, upper=3600,
+                                                        step_increment=1, page_increment=30),
+                              digits=0)
+            row.connect("notify::value", self._on_timeout_changed, source)
+            setattr(self, f"timeout_{source}_row", row)
+            box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, hexpand=True)
+            box.add_css_class("boxed-list")
+            box.append(row)
+            timeouts.append(box)
+        window = self.window
+        window.apply_async(keyboard_idle.support_status, self._idle_support_done)
+
+        self.power_controls = KeyboardPowerControls(self.window)
+        self.add(self.power_controls)
+
+        self.binding_controls = KeyboardBindingsControls(self.window)
+        self.add(self.binding_controls)
 
         # Keyboard controls are deliberately NEVER disabled by capability
         # detection, unlike the other pages. Detection runs once at startup,
@@ -525,7 +533,11 @@ class KeyboardPage(Adw.PreferencesPage):
         try:
             config_mod.update_config(lambda cfg: cfg.update({key: value}))
         except OSError as exc:
-            row.set_value(keyboard_idle.timeout_seconds(self.window.config, source == "ac"))
+            self._loading = True
+            try:
+                row.set_value(keyboard_idle.timeout_seconds(self.window.config, source == "ac"))
+            finally:
+                self._loading = False
             self.window.toast(f"Could not save keyboard timeout: {exc}")
             return
         self.window.config[key] = value

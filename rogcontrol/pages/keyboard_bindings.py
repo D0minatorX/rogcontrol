@@ -5,7 +5,7 @@ from .. import config, hotkeys, fnlock
 
 class KeyboardBindingsControls(Adw.PreferencesGroup):
     def __init__(self, window):
-        super().__init__(title='Key bindings and Fn Lock', description=(
+        super().__init__(title='Key bindings and FN lock', description=(
             'Quit G-Helper and disable overlapping desktop shortcuts before enabling. '
             'Works through ASUS input devices on X11 and Wayland. '
             'Actions pause when your desktop session is locked or inactive.'))
@@ -24,8 +24,7 @@ class KeyboardBindingsControls(Adw.PreferencesGroup):
             row.connect('notify::selected', self._changed, 'key_bindings')
             self.buttons[key] = row
             self.add(row)
-        self.fn_enabled = Adw.SwitchRow(title='Enable software Fn Lock', subtitle=(
-            'ASUS 19b6 built-in keyboard only. Re-emits keyboard input through a virtual device.'))
+        self.fn_enabled = Adw.SwitchRow(title='FN lock')
         self.fn_enabled.connect('notify::active', self._changed, 'fn_lock')
         self.add(self.fn_enabled)
         self.media = Adw.SwitchRow(title='Media actions on F1–F12', subtitle=(
@@ -47,8 +46,6 @@ class KeyboardBindingsControls(Adw.PreferencesGroup):
         self.recheck.connect('clicked', self._check)
         self.status.add_suffix(self.recheck)
         self.add(self.status)
-        self.runtime = Adw.ActionRow(title='Background listener', subtitle='Enable a feature to start listening.')
-        self.add(self.runtime)
         self.connect('map', self._mapped)
         self.connect('unmap', self._unmapped)
         self.reload()
@@ -125,7 +122,6 @@ class KeyboardBindingsControls(Adw.PreferencesGroup):
             return
         self.window.config[section] = saved
         self.reload()
-        self.runtime.set_subtitle('Saved; waiting for the background listener.')
 
     def _mapped(self, *_args):
         if self._timer is None:
@@ -138,7 +134,6 @@ class KeyboardBindingsControls(Adw.PreferencesGroup):
             self._timer = None
 
     def _refresh(self):
-        self.runtime.set_subtitle(hotkeys.runtime_status())
         # A keyboard toggle changes this value outside the GTK process.
         try:
             latest = config.load_config()
