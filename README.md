@@ -172,7 +172,7 @@ A switch for the boot chime, remembered so a boot-apply service can restore it a
 - System, Light, and Dark appearance under **System → Appearance**, saved between launches
 - Live RAM and VRAM use on the overview page
 - A tray icon that shows and switches the active profile (needs `libayatana-appindicator`)
-- Keyboard shortcuts for cycling profiles and lighting modes (bind them yourself — see [1-HOW-TO-INSTALL.txt](rogcontrol/1-HOW-TO-INSTALL.txt))
+- Optional ASUS button assignments and software Fn Lock, plus commands for custom desktop shortcuts (see [Keyboard shortcuts](#keyboard-shortcuts))
 - Desktop notifications for background events (needs `libnotify`)
 - Everything you configure lives in one file: `~/.config/rogcontrol.json`
 
@@ -275,7 +275,38 @@ Full details, including binding the keyboard shortcuts, are in [1-HOW-TO-INSTALL
 
 ## ⌨️ Keyboard shortcuts
 
-The installer does not bind these for you — a hotkey is a personal choice, and every desktop binds them differently. These scripts are installed to `~/.local/bin`, ready to bind to any key you like:
+**Built-in ASUS bindings and Fn Lock:** open **Keyboard → Key bindings and Fn Lock**.
+Both features are disabled by default. Quit G-Helper and remove overlapping desktop
+shortcuts before enabling them; passive button assignments do not suppress actions
+performed by other applications or the firmware.
+
+- Assign the ROG/M5, Fn+F4 (Aura), and Fn+F5/M4 (Performance) buttons to show/hide
+  ROG Control, cycle profiles or lighting effects, adjust lighting brightness/speed,
+  or take no ROG Control action.
+- Enable **software Fn Lock** for the ASUS `0b05:19b6` built-in keyboard, then choose
+  media actions for F1–F12. **Super+F2** switches between normal F-keys and media
+  actions. Ctrl/Alt/Shift/Super shortcuts keep their F-key behavior (except Super+F2).
+  The physical Fn modifier remains controlled by the firmware.
+- The enforcer handles input with the window closed, on X11 or Wayland. It pauses
+  while logind reports a locked/inactive local graphical session and reconnects
+  after resume. Release held keys before enabling Fn Lock. The status row reports
+  permission, device-grab and background-service problems.
+
+Run the updated installer to install `python-evdev`, load `uinput`, and update the
+background service. Its udev rules grant the active local session access to the
+ASUS WMI hotkeys, the supported `19b6` keyboard, and `/dev/uinput`. They do not add
+users to the `input` group or make devices world-writable. Software Fn Lock needs
+access to the full built-in keyboard stream to forward normal typing; ordinary
+keys are never logged. The input backend is currently limited to these ASUS devices;
+other keyboard models and arbitrary user-defined key combinations remain available
+through desktop shortcuts below. GNOME was used for local validation; physical
+KDE key presses still need verification.
+
+The implementation was informed by [G-Helper Linux's ASUS event handling](https://github.com/utajum/g-helper-linux/blob/4165a2ae96194dc1871c73c7b212b6f0e7468092/src/Platform/Linux/Asus/LinuxAsusWmi.cs)
+and its separate software Fn Lock design, with independently implemented Python
+input handling. The decoder follows the [Linux input event protocol](https://www.kernel.org/doc/html/latest/input/event-codes.html).
+
+For custom desktop shortcuts, the installer does not bind these commands for you — a hotkey is a personal choice, and every desktop binds them differently. These scripts are installed to `~/.local/bin`, ready to bind to any key you like:
 
 | Command | Does |
 |---|---|

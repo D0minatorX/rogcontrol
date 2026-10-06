@@ -395,6 +395,7 @@ ensure_asus_linux_copr() {
 
 # name|check-command|pacman|dnf|apt
 DEPS=(
+  "python-evdev (key bindings and Fn Lock)|python3 -c 'import evdev'|python-evdev|python3-evdev|python3-evdev"
   "python-gobject|python3 -c 'import gi'|python-gobject|python3-gobject|python3-gi"
   "gtk3 (tray icon)|python3 -c 'import gi; gi.require_version(\"Gtk\",\"3.0\")'|gtk3|gtk3|libgtk-3-0"
   "libnotify|command -v notify-send|libnotify|libnotify|libnotify-bin"
@@ -796,6 +797,17 @@ else
     fi
     rm -f "$tmp"
 fi
+
+# ------------------------------------------------------- keyboard input -----
+step "Installing optional keyboard input support"
+sudo install -o root -g root -m 644 "$SCRIPT_DIR/70-rogcontrol-input.rules" /etc/udev/rules.d/70-rogcontrol-input.rules
+sudo install -d -m 755 /etc/modules-load.d
+printf '%s\n' uinput | sudo tee /etc/modules-load.d/rogcontrol-uinput.conf >/dev/null
+sudo modprobe uinput || warn "Could not load uinput; Fn Lock will stay unavailable."
+sudo udevadm control --reload-rules
+sudo udevadm trigger --action=change --subsystem-match=input
+sudo udevadm trigger --action=change --sysname-match=uinput
+say "ASUS input access installed; key bindings and Fn Lock remain opt-in."
 
 # ------------------------------------------------------------- sleep hook ---
 # The suspend/resume fan-drop hook is gone (no longer wanted). Clean up any

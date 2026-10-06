@@ -74,7 +74,7 @@ from rogcontrol import hardware  # noqa: E402
 from rogcontrol import kbdcolor  # noqa: E402
 from rogcontrol import profiles as profiles_mod  # noqa: E402
 from rogcontrol import gamescope  # noqa: E402
-from rogcontrol import daily_automation, keyboard_idle  # noqa: E402
+from rogcontrol import daily_automation, keyboard_idle, hotkeys  # noqa: E402
 
 # One copy of the curve maths, in the package. See rogcontrol-apply.py.
 interpolate_curve = fancurve.interpolate_curve
@@ -1725,7 +1725,7 @@ def _on_terminate(_signum, _frame):
 
 def main():
     signal.signal(signal.SIGTERM, _on_terminate)
-    for target in (daily_automation.run, keyboard_idle.run):
+    for target in (daily_automation.run, keyboard_idle.run, hotkeys.run):
         worker = threading.Thread(target=target, args=(_automation_stop,),
                                   daemon=True)
         _automation_threads.append(worker)

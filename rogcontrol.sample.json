@@ -674,6 +674,8 @@
   },
   "kbd_idle_timeout_ac_seconds": 0,
   "keyboard_power": null,
+  "key_bindings": null,
+  "fn_lock": null,
   "kbd_idle_timeout_battery_seconds": 0,
   "auto_display_refresh": false,
   "fan_calibration_prompted": true,

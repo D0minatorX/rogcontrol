@@ -33,6 +33,8 @@ DEFAULT_CONFIG = {
     "kbd_brightness": 2,
     # None leaves firmware settings untouched until the user opts in.
     "keyboard_power": None,
+    "key_bindings": None,
+    "fn_lock": None,
     "charge_limit": 100,
     "kbd_idle_timeout_ac_seconds": 0,
     "kbd_idle_timeout_battery_seconds": 0,
