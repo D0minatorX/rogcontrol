@@ -939,7 +939,29 @@ sed "s|/home/YOUR_USERNAME|$HOME|g" "$SCRIPT_DIR/org.rogcontrol.RogControl.deskt
 sed "s|/home/YOUR_USERNAME|$HOME|g" "$SCRIPT_DIR/rogcontrol-cycle-profile.desktop" \
     > "$HOME/.local/share/applications/rogcontrol-cycle-profile.desktop"
 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
-say "App-grid entry installed; the tray starts at login via its own service"
+say "App-grid entry installed; tray startup follows the Start on boot setting"
+
+# --- fresh install: create settings before starting any service --------------
+# Without this a fresh install leaves no config at all, and the boot-apply
+# service returns immediately because there is nothing to apply -- so a new
+# user gets whatever the firmware happened to be doing until they open the
+# window. Create GPU-aware defaults before the startup helper reads config;
+# the apply service below then applies them only when Start on boot is enabled.
+#
+# load_config() returns GPU-aware defaults; save_config() writes them only
+# when the file is absent, preserving existing settings on updates.
+if [ ! -f "$APP_CONFIG" ]; then
+    if PYTHONPATH="$HOME/.local/lib" python3 -c "
+from rogcontrol import config, hardware
+limits = hardware.detect_gpu_limits()
+config.save_config(config.load_config(gpu_min_w=limits['min_w'], gpu_max_w=limits['max_w']))
+" 2>/dev/null
+    then
+        say "Default settings written to $(basename "$APP_CONFIG")"
+    else
+        warn "Could not write the default settings - open the app once to create them"
+    fi
+fi
 
 # -------------------------------------------------------------- services ----
 step "Installing services"
@@ -948,36 +970,43 @@ install -m 644 "$SCRIPT_DIR/rogcontrol-apply.service" \
                "$SCRIPT_DIR/rogcontrol-enforcer.service" \
                "$SCRIPT_DIR/rogcontrol-tray.service" "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
-systemctl --user enable --now rogcontrol-apply.service    >/dev/null 2>&1 || true
-# This is also what brings the enforcer back up after it was stopped for the
-# library replacement above -- restart starts a stopped unit.
-systemctl --user restart      rogcontrol-enforcer.service >/dev/null 2>&1 || true
-systemctl --user enable       rogcontrol-enforcer.service >/dev/null 2>&1 || true
-say "Boot-reapply and enforcer services enabled"
-
-# The tray used to be a plain XDG autostart entry, which only ever runs once
-# at login: a crash (a D-Bus hiccup, the AppIndicator extension not ready
-# yet) killed it for the rest of the session with nothing to bring it back.
-# A user unit gets the same Restart=on-failure the enforcer already has. Any
-# leftover autostart entry from an older install is removed so login never
-# starts two trays fighting over the config. Likewise, an update running
-# over a tray that was started the old way (nohup, or that autostart entry)
-# is not a unit systemd knows about, so "restart" below would not touch it
-# and would leave it running alongside the new service-managed one -- killed
-# by hand first so there is exactly one tray either way.
-rm -f "$HOME/.config/autostart/rogcontrol-autostart.desktop"
+# Stop any tray launched by a legacy desktop entry before applying the saved
+# preference. The shared startup helper removes both legacy autostart entries.
 pkill -f 'python3? .*/rogcontrol-tray$' 2>/dev/null || true
-systemctl --user restart rogcontrol-tray.service >/dev/null 2>&1 || true
-systemctl --user enable  rogcontrol-tray.service  >/dev/null 2>&1 || true
+START_ON_BOOT=unknown
+if START_ON_BOOT="$(PYTHONPATH="$HOME/.local/lib" python3 - <<'PY_STARTUP'
+import sys
+from rogcontrol import startup
 
-# Checked rather than assumed, because this install stopped it on purpose:
-# an enforcer that fails to come back is the one failure mode that is
-# invisible from the window and only shows up as fan curves quietly drifting.
-if systemctl --user is-active --quiet rogcontrol-enforcer.service 2>/dev/null; then
-    say "Enforcer is running on the new library"
-elif [ "$ENFORCER_WAS_RUNNING" = 1 ]; then
-    warn "The enforcer did not come back up after the update."
-    warn "  systemctl --user status rogcontrol-enforcer.service"
+enabled = startup.is_enabled()
+print('1' if enabled else '0')
+try:
+    startup.configure_services(enabled, start_now=True)
+except Exception as error:
+    print(f'Could not configure ROG Control startup: {error}', file=sys.stderr)
+    raise SystemExit(1)
+PY_STARTUP
+)"; then
+    if [ "$START_ON_BOOT" = 1 ]; then
+        say "Start on boot enabled: profile apply, enforcer and tray services scheduled to start"
+    else
+        say "Start on boot is off: profile apply, enforcer and tray services disabled"
+    fi
+else
+    warn "Could not apply the saved Start on boot setting; check the error above."
+fi
+
+# An intentionally disabled enforcer is not a startup failure.
+if [ "$START_ON_BOOT" = 1 ]; then
+    if systemctl --user is-active --quiet rogcontrol-enforcer.service 2>/dev/null; then
+        say "Enforcer is running on the new library"
+    elif [ "$(systemctl --user is-active rogcontrol-enforcer.service 2>/dev/null || true)" = activating ] \
+      || [ "$(systemctl --user is-active rogcontrol-apply.service 2>/dev/null || true)" = activating ]; then
+        say "Enforcer startup is in progress; it waits for the initial profile apply"
+    elif [ "$ENFORCER_WAS_RUNNING" = 1 ]; then
+        warn "The enforcer did not come back up after the update."
+        warn "  systemctl --user status rogcontrol-enforcer.service"
+    fi
 fi
 
 # Leftovers from an older build that used keyboard power-event hooks.
@@ -1093,34 +1122,6 @@ elif [ "$(prev_get cap_fan_curve)" = 1 ] || grep -qx asus_custom_fan_curve /sys/
     fi
 fi
 
-# --- fresh install: create the settings file and put it on the hardware ------
-# Without this a fresh install leaves no config at all, and the boot-apply
-# service returns immediately because there is nothing to apply -- so a new
-# user gets whatever the firmware happened to be doing until they open the
-# window. Creating it here means the stock profiles exist and the chosen one
-# is actually running the moment the install finishes.
-#
-# load_config() writes the defaults out when the file is absent, and leaves an
-# existing file untouched, so this is safe to run unconditionally.
-if [ ! -f "$APP_CONFIG" ]; then
-    if PYTHONPATH="$HOME/.local/lib" python3 -c "
-from rogcontrol import config, hardware
-limits = hardware.detect_gpu_limits()
-config.save_config(config.load_config(gpu_min_w=limits['min_w'], gpu_max_w=limits['max_w']))
-" 2>/dev/null
-    then
-        say "Default settings written to $(basename "$APP_CONFIG")"
-        # Applying takes about 20 seconds, most of it the mandatory 8-second
-        # gaps between fan channels, so it runs in the background rather than
-        # holding the installer open.
-        ("$HOME/.local/bin/rogcontrol-apply.py" >/dev/null 2>&1 &) 2>/dev/null \
-            || (python3 "$HOME/.local/bin/rogcontrol-apply.py" >/dev/null 2>&1 &)
-        say "Applying the default profile in the background (about 20 seconds)"
-    else
-        warn "Could not write the default settings - open the app once to create them"
-    fi
-fi
-
 # --- record state for next time ---------------------------------------------
 mkdir -p "$STATE_DIR"
 {
@@ -1138,15 +1139,19 @@ install -m 755 "$SCRIPT_DIR/uninstall.sh" "$HOME/.local/bin/rogcontrol-uninstall
     && say "Uninstaller available: ~/.local/bin/rogcontrol-uninstall.sh"
 
 # --- confirm the tray ---------------------------------------------------------
-# rogcontrol-tray.service was already started and enabled in the services
-# step above. Checked here rather than assumed, same reasoning as the
+# When startup is enabled, the tray was scheduled in the services step above.
+# Check it rather than assuming success, with the same reasoning as the
 # enforcer check: a tray that fails to launch (no AppIndicator support in
 # the session, e.g. a desktop with no such extension) is silent everywhere
 # except a status check like this one.
-if [ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
+if [ "$START_ON_BOOT" != 1 ]; then
+    say "Tray startup is off or could not be configured; check Start on boot in Quick Access"
+elif [ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
     say "No graphical session here - the tray starts at your next login"
 elif systemctl --user is-active --quiet rogcontrol-tray.service 2>/dev/null; then
     say "Tray running - look for the icon in your status area"
+elif [ "$(systemctl --user is-active rogcontrol-tray.service 2>/dev/null || true)" = activating ]; then
+    say "Tray startup is in progress"
 else
     warn "The tray did not stay running. Try it by hand to see why:"
     warn "  ~/.local/bin/rogcontrol-tray"
@@ -1194,14 +1199,16 @@ if [ "$PENDING_REBOOT" = 1 ]; then
     echo "    2. Run ./install.sh again from this same folder"
     echo
     echo "  The second run keeps every setting, skips everything already done,"
-    echo "  and will not ask you anything again. Your profiles are already"
-    echo "  applied and the background services are already running, so the"
-    echo "  hardware is under control in the meantime either way."
+    echo "  and will not ask you anything again. Background services follow your"
+    echo "  Start on boot setting in Quick Access."
 else
     echo "Done."
     echo "  Launch from the app grid ('ROG Control'), or just: rogcontrol"
-    echo "  The tray icon is running now (see above) and starts at every login;"
-    echo "  the window opens from it."
+    if [ "$START_ON_BOOT" = 1 ]; then
+        echo "  The tray starts at login; the window opens from it."
+    else
+        echo "  Background startup is off or needs attention; see Start on boot in Quick Access."
+    fi
     echo "  Services:  systemctl --user status rogcontrol-enforcer.service"
     echo "             systemctl --user status rogcontrol-tray.service"
 fi

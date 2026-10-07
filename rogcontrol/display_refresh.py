@@ -66,12 +66,13 @@ def _internal(name):
     return bool(re.fullmatch(r'(?:eDP|LVDS|DSI)(?:-?\d+)+', name, re.I))
 
 
-def kde_command(state, power_source):
+def _kde_plan(state, power_source, requested_rate=None):
     """Plan a mode-only update. None means no safe change is needed."""
-    if power_source not in ('ac', 'usbc', 'battery'):
-        return None
+    if requested_rate is None and power_source not in ('ac', 'usbc', 'battery'):
+        return None, []
     outputs = state['outputs']
     commands = []
+    panels = []
     for output in outputs:
         if not (_internal(output['name']) and output.get('connected') is True
                 and output.get('enabled') is True):
@@ -88,18 +89,20 @@ def kde_command(state, power_source):
         for mode in modes:
             _rate(mode['refreshRate'])
             _token(mode['id'])
-        target = (min if power_source == 'battery' else max)(
-            modes, key=lambda mode: _rate(mode['refreshRate']))
+        panels.append(({_rate(mode['refreshRate']) for mode in modes},
+                       _rate(current['refreshRate'])))
+        target = _choose_mode(modes, lambda mode: mode['refreshRate'],
+                              power_source, requested_rate)
         if _rate(target['refreshRate']) == _rate(current['refreshRate']):
             continue
         commands.append(f"output.{_token(output['id'])}.mode.{_token(target['id'])}")
-    return ['kscreen-doctor', *commands] if commands else None
+    return (['kscreen-doctor', *commands] if commands else None), panels
 
 
-def gnome_command(state, power_source):
+def _gnome_plan(state, power_source, requested_rate=None):
     """Reproduce the live layout, changing only eligible built-in mode IDs."""
-    if power_source not in ('ac', 'usbc', 'battery'):
-        return None
+    if requested_rate is None and power_source not in ('ac', 'usbc', 'battery'):
+        return None, []
     _, monitors, logical, properties = state
     layout = {1: 'logical', 2: 'physical'}.get(properties.get('layout-mode', 1))
     if layout is None:
@@ -109,6 +112,7 @@ def gnome_command(state, power_source):
         raise ValueError('Leased display configurations are not supported')
     command = ['gdctl', 'set', '--layout-mode', layout]
     changed = False
+    panels = []
     for x, y, scale, transform, primary, specs, _ in logical:
         if not 0 <= transform < len(TRANSFORMS) or not math.isfinite(scale) or scale <= 0:
             raise ValueError('Invalid logical display configuration')
@@ -142,9 +146,13 @@ def gnome_command(state, power_source):
                               == current[6].get('refresh-rate-mode', 'fixed')]
                 for mode in candidates:
                     _rate(mode[3])
+                panels.append(({_rate(mode[3]) for mode in candidates}, _rate(current[3])))
                 if candidates:
-                    target = (min if power_source == 'battery' else max)(
-                        candidates, key=lambda mode: _rate(mode[3]))
+                    target = _choose_mode(candidates, lambda mode: mode[3],
+                                          power_source, requested_rate)
+                elif requested_rate is not None:
+                    raise ValueError('No safe refresh rates for an internal display')
+                if candidates:
                     if _rate(target[3]) == _rate(current[3]):
                         target = current
                 changed |= target[0] != current[0]
@@ -157,7 +165,79 @@ def gnome_command(state, power_source):
                     if props[prop] not in choices:
                         raise ValueError(f'Unsupported GNOME {prop}')
                     command += ['--' + prop, choices[props[prop]]]
-    return command if changed else None
+    return (command if changed else None), panels
+
+
+def _choose_mode(modes, rate_of, power_source, requested_rate):
+    if requested_rate is not None:
+        requested_rate = _rate(requested_rate)
+        target = next((mode for mode in modes if _rate(rate_of(mode)) == requested_rate), None)
+        if target is None:
+            raise ValueError(f'{requested_rate:g} Hz is not supported by every eligible internal display')
+        return target
+    return (min if power_source == 'battery' else max)(modes, key=lambda mode: _rate(rate_of(mode)))
+
+
+def _common_rates(panels):
+    if not panels:
+        raise ValueError('No eligible internal display; disabled or mirrored panels are skipped.')
+    rates = set.intersection(*(rates for rates, _ in panels))
+    if not rates:
+        raise ValueError('No common safe refresh rates for the internal displays.')
+    current = {rate for _, rate in panels}
+    return sorted(rates), next(iter(current)) if len(current) == 1 else None
+
+
+def kde_command(state, power_source, requested_rate=None):
+    """Plan a mode-only update; optionally require an exact supported rate."""
+    command, panels = _kde_plan(state, power_source, requested_rate)
+    if requested_rate is not None:
+        _common_rates(panels)
+    return command
+
+
+def gnome_command(state, power_source, requested_rate=None):
+    """Preserve the live layout; optionally require an exact supported rate."""
+    command, panels = _gnome_plan(state, power_source, requested_rate)
+    if requested_rate is not None:
+        _common_rates(panels)
+    return command
+
+
+def _current_plan(requested_rate=None):
+    supported, reason = availability()
+    if not supported:
+        raise ValueError(reason)
+    if backend_name() == 'kde':
+        return _kde_plan(json.loads(_run(['kscreen-doctor', '--json'])), 'ac', requested_rate)
+    return _gnome_plan(_gnome_state(), 'ac', requested_rate)
+
+
+def get_refresh_rates():
+    """Return (sorted supported Hz values, current Hz or None) from live state.
+
+    Only rates shared by eligible internal panels at their current resolution
+    and layout are offered. Raises ValueError for unavailable or unsafe layouts.
+    This query performs no display changes.
+    """
+    try:
+        _, panels = _current_plan()
+        return _common_rates(panels)
+    except Exception as error:
+        raise ValueError(f'Cannot read display refresh rates: {error}') from error
+
+
+def set_refresh_rate(rate):
+    """Apply an exact supported Hz value using fresh state; return (ok, message)."""
+    try:
+        rate = _rate(rate)
+        command, panels = _current_plan(rate)
+        _common_rates(panels)
+        if command is not None:
+            _run(command)
+        return True, f'Internal display refresh set to {rate:g} Hz.'
+    except Exception as error:
+        return False, f'Display refresh unchanged: {error}'
 
 
 def _run(argv):

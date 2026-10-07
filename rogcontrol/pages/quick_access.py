@@ -18,6 +18,7 @@ from .. import config as config_mod  # noqa: E402
 from .. import hardware  # noqa: E402
 from .. import graphics_backend  # noqa: E402
 from .. import gamescope  # noqa: E402
+from .. import startup  # noqa: E402
 from .display_settings import DisplayRefreshControls  # noqa: E402
 
 
@@ -31,16 +32,17 @@ class QuickAccessPage(Adw.PreferencesPage):
 
         self.performance_group = Adw.PreferencesGroup(title="Performance")
         self.add(self.performance_group)
+        self.display_refresh_controls = DisplayRefreshControls(window)
+        self.add(self.display_refresh_controls)
         self.profile_group = Adw.PreferencesGroup(
             title="Automatic profile switching")
         self.add(self.profile_group)
-        self.firmware_group = Adw.PreferencesGroup(
-            title="Display and firmware")
-        self.add(self.firmware_group)
+        self.startup_group = Adw.PreferencesGroup(title="Startup")
         self._moved_counts = {
             self.performance_group: 0,
             self.profile_group: 0,
-            self.firmware_group: 0,
+            self.startup_group: 0,
+            self.display_refresh_controls: 0,
         }
         self._powermizer_loading = False
 
@@ -62,11 +64,11 @@ class QuickAccessPage(Adw.PreferencesPage):
 
         self._move_performance_controls()
         self._move_profile_controls()
+        self._build_startup_controls()
         self._move_firmware_controls()
         self._hide_empty_groups()
         self._build_gamescope_controls()
-        self.display_refresh_controls = DisplayRefreshControls(window)
-        self.add(self.display_refresh_controls)
+        self.add(self.startup_group)
         # A row moved out of a PreferencesGroup keeps its last allocation in
         # GTK until the destination is mapped again. Quick Access is a stack
         # child, so returning to it can otherwise paint the first rows using
@@ -79,16 +81,59 @@ class QuickAccessPage(Adw.PreferencesPage):
         """Invalidate allocations after returning to the visible page."""
         self.queue_resize()
         for group in (self.performance_group, self.profile_group,
-                      self.firmware_group):
+                      self.display_refresh_controls, self.gamescope_group,
+                      self.startup_group):
             group.queue_resize()
 
     def reload(self):
         """Follow profile switches and changes to the available profiles."""
         self._reload_gamescope()
+        self._reload_startup()
         self.display_refresh_controls.reload()
         if (self.powermizer_row is not None
                 and self.powermizer_row.get_visible()):
             self._restore_powermizer_selection()
+
+    def _build_startup_controls(self):
+        self._startup_loading = False
+        self._startup_busy = False
+        self.startup_row = Adw.SwitchRow(
+            title="Start on boot",
+            subtitle="Start the tray and background services at login; keep the window closed")
+        self.startup_row.set_tooltip_text(
+            "Applies at your next login. When off, neither the tray nor ROG Control "
+            "background services start automatically.")
+        self.startup_group.add(self.startup_row)
+        self._reload_startup()
+        self.startup_row.connect("notify::active", self._on_startup_changed)
+
+    def _reload_startup(self):
+        if self._startup_busy:
+            return
+        self._startup_loading = True
+        try:
+            self.startup_row.set_active(startup.is_enabled())
+        finally:
+            self._startup_loading = False
+
+    def _on_startup_changed(self, row, _param):
+        if self._startup_loading or self._startup_busy:
+            return
+        enabled = row.get_active()
+        self._startup_busy = True
+        row.set_sensitive(False)
+        self.window.apply_async(
+            lambda: startup.set_enabled(enabled),
+            lambda result, error: self._on_startup_saved(enabled, error))
+
+    def _on_startup_saved(self, enabled, error):
+        self._startup_busy = False
+        self.startup_row.set_sensitive(True)
+        if error is not None:
+            self.window.toast(f"Could not change Start on boot: {error}")
+        else:
+            self.window.config["start_on_boot"] = enabled
+        self._reload_startup()
 
     def _build_gamescope_controls(self):
         self.gamescope_group = Adw.PreferencesGroup(title="Gamescope")
@@ -299,15 +344,15 @@ class QuickAccessPage(Adw.PreferencesPage):
 
         if self.window.caps.get("boot_sound"):
             self._move(getattr(system, "boot_sound_row", None),
-                       self.firmware_group)
+                       self.startup_group)
         if self.window.caps.get("panel_od"):
             self._move(getattr(system, "panel_od_row", None),
-                       self.firmware_group)
+                       self.display_refresh_controls)
         if self.window.caps.get("psr_toggle"):
             self._move(getattr(system, "psr_row", None),
-                       self.firmware_group)
+                       self.display_refresh_controls)
             self._move(getattr(system, "psr_pending_row", None),
-                       self.firmware_group)
+                       self.display_refresh_controls)
 
         group = getattr(system, "firmware_group", None)
         if group is not None:
@@ -317,6 +362,5 @@ class QuickAccessPage(Adw.PreferencesPage):
             group.set_visible(False)
 
     def _hide_empty_groups(self):
-        for group in (self.performance_group, self.profile_group,
-                      self.firmware_group):
+        for group in (self.performance_group, self.profile_group):
             group.set_visible(self._moved_counts[group] > 0)

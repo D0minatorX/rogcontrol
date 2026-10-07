@@ -143,12 +143,22 @@ and service restarts; a failed restore is retried in the background.
   version 1 respects idle inhibitors, so playback may keep the keys lit.
   Other Wayland compositors exposing the same protocol can also work.
   Missing protocols or unusual multi-seat sessions leave the light unchanged.
-- **Quick Access → Automatic display refresh:** optionally select the
-  highest supported internal-panel refresh rate on AC/USB-C and the lowest
-  on battery, keeping the current resolution. Requires GNOME's `gdctl` or
+- **Quick Access → Display:** choose a supported internal-panel refresh rate
+  from the dropdown (for example, 60 Hz or 165 Hz), keeping the current
+  resolution. Enable **Automatic refresh switching** to use the highest
+  supported rate on AC/USB-C and the lowest on battery instead. Turn it off
+  to choose a rate manually. Requires GNOME's `gdctl` or
   KDE Plasma's `kscreen-doctor` in a graphical user session. Mirrored panels
   are skipped; external monitor modes and layout are preserved. Turning the
   option off leaves the current refresh rate in place.
+
+Display sits directly below Performance and also contains panel overdrive
+and AMD panel self-refresh on supported hardware. **Quick Access → Startup**,
+below Gamescope, groups **Start on boot** and **Boot sound**. Start on boot
+is on by default: the tray, saved-profile apply service, and background
+enforcer start normally without opening the window. Turn it off to prevent
+all three from starting automatically at the next login. Changing the switch
+does not interrupt the current session. Updates preserve your choice.
 
 Both automatic features default to off and run in the existing user enforcer
 service with the window closed. Display and charging changes are checked
@@ -266,7 +276,7 @@ After installing:
 
 ```
 rogcontrol          # open the window
-rogcontrol-tray      # the tray icon (starts itself at every login)
+rogcontrol-tray      # the tray icon (starts at login when Start on boot is on)
 ```
 
 The window is also in your applications menu as "ROG Control". Open the Fans page once and press **Calibrate fan RPM** — it takes about two minutes and makes the graphs true for your own hardware.

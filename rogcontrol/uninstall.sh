@@ -123,6 +123,9 @@ rm -f "$HOME"/.local/share/applications/org.rogcontrol.RogControl.desktop \
        "$HOME"/.local/share/applications/rogcontrol.desktop \
       "$HOME"/.local/share/applications/rogcontrol-cycle-profile.desktop \
       "$HOME"/.config/autostart/rogcontrol-autostart.desktop
+AUTOSTART_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
+[[ "$AUTOSTART_CONFIG" = /* ]] || AUTOSTART_CONFIG="$HOME/.config"
+rm -f "$AUTOSTART_CONFIG/autostart/rogcontrol-window.desktop"
 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
 for size in 16x16 22x22 24x24 32x32 48x48 64x64 128x128 256x256 512x512; do
     rm -f "$HOME/.local/share/icons/hicolor/$size/apps/rogcontrol.png" \
