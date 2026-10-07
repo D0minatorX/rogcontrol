@@ -281,11 +281,16 @@ def helper_action_unchanged(args, root=None):
     policies = sorted(glob.glob(_under(root, CPUFREQ_GLOB)))
     if action == "cpuboost" and value in ("0", "1"):
         global_path = _under(root, "/sys/devices/system/cpu/cpufreq/boost")
-        if os.path.exists(global_path):
-            return read_int(global_path) == int(value)
+        global_exists = os.path.exists(global_path)
+        if global_exists and read_int(global_path) != int(value):
+            return False
+        # amd-pstate can leave the global switch enabled while a power
+        # profile disables boost on individual policies. Check both layers.
         if any(os.path.exists(os.path.join(p, "boost")) for p in policies):
             return bool(policies) and all(
                 read_int(os.path.join(p, "boost")) == int(value) for p in policies)
+        if global_exists:
+            return True
         return read_int(_under(root, INTEL_NO_TURBO_PATH)) == 1 - int(value)
     if action == "cpuepp" and value and value != "custom":
         return bool(policies) and all(
@@ -887,18 +892,20 @@ INTEL_NO_TURBO_PATH = "/sys/devices/system/cpu/intel_pstate/no_turbo"
 def read_cpu_boost_enabled(root=None):
     """True/False if a cpufreq boost switch exists, else None.
 
-    amd-pstate publishes one global switch; the other drivers put one under
-    each policy, so both locations have to be checked. intel_pstate in
+    Drivers can publish both global and per-policy switches. Boost is fully
+    enabled only when all exposed switches agree. intel_pstate in
     active mode has neither -- it publishes ``no_turbo`` instead, meaning the
     opposite of the other two, so that one is read and inverted rather than
     just checked for existence."""
-    val = read_int(_under(root, "/sys/devices/system/cpu/cpufreq/boost"))
-    if val is not None:
-        return bool(val)
-    for path in sorted(glob.glob(_under(root, CPUFREQ_GLOB) + "/boost")):
-        val = read_int(path)
-        if val is not None:
-            return bool(val)
+    paths = glob.glob(_under(root, CPUFREQ_GLOB) + "/boost")
+    global_path = _under(root, "/sys/devices/system/cpu/cpufreq/boost")
+    if os.path.exists(global_path):
+        paths.append(global_path)
+    if paths:
+        values = [read_int(path) for path in paths]
+        if 0 in values:
+            return False
+        return True if all(value == 1 for value in values) else None
     val = read_int(_under(root, INTEL_NO_TURBO_PATH))
     if val is not None:
         return not bool(val)

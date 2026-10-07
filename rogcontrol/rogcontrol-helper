@@ -290,16 +290,20 @@ case "$1" in
         [ "$VAL" = "0" ] || [ "$VAL" = "1" ] || {
             echo "cpuboost takes 0 (off) or 1 (on), got: $VAL" >&2; exit 1; }
         GLOBAL=/sys/devices/system/cpu/cpufreq/boost
+        WROTE=0
         if [ -e "$GLOBAL" ]; then
             echo "$VAL" > "$GLOBAL"
-            exit 0
+            WROTE=1
         fi
-        # amd-pstate exposes one global switch, but acpi-cpufreq and the
-        # intel drivers expose it per policy, so fall back to those.
-        WROTE=0
+        # Drivers can expose both switches. A matching global value does
+        # not repair policies disabled separately by the OS power profile.
         FAILED=""
         for p in /sys/devices/system/cpu/cpufreq/policy*/boost; do
             [ -e "$p" ] || continue
+            if [ "$(cat "$p")" = "$VAL" ]; then
+                WROTE=1
+                continue
+            fi
             # Each policy is an independent core: one write failing (a locked
             # or read-only policy) must not, via set -e, abort the loop and
             # leave later cores at the old value with no report of which core
