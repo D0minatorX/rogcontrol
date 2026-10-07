@@ -319,6 +319,23 @@ For custom desktop shortcuts, the installer does not bind these commands for you
 
 The same shortcut behavior is also available through a single command:
 
+Profile shortcuts report the requested target immediately. A shared background
+worker applies profiles one at a time; additional presses advance the pending
+target, so rapid presses are counted without applying every intermediate profile.
+Pending hardware-button requests are cancelled if their feature is disabled,
+the desktop locks, or another source changes the profile. A cancelled request
+does not change the saved active profile. An apply already in progress completes
+before the next accepted target starts.
+
+CPU boost, EPP and clock controls skip writes only after fresh matching readback;
+GPU power limits also check their effective value. Dynamic Boost and temperature
+targets share one helper call. ASUS firmware values and fan curves may be cached
+by the driver, so their recovery writes remain enabled. Visible fan drift is
+repaired per channel, with the existing five-minute firmware safety refresh.
+Fan writes share a nominal 0.5-second gap; historical cached readback checks are
+not a physical fan-response guarantee. Run the updated installer to update both
+the application and its privileged helper.
+
 ```sh
 rogcontrol profile next
 rogcontrol keyboard next

@@ -35,9 +35,8 @@ FAN_BOOST_PCT = 85
 
 FAN_BOOST_SECONDS = 120
 
-# Matches pages/fans.py's CHANNEL_GAP_S: the embedded controller silently
-# drops a fan-curve write fired closer to the last one than this.
-FAN_BOOST_CHANNEL_GAP_S = 0.5
+# Share the same nominal pacing as normal fan-curve application.
+FAN_BOOST_CHANNEL_GAP_S = fancurve.CHANNEL_GAP_S
 
 FAN_BOOST_SUBTITLE = (
     f"Hold every fan at a flat {FAN_BOOST_PCT}% for "

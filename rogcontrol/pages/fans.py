@@ -7,21 +7,18 @@ The first measurement on this machine found a 0.5 s gap left two of three
 fans stuck on their old curve, so 8 s was adopted as the safe value. A later,
 more careful re-test -- 0.5 s through 8 s, several rounds each, reading the
 curve back from the driver after every round -- found 0.5 s through 8 s all
-held; the original 0.5 s failure was not reproduced. 5 s was kept as the
-working value, for margin over the retested floor rather than because
-anything shorter was shown to fail. So writing all three curves takes about
-ten seconds.
+held; the original 0.5 s failure was not reproduced. The nominal gap is now
+0.5 s, adding one second when all three channels are written. These historical
+readback checks do not establish physical fan response: the driver caches
+curve data. Firmware recovery remains necessary.
 
 Everything else here follows from that:
 
-* **Nothing is applied on drag.** A hardware write per dragged point would
-  be ten seconds long here, with the next drag interrupting the last one
-  mid-gap -- which is exactly how the old version managed to look like it
-  was ignoring the curve while it was in fact re-pushing it constantly.
+* **Nothing is applied on drag.** Applying every dragged point would overlap
+  hardware writes and flood the embedded controller.
   There is an Apply button instead, and the CPU and GPU pages now follow
   this page rather than the other way round.
-* **The apply runs on a worker thread with a progress bar**, because a
-  ten second freeze is indistinguishable from a hang.
+* **The apply runs on a worker thread with a progress bar** to keep edits responsive.
 * **The page says when the embedded controller has thrown the curve away.**
   It knows because it reads the curve back out of the driver every two
   seconds, rather than tracking a dirty flag: a flag only knows what this
@@ -56,8 +53,8 @@ REFRESH_SECONDS = 2
 DASH = "—"
 
 # Seconds between one channel's curve write and the next. See the module
-# docstring: retested down to 0.5s with no failures, kept at 5s for margin.
-CHANNEL_GAP_S = 0.5
+# docstring for the limitations of driver readback tests.
+CHANNEL_GAP_S = fancurve.CHANNEL_GAP_S
 
 # Percentages the calibration drives the fans to. The three-point version
 # of this (20/45/70, no 100%) shipped first and undersold itself: a
@@ -503,8 +500,8 @@ class FansPage(Gtk.Box):
     def _apply_worker(self, points, channels):
         """Write every channel, waiting CHANNEL_GAP_S between them.
 
-        Worker thread. The order and the gaps are the whole point: channel 1,
-        sleep 8, channel 2, sleep 8, channel 3. All three are written every
+        Worker thread. Channels are written in order with the shared nominal
+        gap between writes. All requested channels are written every
         time rather than only the ones that look changed -- the driver's
         cached points can match while the EC has thrown the curve away, and
         "Apply" that quietly skipped the fan the user came here to fix would
@@ -522,8 +519,7 @@ class FansPage(Gtk.Box):
             if i < len(channels) - 1:
                 GLib.idle_add(
                     self._set_progress_text,
-                    f"Waiting {CHANNEL_GAP_S}s — the controller ignores "
-                    f"curves written closer together than that…")
+                    f"Spacing fan writes by {CHANNEL_GAP_S}s…")
         return {"results": results, "points": points}
 
     def _on_applied(self, target, data, error):

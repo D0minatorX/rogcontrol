@@ -236,11 +236,12 @@ class ActionRunner:
         self.session_check = session_check
         self.process = None
         self.gui_processes = []
-        self.pending_profile = None
+        self.profile_processes = []
         self.started = 0
 
     def poll(self):
         self.gui_processes = [p for p in self.gui_processes if p.poll() is None]
+        self.profile_processes = [p for p in self.profile_processes if p.poll() is None]
         if self.process is not None:
             result = self.process.poll()
             if result is not None:
@@ -250,30 +251,23 @@ class ActionRunner:
                 self.process = None
             elif time.monotonic() - self.started > 120:
                 self.process.terminate()
-            if self.process is None and self.pending_profile is not None:
-                action = self.pending_profile
-                self.pending_profile = None
-                self.execute(action)
-
-    def execute(self, action):
+    def execute(self, action, origin='shortcut'):
         self.poll()
         args = command(action)
         if not args or not self.session_check():
             return
-        if self.process is not None and action != 'toggle':
-            if action == 'profile':
-                # M-button presses can arrive faster than fan/EC writes.
-                # Keep the newest request and launch it as soon as the
-                # current apply completes.
-                self.pending_profile = action
+        if self.process is not None and action not in ('toggle', 'profile'):
             return
-        if (not args
-                or not self.session_check()):
-            return
+        if action == 'profile':
+            # These short-lived requests only select a target. One shared
+            # worker performs the actual hardware writes for all shortcuts.
+            args += ['--origin', origin]
         env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent))
         process = subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if action == 'toggle':
+        if action == 'profile':
+            self.profile_processes.append(process)
+        elif action == 'toggle':
             # First invocation may own the window for its whole lifetime.
             self.gui_processes.append(process)
         else:
@@ -296,12 +290,14 @@ def run(stop_event):
     fn = fnlock.preferences({})
 
     def dispatch(action, path):
+        origin = 'fnlock'
         if action.startswith('binding:'):
+            origin = 'bindings'
             button = action.split(':', 1)[1]
             if not bindings['enabled'] or not dedupe.accept(button, path, time.monotonic()):
                 return
             action = bindings.get(button, 'none')
-        runner.execute(action)
+        runner.execute(action, origin=origin)
 
     def close(path):
         device, decoder, remapper = opened.pop(path)

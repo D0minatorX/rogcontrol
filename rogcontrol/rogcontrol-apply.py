@@ -113,9 +113,7 @@ DELAY_SECONDS = 10
 # sleep in its loop and gets a free retry a minute later.
 DGPU_WAKE_WAIT_SECONDS = 5
 
-# See pages/fans.py: retested down to 0.5s with no failures, kept at 5s for
-# margin over the retested floor.
-CHANNEL_GAP_S = 0.5
+CHANNEL_GAP_S = fancurve.CHANNEL_GAP_S
 
 
 
@@ -205,10 +203,9 @@ def apply_gpu_clock_offsets(gpu, profile_only=False):
                           hardware.gpu_clock_limit_arg(
                               gpu["clock_limit"],
                               hardware.gpu_clock_limit_max()))
-    if "dyn_boost" in gpu:
-        run_helper("nvboost", gpu["dyn_boost"])
-    if "temp_target" in gpu:
-        run_helper("nvtemp", gpu["temp_target"])
+    ok, message = hardware.nv_apply_settings(gpu)
+    if not ok:
+        hardware.log(f"GPU firmware settings failed: {message}", "ERROR", source="apply")
     if _offset_worth_writing(gpu, "mem_clock_offset", profile_only):
         ok, message = hardware.set_nvidia_clock_offset(
             "memory", gpu["mem_clock_offset"],
@@ -280,7 +277,7 @@ def apply_once(config, profile_only=False, force_stock_undervolt=False):
         # Only the channels whose curve is not already the one the
         # controller is running. Each write costs a CHANNEL_GAP_S gap before
         # the next, so a switch back to a profile whose fans match costs
-        # nothing instead of ten seconds. Read from the driver rather than
+        # no fan writes or gaps. Read from the driver rather than
         # remembered: the EC drops curves behind this app's back on every
         # power-mode change, and a channel it has thrown away has to be
         # rewritten even though nothing in the config moved.
@@ -303,9 +300,7 @@ def apply_once(config, profile_only=False, force_stock_undervolt=False):
                         and fancurve.curve_matches_hardware(pts, held[ch]))]
         for i, (channel, points) in enumerate(todo):
             if i > 0:
-                # See pages/fans.py module docstring: 0.5s was first found
-                # to leave channels stuck, but a later retest found 0.5s-8s
-                # all held. CHANNEL_GAP_S is kept above the retested floor.
+                # Keep the shared nominal separation between channels.
                 time.sleep(CHANNEL_GAP_S)
             expanded = interpolate_curve(points, 8)
             flat = []

@@ -16,48 +16,52 @@ pct_to_pwm255 = fancurve.pct_to_pwm255
 def run_helper(*args):
     """Run a privileged action and REPORT failure. The package's, so this
     hotkey cannot drift away from what the boot apply does."""
-    return hardware.run_helper_logged(*args, source="cycle-profile",
-                                      timeout=30)[0]
+    ok, message = hardware.run_helper_logged(*args, source="cycle-profile", timeout=30)
+    if not ok:
+        raise RuntimeError(message)
+    return True
 
 # Capabilities are detected when applying, never while importing the CLI.
 
-# See pages/fans.py: retested down to 0.5s with no failures, kept at 5s for
-# margin over the retested floor.
-# The EC accepted 0.5s gaps across repeated hardware tests.  Keeping this
-# at the measured floor makes shortcut profile changes responsive while still
-# separating channel writes.
-CHANNEL_GAP_S = 0.5
+CHANNEL_GAP_S = fancurve.CHANNEL_GAP_S
 
 # Use shared desktop notifications for shortcut results.
 notify = hardware.notify
 
 
 def apply_profile(profile):
+    failures = []
+
+    def write(*args):
+        try:
+            run_helper(*args)
+        except Exception as error:
+            failures.append(f'{args[0]}: {error}')
+
     cpu_caps = {"ryzenadj": hardware.cpu_is_amd(), "cpu_boost": True,
                     "cpu_epp": True, "cpu_clock": True,
                     "cpu_power_limits": hardware.cpu_power_limits_backend()}
     cpu = profile.get("cpu")
     if cpu:
         for _step, args in hardware.cpu_apply_plan(cpu, cpu_caps):
-            run_helper(*args)
+            write(*args)
     gpu = profile.get("gpu")
     if gpu:
         # Optional GPU fields are only applied when present.
         if "watts" in gpu and hardware.gpu_power_limit_supported():
-            run_helper("gpu", gpu["watts"])
+            write("gpu", gpu["watts"])
         # Apply all configured GPU controls; the enforcer does not continuously restore them.
         if "clock_limit" in gpu:
             # Against the card's own maximum, not a hardcoded 3090: the
             # top of the slider means "no ceiling", and comparing against
             # another card's number turns that into a lock.
-            run_helper("gpuclocklimit",
+            write("gpuclocklimit",
                        hardware.gpu_clock_limit_arg(
                            gpu["clock_limit"],
                            hardware.gpu_clock_limit_max()))
-        if "dyn_boost" in gpu:
-            run_helper("nvboost", gpu["dyn_boost"])
-        if "temp_target" in gpu:
-            run_helper("nvtemp", gpu["temp_target"])
+        ok, message = hardware.nv_apply_settings(gpu)
+        if not ok:
+            failures.append(f'GPU firmware: {message}')
         # Clock offsets use the shared timeout and error handling.
         for kind, key in (("core", "clock_offset"),
                           ("memory", "mem_clock_offset")):
@@ -67,6 +71,7 @@ def apply_profile(profile):
                     hardware.log(f"GPU {kind} clock offset failed: {message}",
                                  "ERROR", source="cycle-profile",
                                  dedupe_key=f"nv{kind}")
+                    failures.append(f'GPU {kind} offset: {message}')
     # Skip matching fan curves to avoid unnecessary paced EC writes.
     fans = profile.get("fans", {})
     # A temporary fan boost owns the curves until its deadline.
@@ -80,53 +85,45 @@ def apply_profile(profile):
                     and fancurve.curve_matches_hardware(pts, held[ch]))]
     for i, (channel, points) in enumerate(todo):
         if i > 0:
-            # See pages/fans.py module docstring: 0.5s was first found to
-            # leave channels stuck, but a later retest found 0.5s-8s all
-            # held. CHANNEL_GAP_S is kept above the retested floor.
+            # Separate channels using the shared nominal gap.
             time.sleep(CHANNEL_GAP_S)
         expanded = interpolate_curve(points, 8)
         flat = []
         for t, pct in expanded:
             flat += [t, pct_to_pwm255(pct)]
-        hardware.run_fan_helper_logged(channel, *flat, source="cycle")
+        ok, message = hardware.run_fan_helper_logged(channel, *flat, source="cycle")
+        if not ok:
+            failures.append(f'Fan {channel}: {message}')
+    if failures:
+        raise RuntimeError('; '.join(failures))
 
 
-def cycle_profile():
-    if not os.path.exists(config_mod.CONFIG_PATH):
-        return
-    # Select against fresh config so another writer's changes are preserved.
-    picked = {}
+def cycle_profile(origin='shortcut'):
+    from . import profile_requests
+    if os.path.exists(config_mod.CONFIG_PATH):
+        profile_requests.request_next(origin)
 
-    def _pick_next(cfg):
-        names = list(cfg.get("profiles", {}).keys())
-        if not names:
-            picked["next_name"] = None
-            return
-        current = cfg.get("current_profile")
-        idx = names.index(current) if current in names else -1
-        next_name = names[(idx + 1) % len(names)]
-        cfg["current_profile"] = next_name
-        picked["next_name"] = next_name
 
-    config = config_mod.update_config(_pick_next)
-    next_name = picked.get("next_name")
-    if next_name is None:
-        return
-
-    # The profile selection itself is instantaneous.  Hardware writes below
-    # may take several seconds, so tell the user which profile was selected
-    # before starting the slow part.
-    notify("ROG Control", f"Switching to {next_name}…")
-
+def apply_selected_profile(config, next_name):
+    failures = []
     # Set OS mode before fan curves: changing the mode resets the EC curves.
-    hardware.set_power_mode_for_profile(next_name)
+    result = hardware.set_power_mode_for_profile(next_name)
+    if result is not None and not result[0]:
+        failures.append(f'OS power mode: {result[1]}')
 
     # Profile Color lighting follows the selected profile when enabled.
-    hardware.set_profile_kbd_color(config, next_name)
+    result = hardware.set_profile_kbd_color(config, next_name)
+    if result is not None and not result[0]:
+        failures.append(f'Keyboard colour: {result[1]}')
 
     # The profile is already saved; report partial application failures.
     try:
-        apply_profile(config["profiles"][next_name])
+        profile = dict(config["profiles"][next_name])
+        if config.get('safety_tripped') and profile.get('cpu'):
+            profile['cpu'] = config_mod.stock_cpu_values(profile['cpu'])
+        apply_profile(profile)
+        if failures:
+            raise RuntimeError('; '.join(failures))
     except Exception as e:  # noqa: BLE001 - reported, not swallowed
         hardware.log(f"cycle to {next_name} failed: {e}", "ERROR",
                      source="cycle-profile", dedupe_key="cyclefail")
@@ -134,7 +131,9 @@ def cycle_profile():
         notify("ROG Control",
                f"Profile {next_name} was only partly applied — {e}")
         return
-    notify("ROG Control", f"Profile switched to {next_name}")
+    # Do not announce an obsolete profile after the user has selected another.
+    if config_mod.load_config().get('current_profile') == next_name:
+        notify("ROG Control", f"Profile switched to {next_name}")
 
 # The package's, with a timeout and a failure the log records; this script's
 # own copies had neither, and its notify showed up unattributed for want of
@@ -310,7 +309,8 @@ def main(argv=None):
                "Window flags: --show, --hide, --toggle, --minimized, --quit, --self-test.")
     commands = parser.add_subparsers(dest="command", required=True)
     profile = commands.add_parser("profile", help="Switch profiles")
-    profile.add_argument("action", choices=("next",))
+    profile.add_argument("action", choices=("next", "drain"))
+    profile.add_argument("--origin", choices=("shortcut", "bindings", "fnlock"), default="shortcut")
     keyboard = commands.add_parser("keyboard", help="Adjust keyboard lighting")
     keyboard_commands = keyboard.add_subparsers(dest="action", required=True)
     keyboard_commands.add_parser("next", help="Cycle lighting mode")
@@ -320,7 +320,10 @@ def main(argv=None):
     commands.add_parser("report", help="Save a hardware report")
     args = parser.parse_args(argv)
     if args.command == "profile":
-        return cycle_profile() or 0
+        if args.action == 'drain':
+            from . import profile_requests
+            return profile_requests.drain(apply_selected_profile) or 0
+        return cycle_profile(args.origin) or 0
     if args.command == "report":
         from .diagnostics import write_hardware_report
         print(write_hardware_report())

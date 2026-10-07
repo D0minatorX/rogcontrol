@@ -261,6 +261,67 @@ def helper_command(args, root=None):
     return ["sudo", "-n", HELPER, *[str(a) for a in args]]
 
 
+def helper_action_unchanged(args, root=None):
+    """Confirm equality from fresh sysfs reads; unknown state always writes.
+
+    Never infer AMD power limits or GPU clock locks from a saved profile.
+    ASUS nvboost/nvtemp/PPT sysfs reports driver-cached values, so those
+    firmware controls also always write even when their files look equal.
+    Call immediately before each action: boost and firmware writes can reset
+    the clock floor/ceiling, so precomputing a whole plan's skips is unsafe.
+    """
+    if not args:
+        return False
+    action = args[0]
+    if len(args) != 2:
+        return False
+    value = str(args[1])
+    if action not in ("cpuboost", "cpuepp", "cpuclock", "cpuminclock"):
+        return False
+    policies = sorted(glob.glob(_under(root, CPUFREQ_GLOB)))
+    if action == "cpuboost" and value in ("0", "1"):
+        global_path = _under(root, "/sys/devices/system/cpu/cpufreq/boost")
+        if os.path.exists(global_path):
+            return read_int(global_path) == int(value)
+        if any(os.path.exists(os.path.join(p, "boost")) for p in policies):
+            return bool(policies) and all(
+                read_int(os.path.join(p, "boost")) == int(value) for p in policies)
+        return read_int(_under(root, INTEL_NO_TURBO_PATH)) == 1 - int(value)
+    if action == "cpuepp" and value and value != "custom":
+        return bool(policies) and all(
+            read_file(os.path.join(p, "energy_performance_preference")) == value
+            for p in policies)
+    if action not in ("cpuclock", "cpuminclock") or not policies:
+        return False
+    if action == "cpuclock" and value == "max":
+        target = read_int(os.path.join(policies[0], "cpuinfo_max_freq"))
+    elif action == "cpuminclock" and value == "min":
+        target = None  # Each policy has its own resting floor.
+    elif value.isascii() and value.isdigit() and int(value) > 0:
+        target = int(value)
+    else:
+        return False
+    filename = "scaling_max_freq" if action == "cpuclock" else "scaling_min_freq"
+    for policy in policies:
+        wanted = target
+        if action == "cpuminclock" and value == "min":
+            default = os.path.join(policy, "amd_pstate_lowest_nonlinear_freq")
+            if not os.path.exists(default):
+                default = os.path.join(policy, "cpuinfo_min_freq")
+            wanted = read_int(default)
+        if wanted is None or read_int(os.path.join(policy, filename)) != wanted:
+            return False
+    return True
+
+
+def nv_apply_settings(gpu, run=None):
+    """Apply the two ASUS NVIDIA firmware knobs in one validated helper call."""
+    values = (gpu.get("dyn_boost", "-"), gpu.get("temp_target", "-"))
+    if values == ("-", "-"):
+        return True, ""
+    return (run or run_helper)("nvfirmware", *values)
+
+
 def run_helper(*args, timeout=10):
     """Run one privileged action, returning ``(ok, message)``.
 
@@ -273,6 +334,8 @@ def run_helper(*args, timeout=10):
     Failure is a non-zero exit code and nothing else. Output on stderr is not
     failure: the one call that matters here, ``cpu``, writes to stderr on
     every single run."""
+    if helper_action_unchanged(args):
+        return True, "already applied"
     # Both actions reach nvidia-smi in the privileged helper. Cardwire can
     # block new NVIDIA clients without unloading the driver, so stop before
     # spawning sudo rather than relying on a failing nvidia-smi invocation.

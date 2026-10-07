@@ -4,6 +4,11 @@ This module provides functions for interpolating fan curves and converting
 between percentages, PWM values, and RPM measurements.
 """
 
+# Nominal separation between channel writes. Historical driver readback tests
+# passed at 0.5s; cached curve readback is not proof of physical fan response.
+# Keep recovery paths for firmware resets and failed writes.
+CHANNEL_GAP_S = 0.5
+
 # rpm = floor + slope * curve_percent for curve_percent > 0; 0% is a hard
 # special case that reports 0 rpm (fan off), per channel.
 #

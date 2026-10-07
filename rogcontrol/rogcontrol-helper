@@ -669,6 +669,19 @@ case "$1" in
         # min/max -- hardcoding one laptop's 140W ceiling here would break
         # every other card.
         [ "$WATTS" -ge 1 ] && [ "$WATTS" -le 1000 ] || { echo "watts out of sane range (1-1000)" >&2; exit 1; }
+        # A fresh effective reading can save the write and its verification.
+        # Check every card: -pl applies to all GPUs when no index is passed.
+        # Missing/unsupported readings always take the normal write path.
+        if POWER_REPORT=$(nvidia-smi -q -d POWER 2>/dev/null) &&
+            printf '%s\n' "$POWER_REPORT" | awk -v want="$WATTS" '
+                /Current Power Limit/ {
+                    count++
+                    if ($5 !~ /^[0-9]+([.][0-9]+)?$/ || $5+0 < want-0.5 || $5+0 > want+0.5) bad=1
+                }
+                END { exit !(count > 0 && !bad) }
+            '; then
+            exit 0
+        fi
         # Some NVIDIA drivers print a refusal but exit 0 (and even print
         # "All done"). Report success only when the effective limit reads
         # back as requested, so the UI never saves an unapplied value.
@@ -688,6 +701,34 @@ case "$1" in
         }'; then
             echo "GPU power limit not applied: requested $WATTS W, current ${HELD:-unavailable} W. $OUTPUT" >&2
             exit 1
+        fi
+        ;;
+
+    nvfirmware)
+        # A fixed two-field batch, never a generic root command dispatcher.
+        # Validate the entire request before changing either firmware knob.
+        shift
+        [ "$#" -eq 2 ] || { echo "nvfirmware needs boost and temperature (or -)" >&2; exit 1; }
+        BOOST="$1"; TEMP="$2"
+        BOOST_NODE=/sys/devices/platform/asus-nb-wmi/nv_dynamic_boost
+        TEMP_NODE=/sys/devices/platform/asus-nb-wmi/nv_temp_target
+        if [ "$BOOST" != - ]; then
+            is_int "$BOOST" && [ "$BOOST" -ge 5 ] && [ "$BOOST" -le 25 ] || {
+                echo "dynamic boost out of range (5-25 W)" >&2; exit 1; }
+            [ -w "$BOOST_NODE" ] || { echo "nv_dynamic_boost not supported" >&2; exit 1; }
+        fi
+        if [ "$TEMP" != - ]; then
+            is_int "$TEMP" && [ "$TEMP" -ge 75 ] && [ "$TEMP" -le 87 ] || {
+                echo "temp target out of range (75-87 C)" >&2; exit 1; }
+            [ -w "$TEMP_NODE" ] || { echo "nv_temp_target not supported" >&2; exit 1; }
+        fi
+        # These sysfs show methods return driver caches, not firmware state.
+        # Always reapply: suspend and power-mode changes can reset firmware.
+        if [ "$BOOST" != - ]; then
+            echo "$BOOST" > "$BOOST_NODE"
+        fi
+        if [ "$TEMP" != - ]; then
+            echo "$TEMP" > "$TEMP_NODE"
         fi
         ;;
 

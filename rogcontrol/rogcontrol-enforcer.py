@@ -11,7 +11,8 @@ Independent workers handle an explicitly requested one-time full charge and
 opt-in keyboard inactivity/display refresh policies, including while closed.
 
 FAN CURVES ARE THE EXCEPTION: they are only re-pushed when the curve data
-actually changes, or when an external power-mode change is detected. Each
+actually changes, readback detects drift, an external power-mode change is
+detected, or the slower firmware safety refresh is due. Each
 fan channel needs a CHANNEL_GAP_S gap from the next (asus-wmi EC
 limitation, see apply_full_profile), so re-pushing all 3 unconditionally
 every cycle -- which is what this originally did -- could interrupt the
@@ -92,9 +93,9 @@ _cycle_wakeup = threading.Event()
 _automation_stop = threading.Event()
 _automation_threads = []
 
-# See pages/fans.py: retested down to 0.5s with no failures, kept at 5s for
-# margin over the retested floor.
-CHANNEL_GAP_S = 0.5
+# Nominal gap; historical sysfs readback tests passed at 0.5s, which does
+# not establish the physical RPM response of the fans.
+CHANNEL_GAP_S = fancurve.CHANNEL_GAP_S
 
 # Sysfs knobs whose value changing means the EC has just silently thrown
 # away the custom fan curve (documented asus-wmi behavior). Cheap to read,
@@ -107,8 +108,9 @@ _last_thermal_state = None
 # Safety net: even with no detected trigger, re-push the curve this often.
 # A dropped channel is otherwise invisible -- pwm<N>_enable reads back the
 # driver's own cached flag, not what the EC actually accepted, so there is
-# no way to detect a silently-ignored channel by reading sysfs. Long enough
-# that the ~10s apply stays rare.
+# no way to detect a silently-ignored channel by reading sysfs. Readback
+# catches visible drift every upkeep pass; this slower refresh covers the
+# firmware state that those cached driver values cannot prove.
 FAN_REVERIFY_SECONDS = 300
 _last_fan_apply_time = 0.0
 
@@ -129,7 +131,7 @@ _last_applied_fans = None
 # full apply.
 #
 # Why: adopting a mode change switches profile, and a profile switch re-pushes
-# all three fan channels (~10s of writes) with a completely different curve.
+# all three fan channels with a completely different curve.
 # Measured on this machine, the power mode flipped balanced/performance five
 # times in seventeen minutes, so the fans were being handed a different curve
 # every ~90 seconds and never settled on either -- which is exactly the
@@ -448,26 +450,26 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
                               json.dumps(fans, sort_keys=True))
         stale = (time.monotonic() - _last_fan_apply_time) >= FAN_REVERIFY_SECONDS
         if force_fan_reapply or stale or fans_signature != _last_applied_fans:
+            pending_fans = list(fans.items())
+        else:
+            # Fresh driver reads detect visible drift, not physical fan
+            # response. Unknown readback alone is not evidence of drift;
+            # the slower safety refresh still covers silent EC resets.
+            enabled = hardware.read_fan_curve_enabled()
+            pending_fans = []
+            for channel, points in fans.items():
+                actual = hardware.read_fan_curve_points(channel)
+                if (enabled.get(channel) is False
+                        or (actual is not None
+                            and not fancurve.curve_matches_hardware(points, actual))):
+                    pending_fans.append((channel, points))
+        if pending_fans:
             fan_apply_ok = True
-            for i, (channel, points) in enumerate(fans.items()):
+            for i, (channel, points) in enumerate(pending_fans):
                 if i > 0:
-                    # The asus-wmi embedded controller can silently drop
-                    # fan-curve writes fired too close together for
-                    # different channels. First measured directly on this
-                    # hardware: applying one channel in isolation reliably
-                    # took effect, but a 0.5s gap between channels left 2 of
-                    # 3 stuck on their old value. A later, more careful
-                    # retest -- several rounds at each gap from 0.5s to 8s,
-                    # reading the curve back from the driver afterward --
-                    # found 0.5s through 8s all held; the original 0.5s
-                    # failure was not reproduced. CHANNEL_GAP_S is kept above
-                    # the retested floor rather than dropped to it. This --
-                    # combined with the unconditional re-push every
-                    # INTERVAL_SECONDS this function used to do regardless of
-                    # whether anything had changed, which could interrupt a
-                    # channel before it finished settling -- is why the curve
-                    # looked like it was being "ignored" even though this
-                    # enforcer was correctly re-pushing it the whole time.
+                    # Preserve the shared nominal gap between writes.
+                    # Historical readback checks passed at this interval;
+                    # they were not physical fan-response tests.
                     time.sleep(CHANNEL_GAP_S)
                 expanded = interpolate_curve(points, 8)
                 flat = []
@@ -480,7 +482,12 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
             # or busy-lock error must be retried on the next enforcement pass.
             if fan_apply_ok:
                 _last_applied_fans = fans_signature
-                _last_fan_apply_time = time.monotonic()
+                # Repairing one channel must not postpone the firmware
+                # safety refresh for every other channel indefinitely.
+                if len(pending_fans) == len(fans):
+                    _last_fan_apply_time = time.monotonic()
+            else:
+                _last_applied_fans = None
 
 def mode_change_is_settled(service_name, actual_mode):
     """True when an external mode change is worth acting on.
@@ -588,16 +595,14 @@ def adopt_external_ppd_mode(config, actual_mode, service_name):
 #
 # The power source used to be sampled once per cycle and nowhere else, so a
 # switch landed up to INTERVAL_SECONDS (60s) after the plug moved. That was
-# argued for on the grounds that the apply takes ~10 seconds anyway so a
-# minute of granularity costs nothing -- which is wrong about the part that
-# matters. Sixteen seconds of fans ramping is feedback that something
-# happened; up to sixty seconds of *nothing* happening is indistinguishable
+# argued for on the grounds that applying a profile already takes time.
+# But up to sixty seconds of *nothing* happening is indistinguishable
 # from a broken feature, and that is exactly how it was reported. So the plug
 # moving is now watched for directly (power_supply_watcher_thread below) and
 # the cycle is kept only as the fallback.
 #
 # Both paths go through check_ac_auto_switch, and _ac_lock serialises them:
-# a switch holds the lock for the whole ~10 second apply, so the watcher and
+# a switch holds the lock for the whole apply, so the watcher and
 # the cycle can never be halfway through two different profiles at once.
 _ac_lock = threading.Lock()
 
@@ -811,7 +816,7 @@ def ac_switch_target(previous_ac, current_ac, config, current_kind=None):
 # alternative is a feature that silently does nothing on those machines.
 #
 # The flash goes BEFORE the auto-switch decision below, not after: the
-# switch's own apply takes ~10 seconds, and an acknowledgement that lands
+# switch's own apply can take time, and an acknowledgement that lands
 # after the fans have already changed pitch is answering a question the user
 # has finished asking. It also fires regardless of whether ac_profile /
 # battery_profile are configured, for the same reason the charger-kind
@@ -1036,7 +1041,7 @@ def check_ac_auto_switch(config, service_name, trigger="poll"):
     Called from two places -- the udev watcher the moment the plug moves, and
     the periodic cycle as the fallback -- so it takes _ac_lock for its whole
     body, apply included. Without that, a udev event arriving while the cycle
-    was mid-apply would start a second ~10 second apply of a different profile
+    was mid-apply would start a second apply of a different profile
     over the top of the first, and the fan channels would be interleaved.
     Blocking the cycle behind the watcher is the right way round: the watcher
     is reacting to something that actually happened.
@@ -1084,7 +1089,7 @@ def _check_ac_auto_switch(config, service_name, trigger, suppress_switch=False):
         store_last_ac_state(current_ac)
 
     # Before the switch decision, so the acknowledgement is not stuck behind
-    # the ~10 second apply a switch triggers. It is also independent of it:
+    # the apply a switch triggers. It is also independent of it:
     # the flash answers "the power source changed", which is true whether or
     # not a profile was configured to change with it.
     event = charger_flash_event(previous_ac, current_ac)
@@ -1143,10 +1148,9 @@ def _check_ac_auto_switch(config, service_name, trigger, suppress_switch=False):
     config["current_profile"] = target
     save_config(config, "auto-switched profile")
 
-    # Before the apply, not after: the apply takes ~10 seconds (the fan
-    # channels need 8 seconds between them), and a notification that arrives
-    # a quarter of a minute after the fans have already changed pitch is
-    # explaining something the user has finished wondering about.
+    # Notify before the apply so helper latency cannot delay feedback.
+    # Fan writes use the shared nominal 0.5s inter-channel gap; total apply
+    # time also depends on the CPU/GPU helpers and is not a fixed duration.
     notify("ROG Control",
            f"On {source} power — switched to “{target}”")
 
@@ -1696,10 +1700,10 @@ def apply_gpu_clock_offsets(gpu):
         set_voltage_boost(gpu["voltage_boost"])
     if "clock_offset" in gpu:
         set_clock_offset("core", gpu["clock_offset"])
-    if "dyn_boost" in gpu:
-        run_helper("nvboost", gpu["dyn_boost"])
-    if "temp_target" in gpu:
-        run_helper("nvtemp", gpu["temp_target"])
+    ok, message = hardware.nv_apply_settings(gpu)
+    if not ok:
+        log(f"GPU firmware settings failed: {message}", "ERROR",
+            dedupe_key="nvfirmware")
     if "mem_clock_offset" in gpu:
         set_clock_offset("memory", gpu["mem_clock_offset"])
 

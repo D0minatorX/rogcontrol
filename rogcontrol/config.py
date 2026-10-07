@@ -435,9 +435,8 @@ def reload_decision(current, fresh):
 # --- where the result of a deferred apply may be written ---------------------
 #
 # Every Apply in this app is deferred, and the fan page's is deferred by
-# about ten seconds: three curve writes CHANNEL_GAP_S apart, because the EC
-# can drop curves fired too close together. Pressing Apply and learning
-# the answer are therefore about ten seconds apart, and the active profile can
+# time in hardware calls and paced curve writes. Pressing Apply and learning
+# the answer are separated by that work, and the active profile can
 # move in between -- the user can pick another one, so can the tray and the
 # hotkey cycler, and the enforcer does it unprompted when the charger comes
 # out or the OS power mode changes.

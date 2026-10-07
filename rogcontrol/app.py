@@ -249,8 +249,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.toast_overlay = Adw.ToastOverlay()
         self.toast_overlay.set_child(self.stack)
 
-        # Applying a profile takes about twenty seconds, most of it spent
-        # waiting between fan channels, and it happens on whichever page the
+        # Applying a profile can take time in hardware/driver calls and
+        # happens on whichever page the
         # user is looking at. A toast would be gone long before the work is,
         # so the progress lives in a banner under the header where it stays
         # put until the apply really ends.
@@ -582,9 +582,8 @@ class MainWindow(Adw.ApplicationWindow):
         """Push everything in profile ``name`` at the hardware, off the main
         loop, reporting progress in the banner.
 
-        Off the main loop is not optional: the fan channels need 8 seconds
-        between them, so this takes about twenty seconds start to finish and
-        doing it inline would freeze the window for all of it."""
+        Hardware and driver calls run off the main loop so the window remains
+        responsive while the profile is being applied."""
         # Nothing else may write the hardware underneath this. The drop-down
         # is one way in, deleting the active profile is another, and every
         # page's own Apply is a third -- claim_hardware shuts all of them.
@@ -689,13 +688,7 @@ class MainWindow(Adw.ApplicationWindow):
                                                              held[ch]))]
             for i, channel in enumerate(channels):
                 if i > 0:
-                    # Mandatory: the asus-wmi EC can silently drop curve
-                    # writes fired too close together. First measured this
-                    # as an 8s-only requirement (0.5s left channels stuck);
-                    # a later retest found 0.5s-8s all held, so CHANNEL_GAP_S
-                    # was lowered to 5s for margin over the retested floor.
-                    step(f"Waiting {CHANNEL_GAP_S}s — the fan controller "
-                         f"ignores curves written closer together…")
+                    step(f"Applying fan curves — spacing writes by {CHANNEL_GAP_S}s…")
                     time.sleep(CHANNEL_GAP_S)
                 label = hardware.FAN_LABELS[channel]
                 step(f"Writing the {label} curve ({i + 1} of "
@@ -742,12 +735,11 @@ class MainWindow(Adw.ApplicationWindow):
                  or hardware.default_gpu_limits())["clock_limit_max"])
             do("GPU clock ceiling",
                lambda: hardware.run_helper("gpuclocklimit", arg))
-        if "dyn_boost" in gpu and self.caps.get("nv_dynamic_boost"):
-            do("Dynamic Boost",
-               lambda: hardware.run_helper("nvboost", gpu["dyn_boost"]))
-        if "temp_target" in gpu and self.caps.get("nv_temp_target"):
-            do("GPU temperature target",
-               lambda: hardware.run_helper("nvtemp", gpu["temp_target"]))
+        firmware = {key: gpu[key] for key, cap in (
+            ('dyn_boost', 'nv_dynamic_boost'), ('temp_target', 'nv_temp_target'))
+            if key in gpu and self.caps.get(cap)}
+        if firmware:
+            do("GPU firmware settings", lambda: hardware.nv_apply_settings(firmware))
         if ("voltage_boost" in gpu
                 and self.caps.get("nvidia_voltage_boost")
                 and not nvidia_access):
