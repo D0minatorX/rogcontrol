@@ -109,9 +109,8 @@ PROFILE_COLOUR_TOOLTIP = (
 CHARGER_FLASH_TITLE = "Charger flash"
 
 CHARGER_FLASH_DESCRIPTION = (
-    "Blink the keys once when the charger is plugged in or unplugged, then "
-    "go straight back to the effect above. Handled by the background "
-    "service, so it works with this window closed."
+    "Blink the keys on charger changes, then restore the current effect. "
+    "Works with this window closed."
 )
 
 CHARGER_FLASH_TOOLTIP = (
@@ -266,10 +265,23 @@ class KeyboardPage(Adw.PreferencesPage):
         # the keyboard every time the window opened.
         lighting.add(self.mode_row)
 
-        self.color_row, self.color_button = self._color_row(
-            lighting, "Colour", COLOUR_TOOLTIP)
-        self.color2_row, self.color2_button = self._color_row(
-            lighting, "Second colour", COLOUR2_TOOLTIP)
+        colours = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24,
+                          homogeneous=True)
+        colours.set_margin_start(16)
+        colours.set_margin_end(16)
+        colours.set_margin_top(8)
+        colours.set_margin_bottom(8)
+        self.color_row, self.color_button = self._color_control(
+            "Colour", COLOUR_TOOLTIP)
+        self.color2_row, self.color2_button = self._color_control(
+            "Second colour", COLOUR2_TOOLTIP)
+        colours.append(self.color_row)
+        colours.append(self.color2_row)
+        # PreferencesGroup puts plain widgets below its boxed rows. Wrap the
+        # pair in a real row so it stays inside the card, before Speed.
+        self.colours_row = Adw.PreferencesRow(activatable=False)
+        self.colours_row.set_child(colours)
+        lighting.add(self.colours_row)
 
         self.speed_row = _LevelRow(
             SPEED_LEVELS, title="Speed", tooltip=SPEED_TOOLTIP,
@@ -338,24 +350,20 @@ class KeyboardPage(Adw.PreferencesPage):
             lighting.set_description(
                 f"{EFFECT_DESCRIPTION}\n\n{NO_ROGAURACORE_HINT}")
 
-    def _color_row(self, group, title, tooltip):
-        """An action row whose control is a colour button.
-
-        The title carries the row; which effects read which button is on
-        hover, because the two of them together were four lines of text
-        above the picker that decides whether either is used at all."""
-        row = Adw.ActionRow(title=title)
-        row.set_tooltip_text(tooltip)
+    def _color_control(self, title, tooltip):
+        """One labelled swatch in the shared colour row."""
+        control = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        control.set_tooltip_text(tooltip)
+        control.append(Gtk.Label(label=title, xalign=0, hexpand=True))
         # Not Gtk.ColorDialogButton: the dialog it opens is sized for its
         # palette view and clips the saturation/value plane behind a
         # scrollbar when you choose Custom. See widgets/color_picker.py.
         button = ColorButton(title=title)
         button.set_valign(Gtk.Align.CENTER)
         button.connect("color-set", self._on_color_changed)
-        row.add_suffix(button)
-        row.set_activatable_widget(button)
-        group.add(row)
-        return row, button
+        button.update_property([Gtk.AccessibleProperty.LABEL], [title])
+        control.append(button)
+        return control, button
 
     # -- loading -------------------------------------------------------------
 
@@ -489,6 +497,8 @@ class KeyboardPage(Adw.PreferencesPage):
         mode = self.current_mode()
         self.color_row.set_visible(mode in kbdcolor.COLOUR_MODES)
         self.color2_row.set_visible(mode in kbdcolor.SECOND_COLOUR_MODES)
+        self.colours_row.set_visible(
+            mode in kbdcolor.COLOUR_MODES or mode in kbdcolor.SECOND_COLOUR_MODES)
         self.speed_row.set_visible(mode in kbdcolor.SPEED_MODES)
         self.profile_group.set_visible(mode == kbdcolor.PROFILE_COLOR_MODE)
         self.mode_row.set_subtitle(MODE_HINTS.get(mode, ""))

@@ -6,9 +6,8 @@ from .. import config, hotkeys, fnlock
 class KeyboardBindingsControls(Adw.PreferencesGroup):
     def __init__(self, window):
         super().__init__(title='Key bindings and FN lock', description=(
-            'Quit G-Helper and disable overlapping desktop shortcuts before enabling. '
             'Works through ASUS input devices on X11 and Wayland. '
-            'Actions pause when your desktop session is locked or inactive.'))
+            'Actions pause when your session is locked or inactive.'))
         self.window = window
         self._loading = False
         self._buttons_available = self._fn_available = False

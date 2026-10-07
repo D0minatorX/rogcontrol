@@ -10,9 +10,8 @@ from .. import config, keyboard_power
 class KeyboardPowerControls(Adw.PreferencesGroup):
     def __init__(self, window):
         super().__init__(title='Lighting power states', description=(
-            'Saved preferences, not firmware readings. Battery replaces Awake on battery power. '
-            'Uses your current brightness and effect. '
-            'Turning management off leaves the last settings in place.'))
+            'Battery uses your current brightness and effect instead of Awake. '
+            'Turning management off keeps the last settings.'))
         self.window = window
         self._loading = False
         self._busy = False
