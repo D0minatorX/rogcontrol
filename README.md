@@ -143,14 +143,16 @@ and service restarts; a failed restore is retried in the background.
   version 1 respects idle inhibitors, so playback may keep the keys lit.
   Other Wayland compositors exposing the same protocol can also work.
   Missing protocols or unusual multi-seat sessions leave the light unchanged.
-- **Quick Access → Display:** choose a supported internal-panel refresh rate
-  from the dropdown (for example, 60 Hz or 165 Hz), keeping the current
-  resolution. Enable **Automatic refresh switching** to use the highest
-  supported rate on AC/USB-C and the lowest on battery instead. Turn it off
-  to choose a rate manually. Requires GNOME's `gdctl` or
+- **Quick Access → Display:** use the dropdown beside **Automatic refresh
+  switching** to choose the internal-panel rate for battery power (for example,
+  60 Hz). Enable the toggle to apply it on battery. Reconnecting AC or USB-C
+  restores the rate used before the battery change, keeping the current
+  resolution. Disabling the toggle also restores that rate. The saved restore
+  state survives a background-service restart. Requires GNOME's `gdctl` or
   KDE Plasma's `kscreen-doctor` in a graphical user session. Mirrored panels
-  are skipped; external monitor modes and layout are preserved. Turning the
-  option off leaves the current refresh rate in place.
+  are skipped; external monitor modes and layout are preserved. The installer
+  checks supported rates on fresh installs and updates. **Desktop availability**
+  is hidden when working and appears with a retry button if a check fails.
 
 Display sits directly below Performance and also contains panel overdrive
 and AMD panel self-refresh on supported hardware. **Quick Access → Startup**,

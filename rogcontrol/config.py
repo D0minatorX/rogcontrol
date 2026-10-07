@@ -39,6 +39,7 @@ DEFAULT_CONFIG = {
     "kbd_idle_timeout_ac_seconds": 0,
     "kbd_idle_timeout_battery_seconds": 0,
     "auto_display_refresh": False,
+    "battery_display_refresh_hz": None,
     # Preserve the existing tray and background service startup by default.
     "start_on_boot": True,
     "ac_profile": "Performance",

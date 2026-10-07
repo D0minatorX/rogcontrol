@@ -1,12 +1,16 @@
-"""Internal display controls in Quick Access."""
+"""Battery refresh policy controls in Quick Access."""
 import gi
 
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, GLib, Gtk
 
 from .. import config as config_mod
 from .. import display_refresh
+
+
+def _rate_label(rate):
+    return f'{rate:.2f}'.rstrip('0').rstrip('.') + ' Hz'
 
 
 class DisplayRefreshControls(Adw.PreferencesGroup):
@@ -15,18 +19,23 @@ class DisplayRefreshControls(Adw.PreferencesGroup):
         self.window = window
         self._loading = False
         self._querying = False
-        self._applying = False
         self._supported = False
         self._rates = []
-        self._current_rate = None
-        self.rate_row = Adw.ComboRow(
-            title='Refresh rate',
-            subtitle='Supported rates for the internal display at its current resolution')
-        self.rate_row.set_model(Gtk.StringList.new([]))
-        self.add(self.rate_row)
-        self.row = Adw.SwitchRow(
+        self._error = None
+        self.row = Adw.ActionRow(
             title='Automatic refresh switching',
-            subtitle='Highest supported on AC or USB-C; lowest on battery, at the current resolution')
+            subtitle='Use this rate on battery; restore the previous rate on charger')
+        self.rate_dropdown = Gtk.DropDown(
+            model=Gtk.StringList.new([]), valign=Gtk.Align.CENTER)
+        self.rate_dropdown.set_tooltip_text('Refresh rate to use on battery')
+        self.rate_dropdown.update_property(
+            [Gtk.AccessibleProperty.LABEL], ['Battery refresh rate'])
+        self.toggle = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self.toggle.update_property(
+            [Gtk.AccessibleProperty.LABEL], ['Automatic refresh switching'])
+        self.row.add_suffix(self.rate_dropdown)
+        self.row.add_suffix(self.toggle)
+        self.row.set_activatable_widget(self.toggle)
         self.add(self.row)
         self.status = Adw.ActionRow(title='Desktop availability')
         self.add(self.status)
@@ -34,45 +43,38 @@ class DisplayRefreshControls(Adw.PreferencesGroup):
         self.recheck.connect('clicked', self._refresh_rates)
         self.status.add_suffix(self.recheck)
         self.reload()
-        self.row.connect('notify::active', self._changed)
-        self.rate_row.connect('notify::selected', self._rate_changed)
+        self.toggle.connect('notify::active', self._changed)
+        self.rate_dropdown.connect('notify::selected', self._rate_changed)
         self.connect('map', self._refresh_rates)
 
     def reload(self):
-        self._loading = True
-        try:
-            enabled = getattr(self.window, 'config', {}).get(display_refresh.CONFIG_KEY) is True
-            self.row.set_active(enabled)
-            self._supported, reason = display_refresh.availability()
-            # Preserve a saved opt-in on another desktop, but allow turning it off.
-            self.status.set_subtitle(reason)
-        finally:
-            self._loading = False
-        self._sync_controls()
+        self._supported, reason = display_refresh.availability()
+        if not self._supported:
+            self._rates = []
+            self._error = reason
+        self._render_preferences()
         if self.get_mapped():
             self._refresh_rates()
 
     def _sync_controls(self):
-        busy = self._querying or self._applying
-        automatic = self.row.get_active()
-        self.row.set_sensitive((self._supported or automatic) and not busy)
-        self.recheck.set_sensitive(not busy)
-        self.rate_row.set_sensitive(
-            self._supported and bool(self._rates) and not automatic and not busy)
-        self.rate_row.set_subtitle(
-            'Turn off automatic switching to choose a rate' if automatic else
-            'Supported rates for the internal display at its current resolution')
+        valid_selection = self.rate_dropdown.get_selected() < len(self._rates)
+        self.toggle.set_sensitive(not self._querying and (
+            (self._supported and valid_selection) or self.toggle.get_active()))
+        self.rate_dropdown.set_sensitive(
+            self._supported and bool(self._rates) and not self._querying)
+        self.recheck.set_sensitive(not self._querying)
+        self.status.set_visible(self._error is not None)
+        if self._error is not None:
+            self.status.set_subtitle(self._error)
 
     def _refresh_rates(self, *_args):
-        if self._querying or self._applying:
+        if self._querying:
             return
         self._supported, reason = display_refresh.availability()
-        self.status.set_subtitle(reason)
         if not self._supported:
             self._rates = []
-            self._current_rate = None
-            self._render_rates()
-            self._sync_controls()
+            self._error = reason
+            self._render_preferences()
             return
         self._querying = True
         self._sync_controls()
@@ -81,59 +83,81 @@ class DisplayRefreshControls(Adw.PreferencesGroup):
     def _rates_loaded(self, result, error):
         self._querying = False
         if error is not None:
-            self._rates, self._current_rate = [], None
-            self.status.set_subtitle(str(error))
+            self._rates = []
+            self._error = str(error)
         else:
-            self._rates, self._current_rate = result
-        self._render_rates()
-        self._sync_controls()
+            self._rates, _current_rate = result
+            self._error = None if self._rates else 'No supported internal display rates.'
+        self._render_preferences()
 
-    def _render_rates(self):
+    def _render_preferences(self):
+        settings = getattr(self.window, 'config', {})
         self._loading = True
         try:
-            self.rate_row.set_model(Gtk.StringList.new(
-                [f'{rate:.2f}'.rstrip('0').rstrip('.') + ' Hz'
-                 for rate in self._rates]))
-            self.rate_row.set_selected(
-                self._rates.index(self._current_rate)
-                if self._current_rate in self._rates else Gtk.INVALID_LIST_POSITION)
+            self.toggle.set_active(settings.get(display_refresh.CONFIG_KEY) is True)
+            saved = settings.get(display_refresh.BATTERY_RATE_KEY)
+            labels = [_rate_label(rate) for rate in self._rates]
+            selected = Gtk.INVALID_LIST_POSITION
+            if self._rates:
+                if saved is None:
+                    selected = 0
+                elif saved in self._rates:
+                    selected = self._rates.index(saved)
+                else:
+                    # Keep a stored choice visible when docking or resolution
+                    # changes make it unavailable; never silently replace it.
+                    try:
+                        label = _rate_label(float(saved))
+                    except (ValueError, TypeError):
+                        label = str(saved)
+                    selected = len(labels)
+                    labels.append(f'{label} (unavailable)')
+            model = self.rate_dropdown.get_model()
+            if ([model.get_string(i) for i in range(model.get_n_items())]
+                    != labels):
+                self.rate_dropdown.set_model(Gtk.StringList.new(labels))
+            self.rate_dropdown.set_selected(selected)
         finally:
             self._loading = False
-
-    def _rate_changed(self, row, _param):
-        if self._loading or self._applying or self._querying or self.row.get_active():
-            return
-        selected = row.get_selected()
-        if selected >= len(self._rates):
-            return
-        rate = self._rates[selected]
-        if rate == self._current_rate:
-            return
-        self._applying = True
         self._sync_controls()
-        self.window.apply_async(
-            lambda: display_refresh.set_refresh_rate(rate),
-            lambda result, error: self._rate_applied(rate, result, error))
 
-    def _rate_applied(self, rate, result, error):
-        self._applying = False
-        ok, message = result if error is None else (False, str(error))
-        if ok:
-            self._current_rate = rate
+    def _save_preferences(self, changes):
+        try:
+            config_mod.update_config(lambda cfg: cfg.update(changes))
+        except (OSError, ValueError) as error:
+            self.window.toast(f'Could not save automatic refresh switching: {error}')
+            self._render_preferences()
         else:
-            self.window.toast(f'Refresh rate unchanged: {message}')
-        self._render_rates()
-        self._sync_controls()
+            self.window.config.update(changes)
+            self._sync_controls()
+            # Gtk.DropDown is still notifying its selection here. Replacing
+            # its model (to remove an unavailable choice) during that signal
+            # can invalidate the selection object used by GTK's own handler.
+            if self.rate_dropdown.get_model().get_n_items() != len(self._rates):
+                GLib.idle_add(self._render_preferences)
 
-    def _changed(self, row, _param):
+    def _rate_changed(self, dropdown, _param):
+        if self._loading or self._querying:
+            return
+        selected = dropdown.get_selected()
+        if selected < len(self._rates):
+            # The background policy applies this only on battery. Changing the
+            # preference must not alter the current charger refresh rate.
+            rate = self._rates[selected]
+            if self.window.config.get(display_refresh.BATTERY_RATE_KEY) != rate:
+                self._save_preferences({display_refresh.BATTERY_RATE_KEY: rate})
+
+    def _changed(self, toggle, _param):
         if self._loading:
             return
-        enabled = row.get_active()
-        try:
-            config_mod.update_config(lambda cfg: cfg.update(
-                {display_refresh.CONFIG_KEY: enabled}))
-        except OSError as error:
-            self.window.toast(f'Could not save automatic refresh switching: {error}')
-        else:
-            self.window.config[display_refresh.CONFIG_KEY] = enabled
-        self.reload()
+        enabled = toggle.get_active()
+        if enabled == (self.window.config.get(display_refresh.CONFIG_KEY) is True):
+            return
+        changes = {display_refresh.CONFIG_KEY: enabled}
+        if enabled:
+            selected = self.rate_dropdown.get_selected()
+            if selected >= len(self._rates):
+                self._render_preferences()
+                return
+            changes[display_refresh.BATTERY_RATE_KEY] = self._rates[selected]
+        self._save_preferences(changes)

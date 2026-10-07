@@ -4,7 +4,7 @@ The installer invokes this on every run, whether it is a fresh install,
 update, or same-version repair. Profiles are never changed by the report.
 """
 
-from . import graphics_backend, hardware
+from . import display_refresh, graphics_backend, hardware
 
 
 LABELS = {
@@ -57,6 +57,26 @@ def feature_rows(caps):
             for key, value in caps.items() if key not in METADATA]
 
 
+def display_refresh_row():
+    """Read the session's real internal-panel modes without changing them."""
+    label = "Automatic display refresh"
+    try:
+        rates, current = display_refresh.get_refresh_rates()
+        if not rates:
+            raise ValueError("No supported refresh rates at the current resolution")
+        detail = ", ".join(f"{rate:g} Hz" for rate in rates)
+        if current is not None:
+            detail += f"; current: {current:g} Hz"
+        available = True
+    except ValueError as error:
+        detail = str(error)
+        available = False
+    # Preserve the installer's one-line key|label|boolean protocol even if a
+    # desktop tool returns a multiline error or a pipe in an identifier.
+    detail = " ".join(detail.replace("|", "/").split())
+    return "display_refresh", f"{label} ({detail})", available
+
+
 def detect_feature_rows():
     """Run the app's startup probes for an installer feature report."""
     caps = hardware.detect_capabilities()
@@ -75,7 +95,7 @@ def detect_feature_rows():
         caps["kbd_ambient"] = ambient_available()
     except Exception:
         caps["kbd_ambient"] = False
-    return feature_rows(caps)
+    return feature_rows(caps) + [display_refresh_row()]
 
 
 def main():

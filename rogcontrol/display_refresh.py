@@ -10,14 +10,20 @@ GNOME mutter tools/gdctl and data/dbus-interfaces/org.gnome.Mutter.DisplayConfig
 No root helper, xrandr fallback, custom timings, or persistent display writes.
 """
 
+from contextlib import contextmanager
+import fcntl
 import json
 import math
 import os
 import re
 import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 
 CONFIG_KEY = 'auto_display_refresh'
+BATTERY_RATE_KEY = 'battery_display_refresh_hz'
+STATE_PATH = os.path.expanduser('~/.local/state/rogcontrol/display-refresh.json')
 TRANSFORMS = ('normal', '90', '180', '270', 'flipped', 'flipped-90',
               'flipped-180', 'flipped-270')
 COLOR_MODES = {0: 'default', 1: 'bt2100', 2: 'sdr-native'}
@@ -90,7 +96,7 @@ def _kde_plan(state, power_source, requested_rate=None):
             _rate(mode['refreshRate'])
             _token(mode['id'])
         panels.append(({_rate(mode['refreshRate']) for mode in modes},
-                       _rate(current['refreshRate'])))
+                       _rate(current['refreshRate']), 'kde:' + output['name']))
         target = _choose_mode(modes, lambda mode: mode['refreshRate'],
                               power_source, requested_rate)
         if _rate(target['refreshRate']) == _rate(current['refreshRate']):
@@ -146,7 +152,8 @@ def _gnome_plan(state, power_source, requested_rate=None):
                               == current[6].get('refresh-rate-mode', 'fixed')]
                 for mode in candidates:
                     _rate(mode[3])
-                panels.append(({_rate(mode[3]) for mode in candidates}, _rate(current[3])))
+                panels.append(({_rate(mode[3]) for mode in candidates}, _rate(current[3]),
+                               'gnome:' + json.dumps(list(spec))))
                 if candidates:
                     target = _choose_mode(candidates, lambda mode: mode[3],
                                           power_source, requested_rate)
@@ -181,10 +188,10 @@ def _choose_mode(modes, rate_of, power_source, requested_rate):
 def _common_rates(panels):
     if not panels:
         raise ValueError('No eligible internal display; disabled or mirrored panels are skipped.')
-    rates = set.intersection(*(rates for rates, _ in panels))
+    rates = set.intersection(*(panel[0] for panel in panels))
     if not rates:
         raise ValueError('No common safe refresh rates for the internal displays.')
-    current = {rate for _, rate in panels}
+    current = {panel[1] for panel in panels}
     return sorted(rates), next(iter(current)) if len(current) == 1 else None
 
 
@@ -254,35 +261,87 @@ def _gnome_state():
         Gio.DBusCallFlags.NO_AUTO_START, 5000, None).unpack()
 
 
-def tick(cfg, power_source):
-    """One best-effort reconciliation; caller owns cadence and status display.
+@contextmanager
+def _locked_state(state_path):
+    Path(state_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(state_path + '.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
-    Re-reading the display every enabled tick handles dock, resume and manual
-    resolution changes without stale layouts. Disabled mode performs no I/O.
+
+def _read_restore(state_path):
+    try:
+        with open(state_path) as source:
+            state = json.load(source)
+    except FileNotFoundError:
+        return None
+    if (not isinstance(state, dict) or not isinstance(state.get('panels'), list)
+            or not state['panels'] or not all(isinstance(item, str) for item in state['panels'])):
+        raise ValueError('Invalid saved display refresh restore state')
+    _rate(state.get('restore_hz'))
+    return state
+
+
+def _save_restore(state, state_path):
+    fd, temporary = tempfile.mkstemp(dir=str(Path(state_path).parent))
+    try:
+        with os.fdopen(fd, 'w') as target:
+            json.dump(state, target)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, state_path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def tick(cfg, power_source, state_path=None):
+    """Use the selected battery rate, then restore the pre-battery rate.
+
+    The original rate is saved before a display write, survives restarts, and
+    remains pending until restoration succeeds. AC without a pending restore
+    does nothing. Disabled mode restores a pending change; unknown power waits.
     """
-    if cfg.get(CONFIG_KEY) is not True:
-        return 'Automatic display refresh is off.'
     if power_source not in ('ac', 'usbc', 'battery'):
         return 'Power source unknown; display unchanged.'
-    supported, reason = availability()
-    if not supported:
-        _log_failure(reason)
-        return reason
+    enabled = cfg.get(CONFIG_KEY) is True
+    state_path = str(state_path or STATE_PATH)
+    if not enabled and not Path(state_path).exists():
+        return 'Automatic display refresh is off.'
     try:
-        if backend_name() == 'kde':
-            command = kde_command(json.loads(_run(['kscreen-doctor', '--json'])), power_source)
-        else:
-            command = gnome_command(_gnome_state(), power_source)
-        if command is None:
-            return 'No eligible internal display refresh change needed.'
-        _run(command)
-        return 'Internal display refresh applied.'
+        with _locked_state(state_path):
+            pending = _read_restore(state_path)
+            restoring = not enabled or power_source != 'battery'
+            if restoring and pending is None:
+                return 'Automatic display refresh is off.' if not enabled else 'Current display refresh preserved.'
+            if restoring:
+                requested = _rate(pending['restore_hz'])
+            else:
+                requested = cfg.get(BATTERY_RATE_KEY)
+                if requested is None:
+                    requested = get_refresh_rates()[0][0]
+                requested = _rate(requested)
+            # The command and snapshot come from the same fresh desktop state.
+            command, panels = _current_plan(requested)
+            rates, current = _common_rates(panels)
+            identities = sorted(panel[2] for panel in panels)
+            if pending is not None and identities != pending['panels']:
+                raise ValueError('Internal displays changed; waiting to restore the original panels')
+            if current is None and pending is None:
+                raise ValueError('Internal displays have different refresh rates; cannot restore them safely')
+            if not restoring and pending is None and command is not None:
+                if current not in rates:
+                    raise ValueError('Current internal refresh rate cannot be safely restored')
+                _save_restore({'restore_hz': current, 'panels': identities}, state_path)
+            if command is not None:
+                _run(command)
+            if restoring:
+                Path(state_path).unlink(missing_ok=True)
+                return f'Previous display refresh restored to {requested:g} Hz.'
+            return f'Battery display refresh applied at {requested:g} Hz.'
     except Exception as error:
-        # A compositor disappearing on logout must not crash the enforcer.
         message = f'Display refresh unchanged: {error}'
         _log_failure(message)
         return message
-
 
 
 def _log_failure(message):
