@@ -3,12 +3,7 @@
 Pure data plus one scaling helper -- no GTK, no hardware access, so it can
 be imported and tested anywhere.
 
-This is where the app, the config module, the System page and the tray read
-these tables from; it is not yet the only copy. rogcontrol-enforcer.py still
-defines its own PROFILE_TO_PPD_MODE/PPD_MODE_TO_PROFILE at the top of the
-file even though it imports this package, so a name added or a mapping
-changed here has to be changed there too or the service will disagree with
-the window about which OS mode a profile means.
+The app, config, System page, tray and enforcer share these tables.
 
 The numbers here are field-tuned against real hardware; treat a change to
 one as a hardware retune, not a tidy-up.
@@ -21,10 +16,8 @@ import json
 # than one profile may map to the same mode -- the two Balanced profiles
 # differ in EPP, which PPD has no concept of.
 #
-# Selecting a profile sets PPD's mode to match. The reverse direction is not
-# a revert: the enforcer treats a mode set from elsewhere as a request to
-# switch profile and adopts it (see PPD_MODE_TO_PROFILE below), and only
-# forces PPD back when the mode maps to no profile that still exists.
+# The active app profile is authoritative: the enforcer restores this mode
+# if the OS drifts, without changing the selected profile.
 PROFILE_TO_PPD_MODE = {
     "Performance": "performance",
     "Balanced Performance": "balanced",
@@ -32,8 +25,8 @@ PROFILE_TO_PPD_MODE = {
     "Quiet": "power-saver",
 }
 
-# The same mapping backwards, for adopting a power-mode change made outside
-# this app (GNOME's power menu, a keyboard key, powerprofilesctl).
+# Reverse lookup for callers that need a stock name for an OS mode.
+# Synchronization never uses this to override the active app profile.
 #
 # First name wins, so "balanced" from the OS resolves to "Balanced
 # Performance". A plain dict comprehension would have silently made it

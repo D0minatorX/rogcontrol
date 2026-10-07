@@ -198,11 +198,10 @@ UPDATE_AUTO_SUBTITLE = (
     "default -- an update always stays a Check click away either way.")
 
 SYNC_DESCRIPTION = (
-    "This app and the OS both hold an opinion about the power mode. "
-    "Selecting a profile here sets the OS mode to match. Changing it the "
-    "other way — GNOME's power menu, a keyboard key — is taken as a request "
-    "to switch profile: the background enforcer picks it up within a minute "
-    "and moves this app to the profile that mode maps to."
+    "The active app profile controls the OS power mode. Selecting a profile "
+    "here sets the OS mode to match. If another tool changes the OS mode, "
+    "the background enforcer restores the active profile's mode and settings "
+    "after a power-mode check every two seconds."
 )
 
 
@@ -1104,8 +1103,8 @@ class SystemPageBase(Gtk.Box):
             self.sync_value.add_css_class("warning")
             self.sync_row.set_subtitle(
                 f"“{name}” expects {expected}, but the OS is on "
-                f"{power_mode} — the enforcer settles this within a minute "
-                f"by switching to the profile {power_mode} maps to")
+                f"{power_mode} — the enforcer restores {expected} from "
+                f"the active app profile on its next sync")
 
     # -- fan boost -------------------------------------------------------
     #

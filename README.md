@@ -33,7 +33,7 @@ A control panel for ASUS ROG laptops on Linux — without needing `asusctl`. One
 Every feature below is followed by what it needs to work. If a dependency is missing, the app disables that control rather than failing silently — the installer's final summary and each control's tooltip say exactly why.
 
 ### 🗂️ Profiles
-Four to start with — Quiet, Balanced Power, Balanced Performance, Performance — and you can add your own. A profile holds everything at once: CPU power limits, undervolt, turbo on/off, a maximum clock, an energy preference, GPU limits, and a fan curve for each of the three fans. Switching profile applies all of it and moves the OS power mode to match.
+Four to start with — Quiet, Balanced Power, Balanced Performance, Performance — and you can add your own. A profile holds everything at once: CPU power limits, undervolt, turbo on/off, a maximum clock, an energy preference, GPU limits, and a fan curve for each of the three fans. Switching profile applies all of it and moves the OS power mode to match. The active app profile stays in control: the background enforcer checks for an OS power-mode mismatch every two seconds and restores the app’s mode without switching profiles.
 
 Export writes everything — every profile, the charge limit, keyboard settings, auto-switch targets, fan RPM calibration — to one JSON file, doubling as a full backup. Import can restore from that backup or merge in a single older profile export.
 

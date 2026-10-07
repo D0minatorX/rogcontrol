@@ -138,7 +138,7 @@ portal, so permission is asked once and remembered.
 
 Profile Colour gives each power profile its own colour, set on the Keyboard
 page, and repaints the keys whenever the profile changes -- from the window,
-the tray, the shortcut key, the OS power menu, or the AC/battery auto-switch.
+the tray, the shortcut key, or the AC/battery auto-switch.
 It works with the app closed.
 
 Charger flash is off until you switch it on: the keys blink one colour twice

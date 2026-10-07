@@ -28,8 +28,8 @@ fan curve we'd set. Per your request, control is now one-way from this
 app: our profile sets GNOME's power mode to match, and if power-profiles-
 daemon's mode is ever changed by anything else (GNOME's own quick
 settings, a hardware key, etc.), this enforcer forces it back to match
-our active profile AND immediately re-applies the fan curve, rather than
-waiting for the next 15s poll.
+our active profile AND re-applies the fan curve, rather than
+waiting for the next hardware upkeep pass.
 
 AC/BATTERY AUTO-SWITCH: the config's ac_profile/battery_profile are acted
 on here too. They used to be checked by the GTK3 window's own poll loop,
@@ -126,22 +126,8 @@ _last_fan_apply_time = 0.0
 # silently disable the curve on this hardware -- see module docstring).
 _last_applied_fans = None
 
-# An external power-mode change is only adopted once it has held still for
-# this long, and never within SELF_APPLY_QUIET_SECONDS of this service's own
-# full apply.
-#
-# Why: adopting a mode change switches profile, and a profile switch re-pushes
-# all three fan channels with a completely different curve.
-# Measured on this machine, the power mode flipped balanced/performance five
-# times in seventeen minutes, so the fans were being handed a different curve
-# every ~90 seconds and never settled on either -- which is exactly the
-# "fans ignore the curve and ramp up out of nowhere" symptom. Debouncing turns
-# a burst of mode flapping into at most one profile switch, and the quiet
-# window stops this service from mistaking the mode change caused by its own
-# apply for a fresh external request and chasing its own tail.
-ADOPT_DEBOUNCE_SECONDS = 10
-SELF_APPLY_QUIET_SECONDS = 30
-_last_self_apply_time = 0.0
+# Lightweight mode checks run independently of the slower hardware upkeep.
+POWER_MODE_POLL_SECONDS = 2
 
 # The keyboard colour this service last wrote, so a full apply that changes
 # nothing about the profile does not cost a ~270 ms USB round trip through
@@ -160,23 +146,8 @@ _last_kbd_color_args = None
 # after Hybrid access returns, including when the window is closed.
 _pending_gpu_limits = {}
 
-# Which OS power mode each profile means, and the same mapping backwards for
-# adopting a mode change made outside this app (GNOME's power menu, a
-# keyboard key, powerprofilesctl).
-#
-# THE PACKAGE'S, not a second copy. These two tables were duplicated here --
-# the same four names, written out again -- and profiles.py's own docstring
-# named the consequence: rename a profile or change a mapping there and this
-# service goes on believing the old one, so the window and the enforcer
-# disagree about which OS mode a profile means. The enforcer treats a mode it
-# does not expect as the OS asking for a different profile, so that
-# disagreement does not sit there quietly; it switches the profile back and
-# re-pushes all three fan curves to do it.
-#
-# Imported rather than re-derived, and imported by name so the rest of this
-# file reads exactly as it did.
+# Share the app's mapping so the enforcer restores the same expected mode.
 PROFILE_TO_PPD_MODE = profiles_mod.PROFILE_TO_PPD_MODE
-PPD_MODE_TO_PROFILE = profiles_mod.PPD_MODE_TO_PROFILE
 
 
 def log(message, level="INFO", dedupe_key=None, dedupe_seconds=300):
@@ -279,12 +250,6 @@ def get_ppd_active_profile(service_name):
 def set_ppd_active_profile(service_name, mode):
     """Set the OS power mode. Failure is not reported: PPD is optional.
 
-    The one of the three still written out here, because the write is not
-    the whole of what it does: our own set-property comes back as a
-    PropertiesChanged signal that is indistinguishable from the user
-    changing the mode in GNOME's menu, so it has to be stamped first for the
-    adoption gate to recognise the echo.
-
     It also keeps using the service name the caller already resolved rather
     than hardware.set_power_mode, which looks the name up again on every
     call: on a bus too slow to answer that lookup, this would quietly stop
@@ -292,8 +257,6 @@ def set_ppd_active_profile(service_name, mode):
     works. The try/except is the part that was actually missing."""
     if not service_name:
         return
-    global _last_self_apply_time
-    _last_self_apply_time = time.monotonic()
     path = "/" + service_name.replace(".", "/")
     try:
         subprocess.run(
@@ -352,7 +315,7 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
     # from four places -- the window, the tray's apply, the hotkey cycler and
     # here -- because a profile switch is not one event in one process. This
     # is the copy that covers the ones nobody is watching: the OS power menu
-    # being used while the app is closed (adopt_external_ppd_mode), and the
+    # being used while the app is closed (sync_active_profile_power_mode), and the
     # charger coming out (check_ac_auto_switch). Both funnel through here
     # with full=True, which is why the hook is on this function rather than
     # on each of them.
@@ -489,31 +452,6 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
             else:
                 _last_applied_fans = None
 
-def mode_change_is_settled(service_name, actual_mode):
-    """True when an external mode change is worth acting on.
-
-    Rejects two cases: the echo of this service forcing the mode back itself,
-    and a mode that does not still hold ADOPT_DEBOUNCE_SECONDS later. Both
-    produced profile switches nobody asked for, and every profile switch
-    re-pushes all three fan curves.
-
-    Note the quiet window covers only set_ppd_active_profile, not every full
-    re-apply: a mode change also triggers a thermal-state re-apply on the next
-    cycle, and stamping that too kept pushing the window forward so a real
-    change was never adopted at all."""
-    if time.monotonic() - _last_self_apply_time < SELF_APPLY_QUIET_SECONDS:
-        return False
-    time.sleep(ADOPT_DEBOUNCE_SECONDS)
-    if not service_name:
-        return True
-    still = get_ppd_active_profile(service_name)
-    if still != actual_mode:
-        log(f"power mode moved to '{actual_mode}' then to '{still}' within "
-            f"{ADOPT_DEBOUNCE_SECONDS}s -- ignoring, nothing re-applied",
-            dedupe_key="ppdflap")
-        return False
-    return True
-
 
 def save_config(config, why):
     """Write the config back out, atomically, and log a failure rather than
@@ -530,59 +468,36 @@ def save_config(config, why):
         log(f"could not save {why}: {e}", "ERROR", dedupe_key="save")
 
 
-def adopt_external_ppd_mode(config, actual_mode, service_name):
-    """React to a power mode changed outside this app.
+def sync_active_profile_power_mode(config, actual_mode, service_name):
+    """Restore the OS mode from the latest active app profile, never adopt it.
 
-    The mode is treated as a request to switch profile, not as something to
-    undo: the OS picks WHICH profile, this app still decides what that
-    profile does to the hardware. So GNOME's power menu selecting
-    "Performance" switches the app to the Performance profile and applies
-    that profile's own CPU limits, fan curve and GPU settings -- rather than
-    the previous behaviour, which silently forced the OS back within a
-    minute and made the sync look one-way.
-
-    A mode with no matching profile (someone renamed or deleted the stock
-    ones) falls back to forcing the OS back, since there is nothing sensible
-    to switch to.
-
-    Returns True if the mode was handled.
+    A mode change can wipe the custom fan curve, so restore the mode before
+    reapplying the profile's hardware settings. Custom profiles without a
+    known OS mapping are left alone.
     """
-    if not mode_change_is_settled(service_name, actual_mode):
-        return False
-    # The gate above waits, so the config on disk may have moved on (the app
-    # or the hotkey cycler can switch profile in that window). Re-read it
-    # rather than writing back a stale copy.
+    # A profile switch may have happened since the caller sampled the OS.
+    # Always use the latest saved app selection.
     try:
         with open(CONFIG_PATH) as f:
             config = json.load(f)
     except (OSError, json.JSONDecodeError):
         pass
 
-    target = PPD_MODE_TO_PROFILE.get(actual_mode)
-    profiles = config.get("profiles", {})
-    if not target or target not in profiles:
-        current_profile_name = config.get("current_profile")
-        expected_mode = PROFILE_TO_PPD_MODE.get(current_profile_name)
-        if expected_mode and service_name:
-            log(f"power mode '{actual_mode}' has no matching profile; "
-                f"restoring '{expected_mode}'", "WARN", dedupe_key="ppdadopt")
-            set_ppd_active_profile(service_name, expected_mode)
-            apply_full_profile(config, profiles.get(current_profile_name),
-                               force_fan_reapply=True)
+    current_profile_name = config.get("current_profile")
+    expected_mode = PROFILE_TO_PPD_MODE.get(current_profile_name)
+    profile = config.get("profiles", {}).get(current_profile_name)
+    if not expected_mode or profile is None or not service_name:
+        return False
+    if actual_mode == expected_mode:
+        return True
+    # Recheck immediately: an intervening app apply may have fixed the mode.
+    if get_ppd_active_profile(service_name) != actual_mode:
         return False
 
-    if target == config.get("current_profile"):
-        return True
-
     log(f"power mode changed externally to '{actual_mode}' -- "
-        f"switching profile to '{target}'")
-    config["current_profile"] = target
-    save_config(config, "adopted profile")
-
-    # A mode change is exactly when the EC drops the custom fan curve, so
-    # this must be a full re-apply, not the usual drift check.
-    apply_full_profile(config, profiles.get(target),
-                       force_fan_reapply=True, full=True)
+        f"restoring '{expected_mode}' for '{current_profile_name}'")
+    set_ppd_active_profile(service_name, expected_mode)
+    apply_full_profile(config, profile, force_fan_reapply=True, full=True)
     return True
 
 
@@ -1112,7 +1027,7 @@ def _check_ac_auto_switch(config, service_name, trigger, suppress_switch=False):
     source = "Type-C" if current_kind == "usb" else (
         "AC" if current_ac else "battery")
 
-    # Re-read before writing back, exactly as adopt_external_ppd_mode does.
+    # Re-read before writing back, exactly as sync_active_profile_power_mode does.
     # ``config`` was read at the top of this cycle and the window, the tray
     # or the hotkey cycler can have written the file since; saving the stale
     # copy would throw away whatever they changed -- a curve the user had
@@ -1157,8 +1072,8 @@ def _check_ac_auto_switch(config, service_name, trigger, suppress_switch=False):
     # Take the OS power mode with us, exactly as a profile switch in the app
     # does. Without this the enforcer's own PPD check would find the mode
     # disagreeing with the profile we just chose on the very next cycle, and
-    # adopt the stale mode back -- undoing the auto-switch within a minute.
-    # It also stamps the self-apply quiet window, so the adoption gate knows
+    # leave the OS mode stale until the next reconciliation pass.
+    # The sync watcher also reads the newly saved app selection, so it knows
     # the mode change that follows is ours.
     mode = PROFILE_TO_PPD_MODE.get(target)
     if mode and service_name:
@@ -1323,80 +1238,29 @@ def power_supply_watcher_thread(service_name):
 
 
 def ppd_watcher_thread():
-    """Runs in the background for the life of the service. Listens for
-    PropertiesChanged on the PPD service and, whenever ActiveProfile
-    changes to something that doesn't match our current app profile,
-    forces it back AND immediately re-applies the fan curve -- rather
-    than waiting up to INTERVAL_SECONDS for the next poll, which would
-    leave the fan curve silently wiped (asus-wmi's documented behavior)
-    for that whole window."""
+    """Reconcile power mode promptly without a privileged D-Bus monitor.
+
+    Unprivileged busctl monitor can exit immediately, leaving only the
+    minute-long upkeep loop. A two-second read also works in that case;
+    hardware settings are written only when the mode actually mismatches.
+    """
     service_name = get_ppd_service_name()
-    if not service_name:
-        return  # PPD not present on this system; nothing to watch
-
-    while True:
+    while not _automation_stop.is_set():
         try:
-            # busctl monitor blocks and streams signal lines as they occur;
-            # we filter for PropertiesChanged on our service.
-            #
-            # NOTE: becoming a bus monitor on the SYSTEM bus requires root.
-            # Running unprivileged (which this user service does), busctl
-            # exits immediately with "Call to
-            # org.freedesktop.DBus.Monitoring.BecomeMonitor failed: Access
-            # denied". That closes stdout without raising, so the loop below
-            # ends normally -- and this outer `while True` used to respawn
-            # instantly with no delay, turning the whole thread into a tight
-            # fork/exec loop. Measured cost: ~8.5% of a CPU core burned
-            # continuously, plus the dbus-broker and polkitd churn from each
-            # rejected connection, which kept the package from reaching deep
-            # idle and held the average core clock ~1.8GHz higher than with
-            # the service stopped. Hence: verify the monitor actually works
-            # before looping on it, and always back off between retries.
-            proc = subprocess.Popen(
-                ["busctl", "--system", "monitor", service_name],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-            got_output = False
-            for line in proc.stdout:
-                got_output = True
-                if "PropertiesChanged" not in line and "ActiveProfile" not in line:
-                    continue
-                if not os.path.exists(CONFIG_PATH):
-                    continue
-                try:
-                    with open(CONFIG_PATH) as f:
-                        config = json.load(f)
-                except (OSError, json.JSONDecodeError):
-                    continue
-                current_profile_name = config.get("current_profile")
-                expected_mode = PROFILE_TO_PPD_MODE.get(current_profile_name)
-                if not expected_mode:
-                    continue
-                actual_mode = get_ppd_active_profile(service_name)
-                if actual_mode and actual_mode != expected_mode:
-                    # Something other than this app changed the power mode.
-                    # Adopt it as a profile switch and re-apply everything --
-                    # asus-wmi disables the custom fan curve as a side effect
-                    # of any mode change, so it has to be re-pushed now.
-                    adopt_external_ppd_mode(config, actual_mode, service_name)
-
-            # Reached only when busctl exited on its own.
-            proc.wait()
-            if not got_output:
-                # Monitor never produced a single line -- it isn't usable
-                # here (almost certainly the unprivileged-system-bus case
-                # described above). Retrying can only burn CPU, so stop the
-                # thread entirely. The polling loop in main() still enforces
-                # PPD every INTERVAL_SECONDS; the only thing lost is
-                # sub-INTERVAL_SECONDS reaction time to an external change.
-                print("rogcontrol-enforcer: D-Bus monitor unavailable "
-                      f"(busctl exited {proc.returncode} with no output); "
-                      "falling back to polling only.", file=sys.stderr)
-                return
-            time.sleep(5)  # monitor ended after working; back off, reconnect
+            if not service_name:
+                service_name = get_ppd_service_name()
+            if service_name and os.path.exists(CONFIG_PATH):
+                with open(CONFIG_PATH) as f:
+                    config = json.load(f)
+                expected_mode = PROFILE_TO_PPD_MODE.get(config.get("current_profile"))
+                if expected_mode:
+                    actual_mode = get_ppd_active_profile(service_name)
+                    if actual_mode and actual_mode != expected_mode:
+                        sync_active_profile_power_mode(config, actual_mode, service_name)
         except Exception as e:
             log(f"PPD watcher error: {e}", "WARN", dedupe_key="ppdwatch")
-            time.sleep(5)  # busctl monitor died or errored; back off and retry
-
+        if _automation_stop.wait(POWER_MODE_POLL_SECONDS):
+            return
 
 
 
@@ -1734,8 +1598,8 @@ def main():
                                   daemon=True)
         _automation_threads.append(worker)
         worker.start()
-    # Background thread reacts to power-mode changes immediately; the
-    # main loop below is the periodic fallback in case a signal is missed.
+    # A lightweight watcher checks modes every two seconds; the main loop
+    # below remains a fallback alongside its slower hardware upkeep.
     watcher = threading.Thread(target=ppd_watcher_thread, daemon=True)
     watcher.start()
 
@@ -1827,16 +1691,13 @@ def main():
                 # profile switch that reset the backlight to the config's
                 # last value was the same fight in a different place.
 
-                # Fallback for when the signal watcher misses something (the
-                # busctl monitor restarting, a dropped signal, or the monitor
-                # being unavailable entirely on this system). Same adoption
-                # rule as the fast path, just up to INTERVAL_SECONDS later.
+                # Same app-authoritative reconciliation as the fast watcher.
                 expected_mode = PROFILE_TO_PPD_MODE.get(current_profile_name)
                 if expected_mode and ppd_service_name:
                     actual_mode = get_ppd_active_profile(ppd_service_name)
                     if actual_mode and actual_mode != expected_mode:
-                        adopt_external_ppd_mode(config, actual_mode,
-                                                ppd_service_name)
+                        sync_active_profile_power_mode(config, actual_mode,
+                                                       ppd_service_name)
         except Exception as e:
             # Never let one bad cycle kill the service, but do not hide it
             # either -- this was a silent 'pass' before.
