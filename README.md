@@ -58,9 +58,10 @@ to avoid duplicate switching.
 When the **ROG Control Decky plugin** is installed on the same Linux user
 account, its Quick Access panel can select profiles and change the active
 profile's CPU boost and clock ceiling in Gamescope. The System → Updates
-section detects the plugin and offers Install or Update when a versioned plugin
-package and its SHA-256 sidecar are attached to the latest GitHub release. The
-plugin also checks that release for updates. Build a package locally with
+section detects the plugin and downloads and installs it from a versioned
+plugin package and SHA-256 sidecar attached to the latest GitHub release. If
+those release assets are missing, Install reports that instead of opening a
+browser. The plugin also checks that release for updates. Build a package locally with
 `python3 scripts/package_decky.py`; attach the ZIP and `.sha256` files to a
 release to enable the in-app install/update actions.
 

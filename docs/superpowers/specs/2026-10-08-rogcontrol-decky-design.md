@@ -52,13 +52,11 @@ path.
 ### Desktop System tab and release flow
 
 The System tab detects the local Decky plugin installation and displays its
-installed version. When absent, Install is available only if a compatible
-plugin release package can be found. When installed, Update is offered only
-when a newer compatible package exists. The action downloads a versioned
-release asset from `D0minatorX/rogcontrol`, verifies it before installation,
-then reports success or a useful failure. Until a compatible release asset is
-published, the UI reports that installation is not yet available rather than
-attempting an incomplete install.
+installed version. Install and Update download a versioned plugin release
+asset from `D0minatorX/rogcontrol`, verify it before installation, then report
+success or a useful failure. If no compatible release asset is available, the
+UI reports that instead of opening a browser or attempting an incomplete
+install.
 
 Release asset naming, compatibility metadata, and checksum format will be
 defined with the package build/release implementation. Install and update must

@@ -3,14 +3,10 @@
 import os
 import tempfile
 import time
-import webbrowser
 
 from gi.repository import GLib
 
 from . import decky_install, decky_release
-
-
-RELEASES_URL = "https://github.com/D0minatorX/rogcontrol/releases"
 
 
 class DeckyUpdateController:
@@ -83,14 +79,14 @@ class DeckyUpdateController:
             return
         if not loader_present:
             self._set_status("Decky Loader was not found for this user. Install Decky first.",
-                             "Install", "releases")
+                             "Check", "check")
         elif not installed.get("installed"):
             if release.get("available"):
                 self._set_status(f"Not installed. Version {release['version']} is ready.",
                                  "Install", "install")
             else:
                 self._set_status("Not installed. Plugin package is not attached to the latest release yet.",
-                                 "Install", "releases")
+                                 "Install", "install")
         elif release.get("available"):
             self._set_status(f"Installed v{installed['version']}; v{release['version']} is available.",
                              "Update", "update")
@@ -106,10 +102,6 @@ class DeckyUpdateController:
             return
         if self.action == "check":
             self.check()
-        elif self.action == "releases":
-            webbrowser.open(RELEASES_URL)
-            self._set_status("Opened ROG Control releases. Install the Decky ZIP after Decky Loader is available.",
-                             "Install", "releases")
         elif self.action in ("install", "update"):
             self._start_install()
 
@@ -154,7 +146,7 @@ class DeckyUpdateController:
         if result.get("no_release"):
             self.busy = False
             self._set_status("No installable plugin package is attached to the latest release.",
-                             "Install", "releases")
+                             "Install", "install")
             return
         launch = result["launch"]
         if not launch["ok"]:
