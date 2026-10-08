@@ -16,6 +16,7 @@ from .. import config as config_mod  # noqa: E402
 from .. import fancurve  # noqa: E402
 from .. import diagnostics
 from ..update_ui import UpdateController
+from ..decky_update_ui import DeckyUpdateController
 from .. import hardware  # noqa: E402
 from ..sampling import SampleFailures  # noqa: E402
 from .. import profiles as profiles_mod  # noqa: E402
@@ -255,9 +256,11 @@ class SystemPageBase(Gtk.Box):
         # auto-check) until the answer comes back, so the two cannot race
         # each other into two overlapping GitHub requests.
         self.updates = UpdateController(self)
+        self.decky_updates = DeckyUpdateController(self)
         self.asusd_state = {}
 
         self._build()
+        self.decky_updates.check()
         self._reload_log()
         self.reload()
         self._loading = False
@@ -600,6 +603,8 @@ class SystemPageBase(Gtk.Box):
         self.update_row.set_activatable_widget(self.update_check_button)
         group.add(self.update_row)
 
+        self.decky_updates.build(group)
+
         self.update_auto_row = auto_row = Adw.ComboRow(
             title="Check automatically", subtitle=UPDATE_AUTO_SUBTITLE,
             model=Gtk.StringList.new(UPDATE_AUTO_LABELS))
@@ -684,6 +689,7 @@ class SystemPageBase(Gtk.Box):
 
     def _on_destroy(self, _widget):
         self.updates.close()
+        self.decky_updates.close()
         if self._timer_id is not None:
             GLib.source_remove(self._timer_id)
             self._timer_id = None

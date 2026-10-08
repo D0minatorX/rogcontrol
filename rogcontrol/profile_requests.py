@@ -27,8 +27,24 @@ def selection_lock():
         yield
 
 
+@contextmanager
+def hardware_apply_lock():
+    """Serialize a direct apply with the profile drain worker."""
+    with (directory() / 'worker.lock').open('a') as worker:
+        fcntl.flock(worker, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(worker, fcntl.LOCK_UN)
+    # A profile request can start its drain subprocess while this direct
+    # apply owns worker.lock. drain() deliberately exits rather than waiting
+    # when another writer is active, so wake the pending request again here.
+    if (directory() / 'pending.json').exists():
+        _launch()
+
+
 def allowed(cfg, origin):
-    if origin == 'shortcut':
+    if origin in ('shortcut', 'decky'):
         return True
     key = {'bindings': 'key_bindings', 'fnlock': 'fn_lock'}.get(origin)
     settings = cfg.get(key) if key else None
@@ -76,6 +92,37 @@ def request_next(origin='shortcut'):
             path.unlink(missing_ok=True)
             raise
     hardware.notify('ROG Control', f'Profile requested: {name}')
+
+
+def request_profile(name, origin='decky'):
+    """Queue a named profile using the same single-writer worker as cycling.
+
+    The name is checked against the fresh config while holding the selection
+    lock, and the ticket records the current profile as its base. If another
+    profile change wins before the worker applies this one, the stale ticket
+    is discarded by ``drain`` rather than selecting from an old profile.
+    """
+    if origin not in ('decky', 'shortcut'):
+        raise ValueError('unsupported profile request origin')
+    with selection_lock():
+        cfg = config.load_config()
+        names = list(cfg.get('profiles', {}))
+        if name not in names:
+            raise ValueError(f'unknown profile: {name}')
+        current = cfg.get('current_profile')
+        ticket = {'id': uuid.uuid4().hex, 'name': name,
+                  'origin': origin, 'base': current}
+        path = directory() / 'pending.json'
+        temporary = path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(ticket))
+        temporary.replace(path)
+        try:
+            _launch()
+        except OSError:
+            path.unlink(missing_ok=True)
+            raise
+    hardware.notify('ROG Control', f'Profile requested: {name}')
+    return {'accepted': True, 'profile': name}
 
 
 def drain(apply):

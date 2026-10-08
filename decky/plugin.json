@@ -1,0 +1,11 @@
+{
+  "name": "ROG Control",
+  "author": "D0minatorX",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["utility", "gamescope"],
+    "description": "Switch ROG Control profiles and tune CPU boost and clock settings.",
+    "image": "https://raw.githubusercontent.com/D0minatorX/rogcontrol/main/rogcontrol/rogcontrol.png"
+  }
+}

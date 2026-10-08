@@ -1,6 +1,7 @@
 """Headless profile and keyboard commands shared by legacy shortcuts."""
 
 import argparse
+import json
 import os
 import time
 import traceback
@@ -318,6 +319,16 @@ def main(argv=None):
         command = keyboard_commands.add_parser(name)
         command.add_argument("direction", choices=("up", "down"))
     commands.add_parser("report", help="Save a hardware report")
+    decky = commands.add_parser("decky", help="Decky plugin integration")
+    decky_commands = decky.add_subparsers(dest="decky_action", required=True)
+    decky_commands.add_parser("state", help="Print plugin-relevant state as JSON")
+    decky_commands.add_parser("update-check", help="Check for a Decky plugin release")
+    decky_commands.add_parser("update-install", help="Install a verified Decky plugin release")
+    select = decky_commands.add_parser("profile", help="Select a saved profile")
+    select.add_argument("name")
+    cpu = decky_commands.add_parser("cpu", help="Set a current-profile CPU value")
+    cpu.add_argument("setting", choices=("boost", "max-freq"))
+    cpu.add_argument("value", help="on/off for boost; MHz (0 clears) for max-freq")
     args = parser.parse_args(argv)
     if args.command == "profile":
         if args.action == 'drain':
@@ -328,6 +339,51 @@ def main(argv=None):
         from .diagnostics import write_hardware_report
         print(write_hardware_report())
         return 0
+    if args.command == "decky":
+        from . import decky as decky_api
+        try:
+            if args.decky_action == "state":
+                result = {"ok": True, "state": decky_api.get_state()}
+            elif args.decky_action == "update-check":
+                from . import decky_install, decky_release
+                installed = decky_install.detect_installation()
+                result = {"ok": True,
+                          **decky_release.check_for_update(installed.get("version"))}
+            elif args.decky_action == "update-install":
+                from . import decky_install, decky_release
+                installed = decky_install.detect_installation()
+                release = decky_release.check_for_update(installed.get("version"))
+                if release.get("error"):
+                    raise RuntimeError(release["error"])
+                if not release.get("available"):
+                    raise RuntimeError("no newer verified Decky plugin release is available")
+                archive = decky_release.download_and_stage(
+                    release["download_url"], release["sha256_url"],
+                    release["version"])
+                try:
+                    result = decky_install.install_archive(
+                        archive, expected_version=release["version"])
+                finally:
+                    decky_release.cleanup_staged(archive)
+                result["restart_required"] = True
+            elif args.decky_action == "profile":
+                result = {"ok": True, **decky_api.set_profile(args.name)}
+            elif args.setting == "boost":
+                if args.value not in ("on", "off"):
+                    raise ValueError("boost value must be on or off")
+                result = decky_api.set_cpu_value("boost", args.value == "on")
+            else:
+                try:
+                    mhz = int(args.value)
+                except ValueError as error:
+                    raise ValueError("max-freq value must be an integer MHz value") from error
+                result = decky_api.set_cpu_value("max_freq", mhz)
+            print(json.dumps(result, separators=(",", ":")))
+            return 0
+        except (ValueError, RuntimeError, OSError) as error:
+            print(json.dumps({"ok": False, "error": str(error)},
+                             separators=(",", ":")))
+            return 1
     if args.action == "next":
         return cycle_keyboard() or 0
     if args.action == "brightness":

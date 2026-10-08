@@ -55,6 +55,15 @@ add-on; launching an individual game inside nested Gamescope is not a login
 session. Uninstall the standalone add-on before enabling this built-in option
 to avoid duplicate switching.
 
+When the **ROG Control Decky plugin** is installed on the same Linux user
+account, its Quick Access panel can select profiles and change the active
+profile's CPU boost and clock ceiling in Gamescope. The System → Updates
+section detects the plugin and offers Install or Update when a versioned plugin
+package and its SHA-256 sidecar are attached to the latest GitHub release. The
+plugin also checks that release for updates. Build a package locally with
+`python3 scripts/package_decky.py`; attach the ZIP and `.sha256` files to a
+release to enable the in-app install/update actions.
+
 ### 🌀 Fans
 An eight-point curve per fan, dragged on a graph showing real RPM. "Calibrate fan RPM" measures how your own fans respond so the graph is accurate for your machine, not the developer's.
 

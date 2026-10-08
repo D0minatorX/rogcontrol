@@ -7,7 +7,7 @@ def main(argv=None):
     if "--hardware-report" in args:
         from .cli import main as cli_main
         return cli_main(["report"])
-    if args and args[0] in ("profile", "keyboard", "report", "--help", "-h"):
+    if args and args[0] in ("profile", "keyboard", "report", "decky", "--help", "-h"):
         from .cli import main as cli_main
         return cli_main(args)
     from .app import main as gui_main
