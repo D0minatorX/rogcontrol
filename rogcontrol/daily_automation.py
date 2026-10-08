@@ -5,7 +5,7 @@ from . import charge_once, config, display_refresh, hardware, keyboard_power
 
 def run(stop_event):
     """Reconcile charging, display and lighting policies every five seconds."""
-    lighting = keyboard_power.Controller()
+    lighting = keyboard_power.Controller(reconnect_grace=10)
     while not stop_event.is_set():
         try:
             ok, message = charge_once.tick()

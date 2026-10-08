@@ -3,6 +3,7 @@
 Only supported ASUS devices are opened. Ordinary key events are discarded,
 never recorded. Software Fn Lock alone exclusively grabs the N-KEY keyboard.
 """
+import errno
 import os
 import json
 from pathlib import Path
@@ -279,6 +280,7 @@ def run(stop_event):
     """Enforcer worker: reconnect after resume, permission changes or hotplug."""
     from . import fnlock
     opened = {}
+    pending = {}
     monitor = SessionMonitor()
     threading.Thread(target=monitor.run, args=(stop_event,), daemon=True).start()
     toggle_writer = ToggleWriter()
@@ -320,6 +322,8 @@ def run(stop_event):
                     fn['bindings_enabled'] = bindings['enabled']
                     active = (bindings['enabled'] or fn['enabled']) and monitor.allowed()
                     desired = {path: keyboard for path, _, keyboard in discover()} if active else {}
+                    pending = {path: since for path, since in pending.items() if path in desired}
+                    waiting = []
                     for path in list(opened):
                         device, decoder, remapper = opened[path]
                         if path not in desired or bool(remapper) != (fn['enabled'] and desired[path]):
@@ -330,16 +334,32 @@ def run(stop_event):
                         if path in opened:
                             continue
                         import evdev
-                        device = evdev.InputDevice(path)
                         try:
-                            remapper = (fnlock.Remapper(device, fn,
-                                        lambda action, p=path: dispatch(action, p), toggle_writer.submit)
-                                        if keyboard and fn['enabled'] else None)
-                        except Exception:
-                            device.close()
-                            raise
+                            device = evdev.InputDevice(path)
+                            try:
+                                remapper = (fnlock.Remapper(device, fn,
+                                            lambda action, p=path: dispatch(action, p), toggle_writer.submit)
+                                            if keyboard and fn['enabled'] else None)
+                            except Exception:
+                                device.close()
+                                raise
+                        except OSError as error:
+                            if error.errno not in (errno.EACCES, errno.EPERM, errno.ENOENT, errno.ENODEV):
+                                raise
+                            # udev may expose the new node before granting session
+                            # access. Retry this device without dropping other keys.
+                            since = pending.setdefault(path, now)
+                            message = f'Waiting for keyboard access: {path}'
+                            if now - since >= 10:
+                                message = f'Keyboard access unavailable; retrying: {error}'
+                                hardware.log(message, 'WARN', source='hotkeys',
+                                             dedupe_key='input:' + path)
+                            waiting.append(message)
+                            continue
+                        pending.pop(path, None)
                         opened[path] = device, Decoder(), remapper
-                    set_status(('Listening; Fn Lock active.' if any(v[2] for v in opened.values())
+                    set_status('; '.join(waiting) if waiting else
+                               ('Listening; Fn Lock active.' if any(v[2] for v in opened.values())
                                 else 'Listening for ASUS buttons.') if opened else
                                'Paused: session locked or inactive.' if bindings['enabled'] or fn['enabled']
                                else 'Disabled.')

@@ -46,22 +46,34 @@ def write_masks(keyboard, lightbar):
 
 class Controller:
     """Reconcile on source/settings changes, retry errors, recover firmware resets."""
-    def __init__(self, write=None, supported=None):
+    def __init__(self, write=None, supported=None, reconnect_grace=0):
         self.write = write or write_masks
         self.supported = supported or globals()['supported']
         self.last = None
         self.applied_at = 0
+        self.reconnect_grace = reconnect_grace
+        self.unavailable_since = None
 
     def tick(self, cfg, ac, now=None):
         masks = desired_masks(cfg, ac)
         if masks is None:
             self.last = None
+            self.unavailable_since = None
             return True, 'Lighting power management is off or awaiting valid settings/power source.'
         now = time.monotonic() if now is None else now
+        # A reconnect can reset firmware even when the desired masks are unchanged.
+        # Probe before the cache check so recovery reapplies the saved policy.
+        if not self.supported():
+            self.last = None
+            if self.unavailable_since is None:
+                self.unavailable_since = now
+            if now - self.unavailable_since < self.reconnect_grace:
+                return True, 'Waiting for the ASUS lighting interface to reconnect.'
+            return False, ('ASUS lighting interface unavailable; retrying. '
+                           'Power zones require the supported G614PR keyboard.')
+        self.unavailable_since = None
         if masks == self.last and now - self.applied_at < 60:
             return True, 'Saved lighting policy already sent.'
-        if not self.supported():
-            return False, 'Lighting power zones require the supported G614PR ASUS keyboard.'
         ok, message = self.write(*masks)
         if ok:
             self.last = masks
