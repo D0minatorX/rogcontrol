@@ -183,12 +183,12 @@ class Tray(QObject):
                          args=(self._request_signals, name), daemon=True).start()
 
     @Slot(object, str, object)
-    def _on_profile_completed(self, fresh, requested, error):
+    def _on_profile_completed(self, _fresh, requested, error):
         if self._closed:
             return
         self._request_pending = False
-        if fresh is not None:
-            self.config = fresh
+        # Only polling publishes config together with its observed mtime.
+        # The worker snapshot predates the request and may now be stale.
         self._sync_menu(self.config.get('current_profile'))
         if error is not None:
             self.indicator.setToolTip(f'ROG Control — {error}')
