@@ -3874,13 +3874,15 @@ def have_cmd(name, timeout=10):
         return False
 
 
-def detect_capabilities(root=None):
+def detect_capabilities(root=None, probe_gpu=True):
     """Probe what this particular machine actually supports.
 
     Returns a plain dict rather than setting a module global: the old version
     stashed it in one, which meant importing the module and reading the
     capabilities were two steps that could be got out of order. Callers hold
-    their own copy.
+    their own copy. ``probe_gpu=False`` leaves gpu_power_limit false until
+    the caller explicitly probes an awake GPU; it avoids the setter probe's
+    temporary power-limit writes. Other capabilities remain read-only.
 
     What is *installed* (ryzenadj, nvidia-smi) is still probed via PATH and
     ignores ``root`` -- there is no meaningful way to re-base a PATH lookup,
@@ -3928,7 +3930,10 @@ def detect_capabilities(root=None):
         and have_cmd("limine-update")
         and have_cmd("limine-enroll-config"))
     caps["nvidia"] = have_cmd("nvidia-smi")
-    caps["gpu_power_limit"] = (caps["nvidia"]
+    # The power-limit capability probe changes a candidate value and restores
+    # it. UI callers can defer this until an awake GPU owns direct access.
+    caps["gpu_power_limit_probed"] = bool(caps["nvidia"] and probe_gpu)
+    caps["gpu_power_limit"] = (caps["nvidia"] and probe_gpu
                                and gpu_power_limit_supported())
     # A separate question from nvidia-smi: the two clock offsets go through
     # nvidia-settings, which is its own package and is missing on plenty of

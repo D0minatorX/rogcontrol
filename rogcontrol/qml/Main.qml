@@ -54,9 +54,25 @@ ApplicationWindow {
                         Text { text: appController.pageTitle === 'Home' || appController.pageTitle === 'Overview' ? 'ROG CONTROL' : appController.pageTitle.toUpperCase(); color: theme.text; font.pixelSize: 25; font.letterSpacing: 1 }
                         Text { text: (overviewController.data.cpu_name || 'Detecting processor…') + ' / ' + (overviewController.data.gpu_name || 'Detecting graphics…'); color: theme.mutedText; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     }
+                    MetricCard {
+                        Layout.fillWidth: true; Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
+                        colors: theme; title: 'Operating profile'
+                        ComboBox { Layout.fillWidth: true; model: appController.profileNames; currentIndex: appController.profileNames.indexOf(appController.activeProfile); enabled: !appController.busy; onActivated: appController.selectProfile(currentText); Accessible.name: 'Operating profile'; palette.button: theme.panel; palette.buttonText: theme.text }
+                        Flow {
+                            Layout.fillWidth: true; spacing: 6; implicitHeight: childrenRect.height
+                            RogButton { colors: theme; text: 'New'; enabled: !appController.busy; onClicked: { profileDialog.operation = 'create'; profileDialog.open() } }
+                            RogButton { colors: theme; text: 'Duplicate'; enabled: !appController.busy; onClicked: { profileDialog.operation = 'duplicate'; profileDialog.open() } }
+                            RogButton { colors: theme; text: 'Delete'; enabled: !appController.busy && appController.profileNames.length > 1; onClicked: profileController.delete(appController.activeProfile) }
+                            RogButton { colors: theme; text: 'Import'; enabled: !appController.busy; onClicked: profileController.chooseImport() }
+                            RogButton { colors: theme; text: 'Export backup'; enabled: !appController.busy; onClicked: profileController.chooseExport() }
+                            RogButton { colors: theme; text: 'Apply saved profile'; enabled: !appController.busy; onClicked: profileController.apply() }
+                        }
+                        Text { visible: appController.pendingChanges; text: 'Tuning changes are pending. Apply or revert them on their pages.'; color: theme.accent; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 11 }
+                        Text { text: profileController.status; visible: text.length > 0; color: theme.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 11 }
+                    }
                     Loader {
                         Layout.fillWidth: true; Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
-                        sourceComponent: appController.currentPage === 'quick_access' ? home : appController.currentPage === 'overview' ? overview : pending
+                        sourceComponent: appController.currentPage === 'quick_access' ? home : appController.currentPage === 'overview' ? overview : appController.currentPage === 'cpu' ? cpu : appController.currentPage === 'gpu' ? gpu : appController.currentPage === 'fans' ? fans : pending
                     }
                     Text { text: 'ROG CONTROL / LINUX'; color: theme.mutedText; font.pixelSize: 10; Layout.leftMargin: 22 }
                     Item { Layout.preferredHeight: 14 }
@@ -70,7 +86,25 @@ ApplicationWindow {
     }
     Component { id: home; QuickAccessPage { colors: theme } }
     Component { id: overview; OverviewPage { colors: theme } }
+    Component { id: cpu; CpuPage { colors: theme } }
+    Component { id: gpu; GpuPage { colors: theme } }
+    Component { id: fans; FansPage { colors: theme } }
     Component { id: pending; MetricCard { colors: theme; title: appController.pageTitle; Text { Layout.fillWidth: true; text: 'This page is being migrated to Qt. Use the existing desktop interface for ' + appController.pageTitle.toLowerCase() + ' controls.'; color: theme.mutedText; wrapMode: Text.WordWrap } } }
+    ProfileDialog { id: profileDialog; colors: theme }
+    function ask(controller, action, message) {
+        confirmation.controller = controller; confirmation.action = action; confirmation.message = message; confirmation.open()
+    }
+    Connections { target: profileController; function onConfirmationRequested(action, message) { window.ask(profileController, action, message) } }
+    Connections { target: cpuController; function onConfirmationRequested(action, message) { window.ask(cpuController, action, message) } }
+    Connections { target: gpuController; function onConfirmationRequested(action, message) { window.ask(gpuController, action, message) } }
+    Connections { target: fansController; function onConfirmationRequested(action, message) { window.ask(fansController, action, message) } }
+    Dialog {
+        id: confirmation; property var controller; property string action; property string message
+        title: 'Confirm operation'; anchors.centerIn: parent; width: Math.min(window.width - 40, 460); modal: true; standardButtons: Dialog.Yes | Dialog.No
+        Text { width: parent.width; text: confirmation.message; wrapMode: Text.WordWrap; color: theme.text }
+        onAccepted: controller.confirm(action, true)
+        onRejected: controller.confirm(action, false)
+    }
     Connections { target: appController; function onErrorOccurred(message) { errorDialog.text = message; errorDialog.open() } }
     Dialog { id: errorDialog; property string text; title: 'ROG Control'; anchors.centerIn: parent; width: Math.min(window.width-40, 450); standardButtons: Dialog.Ok; modal: true; Text { width: parent.width; text: errorDialog.text; wrapMode: Text.WordWrap; color: theme.text } }
 }

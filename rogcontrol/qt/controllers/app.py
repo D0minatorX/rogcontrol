@@ -23,6 +23,7 @@ class AppController(QObject):
         self.config = deepcopy(DEMO_CONFIG) if demo else {}
         self._page, self._status, self._write = 'quick_access', '', None
         self._closed = False
+        self._pending_cache = False
         self._gpu_limits = None
         self._write_epoch = 0
         self._config_read_epoch = 0
@@ -41,9 +42,17 @@ class AppController(QObject):
     profileNames = Property('QStringList', lambda s: list(s.config.get('profiles', {})), notify=stateChanged)
     appearance = Property(str, lambda s: s.config.get('appearance', 'system'), notify=stateChanged)
     busy = Property(bool, lambda s: s._write is not None, notify=stateChanged)
-    pendingChanges = Property(bool, lambda s: False, notify=stateChanged)
+    pendingChanges = Property(bool, lambda s: any(p.dirty for p in getattr(s, 'tuningPages', {}).values()), notify=stateChanged)
+    safetyTripped = Property(bool, lambda s: bool(s.config.get('safety_tripped')), notify=stateChanged)
     statusText = Property(str, lambda s: s._status, notify=stateChanged)
     demoMode = Property(bool, lambda s: s.demo, constant=True)
+
+    @Slot()
+    def tuningStateChanged(self):
+        pending = self.pendingChanges
+        if pending != self._pending_cache:
+            self._pending_cache = pending
+            self.stateChanged.emit()
 
     @Slot(str)
     def navigate(self, page_id):
@@ -64,7 +73,10 @@ class AppController(QObject):
         def load():
             if self._gpu_limits is None:
                 from ... import hardware
-                self._gpu_limits = hardware.detect_gpu_limits()
+                # Loading stock config must not wake a sleeping/blocked GPU.
+                self._gpu_limits = (hardware.default_gpu_limits()
+                                    if hardware.dgpu_is_suspended() or hardware.nvidia_access_error()
+                                    else hardware.detect_gpu_limits())
             low, high = self._gpu_limits['min_w'], self._gpu_limits['max_w']
             return config.load_config(gpu_min_w=low, gpu_max_w=high)
         self.runner.submit('config', load)
@@ -88,7 +100,10 @@ class AppController(QObject):
 
     @Slot(str)
     def selectProfile(self, name):
-        if name not in self.profileNames:
+        if name not in self.profileNames or self.busy:
+            return
+        if self.pendingChanges:
+            self.profilesController.confirmSelection(name)
             return
         if self.demo:
             self.config['current_profile'] = name
@@ -96,16 +111,17 @@ class AppController(QObject):
             self.configChanged.emit()
             self.stateChanged.emit()
             return
-        from ...profile_requests import request_profile
-        self.submitWrite('profile', lambda: request_profile(name, origin='decky'))
+        self.profilesController.select(name)
 
     @Slot()
     def applyChanges(self):
-        self._status = 'Profile editing is available in the existing desktop interface.'
-        self.stateChanged.emit()
+        if hasattr(self, 'profilesController'):
+            self.profilesController.apply()
 
     @Slot()
     def revertChanges(self):
+        if hasattr(self, 'profilesController'):
+            self.profilesController.revert()
         self.refresh()
 
     @Slot(str)

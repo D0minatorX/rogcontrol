@@ -32,6 +32,10 @@ def main(argv=None):
     from .controllers.app import AppController
     from .controllers.overview import OverviewController
     from .controllers.quick_access import QuickAccessController
+    from .controllers.cpu import CpuController
+    from .controllers.gpu import GpuController
+    from .controllers.fans import FansController
+    from .controllers.profile import ProfileController
 
     QQuickStyle.setStyle('Basic')
     application = QApplication(['rogcontrol-qt'])
@@ -67,13 +71,22 @@ def main(argv=None):
     controller = AppController(runner, args.demo, application)
     overview = OverviewController(controller, application)
     quick = QuickAccessController(controller, application)
+    cpu = CpuController(controller, application)
+    gpu = GpuController(controller, application)
+    fans = FansController(controller, application)
+    controller.tuningPages = {'cpu': cpu, 'gpu': gpu, 'fans': fans}
+    profiles = ProfileController(controller, controller.tuningPages, application)
+    controller.profilesController = profiles
+    profiles.stateChanged.connect(controller.tuningStateChanged)
     engine = QQmlApplicationEngine()
-    for key, value in [('appController', controller), ('overviewController', overview), ('quickAccessController', quick)]:
+    for key, value in [('appController', controller), ('overviewController', overview), ('quickAccessController', quick), ('cpuController', cpu), ('gpuController', gpu), ('fansController', fans), ('profileController', profiles)]:
         engine.rootContext().setContextProperty(key, value)
     engine.load(str(Path(__file__).resolve().parents[1] / 'qml' / 'Main.qml'))
     if not engine.rootObjects():
         controller.close()
         overview.close()
+        for tuning in (cpu, gpu, fans, profiles):
+            tuning.close()
         return 1
     window = engine.rootObjects()[0]
     window.setWidth(max(360, args.demo_width))
@@ -116,6 +129,8 @@ def main(argv=None):
         server.newConnection.connect(receive)
     application.aboutToQuit.connect(controller.close)
     application.aboutToQuit.connect(overview.close)
+    for tuning in (cpu, gpu, fans, profiles):
+        application.aboutToQuit.connect(tuning.close)
     # Main.qml starts hidden, so background startup never flashes a window.
     command(action)
     if args.screenshot:
