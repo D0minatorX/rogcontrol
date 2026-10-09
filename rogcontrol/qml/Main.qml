@@ -8,7 +8,7 @@ ApplicationWindow {
     id: window
     width: 1040; height: 860
     minimumWidth: 360; minimumHeight: 480
-    visible: true
+    visible: false
     title: 'ROG Control' + (appController.demoMode ? ' · Demo' : ' · Qt Preview')
     color: theme.window
     Palette { id: theme; appearance: appController.appearance }

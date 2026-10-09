@@ -37,7 +37,7 @@ def main(argv=None):
     application = QApplication(['rogcontrol-qt'])
     application.setApplicationName('ROG Control')
     application.setOrganizationName('ROG Control')
-    action = next((name for name in ('quit', 'hide', 'toggle', 'show') if getattr(args, name)), 'show')
+    action = next((name for name in ('quit', 'toggle', 'show', 'hide', 'minimized') if getattr(args, name)), 'show')
     # Separate from GTK IPC; demo runs cannot hide or quit the actual application.
     scope = hashlib.sha256((str(os.getuid()) + os.environ.get('WAYLAND_DISPLAY', os.environ.get('DISPLAY', ''))).encode()).hexdigest()[:16]
     name = 'rogcontrol-qt-' + scope
@@ -50,7 +50,7 @@ def main(argv=None):
             socket.flush()
             socket.waitForBytesWritten(500)
             return 0
-        if action in ('quit', 'hide'):
+        if action == 'quit':
             return 0
         lock = QLockFile(str(Path(QStandardPaths.writableLocation(QStandardPaths.RuntimeLocation)) / (name + '.lock')))
         if not lock.tryLock(0):
@@ -81,6 +81,10 @@ def main(argv=None):
     def command(value):
         if value == 'quit':
             application.quit()
+        elif value == 'minimized':
+            # Legacy background startup constructs the window without showing
+            # it; another --minimized invocation leaves its visibility alone.
+            return
         elif value == 'hide':
             window.hide()
         elif value == 'toggle' and window.isVisible():
@@ -99,19 +103,21 @@ def main(argv=None):
                 def read(peer=peer):
                     if peer.canReadLine():
                         value = bytes(peer.readLine()).decode().strip()
-                        if value in ('show', 'hide', 'toggle', 'quit'):
+                        if value in ('show', 'hide', 'toggle', 'quit', 'minimized'):
                             command(value)
                         peer.disconnectFromServer()
                 peer.readyRead.connect(read)
-                peer.disconnected.connect(peer.deleteLater)
+                def release(peer=peer):
+                    if peer in connections:
+                        connections.remove(peer)
+                    peer.deleteLater()
+                peer.disconnected.connect(release)
                 read()
         server.newConnection.connect(receive)
     application.aboutToQuit.connect(controller.close)
     application.aboutToQuit.connect(overview.close)
-    if args.minimized:
-        window.showMinimized()
-    elif args.hide:
-        window.hide()
+    # Main.qml starts hidden, so background startup never flashes a window.
+    command(action)
     if args.screenshot:
         def capture():
             saved = window.grabWindow().save(str(Path(args.screenshot).resolve()))

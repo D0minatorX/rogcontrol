@@ -26,6 +26,8 @@ class AppController(QObject):
         self._gpu_limits = None
         self._write_epoch = 0
         self._config_read_epoch = 0
+        self._config_failures = 0
+        self._config_error_status = ''
         runner.finished.connect(self._complete)
         self.timer = QTimer(self)
         self.timer.setInterval(3000)
@@ -119,11 +121,20 @@ class AppController(QObject):
                 self.refresh()
                 return
             if error is None:
+                self._config_failures = 0
+                if self._status == self._config_error_status:
+                    self._status = ''
+                self._config_error_status = ''
                 self.config = result
                 self.configChanged.emit()
                 self.stateChanged.emit()
             else:
-                self.errorOccurred.emit(str(error))
+                self._config_failures += 1
+                self._config_error_status = 'Configuration refresh failed: ' + str(error)
+                self._status = self._config_error_status
+                self.stateChanged.emit()
+                if self._config_failures == 5:
+                    self.errorOccurred.emit(self._config_error_status)
         elif job_id == 'write':
             owner, callback = self._write
             self._write = None

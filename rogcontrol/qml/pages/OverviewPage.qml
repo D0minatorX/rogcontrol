@@ -12,6 +12,13 @@ ColumnLayout {
     function memory(value) { return !value || value[0] === null || value[1] === null ? '—' : (value[0]/1024).toFixed(1) + ' / ' + (value[1]/1024).toFixed(1) + ' GiB' }
     function curveStatus() { var state = sample.curve_enabled || {}; var known = Object.keys(state).filter(function(key) { return state[key] !== null }); return !known.length ? 'Unavailable' : known.every(function(key) { return state[key] }) ? 'Held by EC' : 'Dropped — reapply in existing UI' }
     spacing: 14
+    Text {
+        visible: overviewController.sampleError.length > 0
+        text: overviewController.sampleError
+        color: root.colors.accent
+        wrapMode: Text.WordWrap
+        Layout.fillWidth: true
+    }
     GridLayout {
         columns: root.compact ? 1 : 2
         columnSpacing: 14

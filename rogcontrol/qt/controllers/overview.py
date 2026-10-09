@@ -11,6 +11,8 @@ class OverviewController(QObject):
         self.app = app
         self._data = {}
         self._closed = False
+        self._sample_error = ''
+        self._consecutive_failures = 0
         app.runner.finished.connect(self._complete)
         self.timer = QTimer(self)
         self.timer.setInterval(2000)
@@ -19,6 +21,8 @@ class OverviewController(QObject):
         self.refresh()
 
     data = Property('QVariantMap', lambda s: s._data, notify=stateChanged)
+
+    sampleError = Property(str, lambda s: s._sample_error, notify=stateChanged)
 
     @Slot()
     def refresh(self):
@@ -56,10 +60,17 @@ class OverviewController(QObject):
         if job_id != 'overview' or self._closed:
             return
         if error:
-            self.app.errorOccurred.emit('Monitoring: ' + str(error))
+            self._consecutive_failures += 1
+            self._sample_error = 'Readings are stale: ' + str(error)
+            # Match SampleFailures' five-frame threshold without importing
+            # its hardware dependency into the fixture-only demo path.
+            if self._consecutive_failures == 5:
+                self.app.errorOccurred.emit('Monitoring readings have stopped updating: ' + str(error))
         else:
+            self._consecutive_failures = 0
+            self._sample_error = ''
             self._data = result
-            self.stateChanged.emit()
+        self.stateChanged.emit()
 
     def close(self):
         self._closed = True
