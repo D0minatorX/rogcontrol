@@ -10,7 +10,7 @@ from ..workers import TaskRunner
 
 class UpdatesController(QObject):
     stateChanged = Signal()
-    progress = Signal(str, int, int)
+    progress = Signal(str, int, int, int)
     confirmationRequested = Signal(str, str)
 
     def __init__(self, app, parent=None):
@@ -25,6 +25,8 @@ class UpdatesController(QObject):
         self._release = {}
         self._poll = {}
         self._installing = set()
+        self._download_serial = 0
+        self._download_generations = {}
         self._confirmation = None
         self._launch_checked = False
         self.progress.connect(self._progress)
@@ -71,13 +73,16 @@ class UpdatesController(QObject):
         if not release.get('available') or not release.get('download_url'):
             self._state(kind, status='Check again for a release with an installable archive.')
             return
+        self._download_serial += 1
+        generation = self._download_serial
+        self._download_generations[kind] = generation
         self._state(kind, busy=True, status='Downloading and validating archive…', progress=0)
         cancelled = threading.Event()
         def download():
             from ... import updater, decky_release
             if kind == 'app':
                 stage = updater.download_and_stage_update(release['download_url'],
-                    progress=lambda received, total: self.progress.emit(kind, received, total), cancelled=cancelled)
+                    progress=lambda received, total: self.progress.emit(kind, generation, received, total), cancelled=cancelled)
             else:
                 stage = decky_release.download_and_stage(release['download_url'], release['sha256_url'], release['version'])
             if cancelled.is_set():
@@ -133,9 +138,11 @@ class UpdatesController(QObject):
             if self._closed:
                 raise RuntimeError('Installation cancelled on shutdown')
             if kind == 'app':
-                status = str(Path(stage).parent / '.rogcontrol-update-status')
-                ok, message = updater.launch_update_terminal(stage, status, app_pid=os.getpid())
+                fd, status = tempfile.mkstemp(prefix='rogcontrol-update-', suffix='.status')
+                os.close(fd)
+                ok, message = updater.launch_update_terminal(stage, status, app_pid=os.getpid(), cleanup_staging=True)
                 if not ok:
+                    self._remove_status(status)
                     raise RuntimeError(message)
             else:
                 decky_install.install_archive(stage, expected_version=release['version'])
@@ -143,6 +150,7 @@ class UpdatesController(QObject):
                 os.close(fd)
                 launched = decky_install.launch_loader_restart(status)
                 if not launched['ok']:
+                    self._remove_status(status)
                     raise RuntimeError('Plugin files installed; Loader restart failed: ' + str(launched['message']))
             return status
         def done(result, error):
@@ -158,9 +166,9 @@ class UpdatesController(QObject):
             self._installing.discard(kind)
             self._state(kind, busy=False, status='Another operation is running; retry when it finishes.')
 
-    @Slot(str, int, int)
-    def _progress(self, kind, received, total):
-        if not self._closed:
+    @Slot(str, int, int, int)
+    def _progress(self, kind, generation, received, total):
+        if not self._closed and self._download_generations.get(kind) == generation and self.runner.active('download-' + kind):
             percent = round(100 * received / total) if total else 0
             self._state(kind, progress=percent, status=f'Downloading: {received // 1024} KiB' + (f' / {total // 1024} KiB' if total else ''))
 
@@ -171,6 +179,8 @@ class UpdatesController(QObject):
         action, _, kind = job.partition('-')
         if kind not in self._states:
             return
+        if action == 'download':
+            self._download_generations.pop(kind, None)
         if error:
             self._state(kind, busy=False, status=str(error))
         elif action == 'check':
@@ -187,14 +197,29 @@ class UpdatesController(QObject):
             _, started, version = self._poll.get(kind, ('', time.monotonic(), ''))
             if status == '0':
                 verified = kind == 'app' or (installation.get('installed') and installation.get('version') == version)
+                self._finish_terminal(kind, clear_stage=True)
                 self._state(kind, busy=False, status='Installation completed' if verified else 'Loader restarted, but installed plugin version could not be confirmed.', stage='', available=False)
-                self._poll.pop(kind, None)
             elif status.isdecimal():
+                self._finish_terminal(kind)
                 self._state(kind, busy=False, status='Installer failed (exit ' + status + '). See the terminal; retry install.')
-                self._poll.pop(kind, None)
             elif status == 'closed' or (not status and time.monotonic() - started > 30):
+                self._finish_terminal(kind)
                 self._state(kind, busy=False, status='Installer closed or did not start. Retry install.')
-                self._poll.pop(kind, None)
+
+    @staticmethod
+    def _remove_status(path):
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _finish_terminal(self, kind, clear_stage=False):
+        poll = self._poll.pop(kind, None)
+        self._installing.discard(kind)
+        if clear_stage:
+            self._cleanup_stage(kind)
+        if poll:
+            threading.Thread(target=self._remove_status, args=(poll[0],), daemon=True).start()
 
     def _save_last_check(self):
         if self.app.busy:
@@ -263,6 +288,7 @@ class UpdatesController(QObject):
 
     def close(self):
         self._closed = True
+        self._download_generations.clear()
         self._cancel.set()
         self.timer.stop()
         self.runner.shutdown()

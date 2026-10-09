@@ -165,7 +165,8 @@ UPDATE_TERMINALS = (
 )
 
 
-def launch_update_terminal(install_sh_path, status_path=None, app_pid=None):
+def launch_update_terminal(install_sh_path, status_path=None, app_pid=None,
+                           cleanup_staging=False):
     """Open a terminal running the staged installer. Returns ``(ok, message)``.
 
     install.sh cannot simply be run as a subprocess: it calls sudo per step
@@ -173,6 +174,18 @@ def launch_update_terminal(install_sh_path, status_path=None, app_pid=None):
     real TTY attached. Opening a terminal is what gives it one, the same way
     a user running it by hand would."""
     script_dir = os.path.dirname(install_sh_path)
+    cleanup_root = None
+    if cleanup_staging:
+        candidate = os.path.realpath(script_dir)
+        temporary_root = os.path.realpath(tempfile.gettempdir())
+        while candidate != os.path.dirname(candidate):
+            if (os.path.dirname(candidate) == temporary_root
+                    and os.path.basename(candidate).startswith('rogcontrol-update-')):
+                cleanup_root = candidate
+                break
+            candidate = os.path.dirname(candidate)
+        if cleanup_root is None:
+            return False, 'Refusing installer cleanup outside private update staging.'
     # ZipFile.extract does not preserve executable bits. Bash can run the
     # extracted installer without requiring chmod or trusting archive modes.
     installer = f"cd {shlex.quote(script_dir)} && bash ./install.sh; result=$?; "
@@ -197,6 +210,18 @@ def launch_update_terminal(install_sh_path, status_path=None, app_pid=None):
         inner_command = (
             f"printf 'running:%s\\n' \"$$\" > {status}; " + inner_command
             + f"printf '%s\\n' \"$result\" > {status}; ")
+    if cleanup_root is not None:
+        # A Qt installer asks its GUI to exit before replacing files. Once
+        # that process has exited, its terminal owns cleanup after the script
+        # finishes (including failure); no GUI remains to retain a retry stage.
+        # If the GUI survives a refused launch, leave its stage for retry.
+        condition = f'! kill -0 {int(app_pid)} 2>/dev/null' if app_pid is not None else '[ "$result" -eq 0 ]'
+        cleanup = f'rm -rf -- {shlex.quote(cleanup_root)}; '
+        if (status_path is not None
+                and os.path.dirname(os.path.realpath(status_path)) == temporary_root
+                and os.path.basename(status_path).startswith('rogcontrol-update-')):
+            cleanup += f'rm -f -- {shlex.quote(status_path)}; '
+        inner_command += f'if {condition}; then {cleanup}fi; '
     if app_pid is not None:
         inner_command += (
             f"if [ -x {app} ]; then "

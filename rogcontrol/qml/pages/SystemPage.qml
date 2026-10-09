@@ -34,7 +34,7 @@ ColumnLayout {
         StatusRow { colors: root.colors; label: 'asusd'; value: root.readings.asusd ? root.readings.asusd.state || root.readings.asusd.error || 'Unknown' : 'Checking…' }
         Text { text: 'Running asusd can conflict with ROG Control firmware and lighting settings.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         Flow {
-            Layout.fillWidth: true; spacing: 8; implicitHeight: childrenRect.height
+            Layout.fillWidth: true; spacing: 8
             RogButton { colors: root.colors; text: 'Disable asusd'; enabled: !appController.busy && !!root.readings.asusd && !!root.readings.asusd.installed; onClicked: systemController.setAsusd(false) }
             RogButton { colors: root.colors; text: 'Enable asusd'; enabled: !appController.busy && !!root.readings.asusd && !!root.readings.asusd.installed; onClicked: systemController.setAsusd(true) }
             RogButton { colors: root.colors; text: 'Copy uninstall command'; enabled: !!root.readings.uninstall; onClicked: systemController.copy('uninstall') }
@@ -62,7 +62,7 @@ ColumnLayout {
                 Text { text: updateState.status; color: root.colors.mutedText; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                 ProgressBar { visible: updateState.busy; Layout.fillWidth: true; from: 0; to: 100; value: updateState.progress; indeterminate: updateState.progress === 0 }
                 Flow {
-                    Layout.fillWidth: true; spacing: 8; implicitHeight: childrenRect.height
+                    Layout.fillWidth: true; spacing: 8
                     RogButton { colors: root.colors; text: 'Check / retry'; enabled: !updateState.busy; onClicked: updatesController.check(modelData) }
                     RogButton { colors: root.colors; text: 'Download'; enabled: updateState.available && !updateState.busy; onClicked: updatesController.download(modelData) }
                     RogButton { colors: root.colors; text: 'Install…'; enabled: updateState.stage.length > 0 && !updateState.busy && !appController.busy; onClicked: updatesController.install(modelData) }
@@ -83,7 +83,7 @@ ColumnLayout {
         title: 'Diagnostic log'; colors: root.colors; Layout.fillWidth: true
         SettingsSwitch { colors: root.colors; title: 'Problems only'; onEdited: value => systemController.setProblemsOnly(value) }
         Flow {
-            Layout.fillWidth: true; spacing: 8; implicitHeight: childrenRect.height
+            Layout.fillWidth: true; spacing: 8
             RogButton { colors: root.colors; text: 'Refresh'; onClicked: systemController.refresh() }
             RogButton { colors: root.colors; text: 'Copy'; enabled: !!root.readings.log; onClicked: systemController.copy('log') }
             RogButton { colors: root.colors; text: 'Clear…'; enabled: !appController.busy; onClicked: systemController.request('clear-log') }

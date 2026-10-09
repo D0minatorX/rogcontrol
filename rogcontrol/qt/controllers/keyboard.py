@@ -7,6 +7,7 @@ from .settings import SettingsController
 
 
 class KeyboardController(SettingsController):
+    detailsChanged = Signal()
     page = 'keyboard'
     ambientColors = Signal(object)
     ambientStatus = Signal(object)
@@ -14,6 +15,7 @@ class KeyboardController(SettingsController):
 
     def __init__(self, app, parent=None):
         super().__init__(app, parent)
+        self.stateChanged.connect(self.detailsChanged.emit)
         self._edits = {}
         self._preference_edits = {}
         self._colors = None
@@ -46,16 +48,16 @@ class KeyboardController(SettingsController):
     def hexcolor(color):
         return '#%02x%02x%02x' % tuple(color)
 
-    settings = Property('QVariantMap', lambda s: dict(deepcopy(s.app.config), **s._preference_edits), notify=SettingsController.stateChanged)
+    settings = Property('QVariantMap', lambda s: dict(deepcopy(s.app.config), **s._preference_edits), notify=detailsChanged)
 
-    lighting = Property('QVariantMap', lambda s: s._lighting(), notify=SettingsController.stateChanged)
+    lighting = Property('QVariantMap', lambda s: s._lighting(), notify=detailsChanged)
 
-    profileColors = Property('QVariantMap', lambda s: s._profile_colors(), notify=SettingsController.stateChanged)
-    flashColor = Property(str, lambda s: s._flash_color(), notify=SettingsController.stateChanged)
+    profileColors = Property('QVariantMap', lambda s: s._profile_colors(), notify=detailsChanged)
+    flashColor = Property(str, lambda s: s._flash_color(), notify=detailsChanged)
 
-    powerPreferences = Property('QVariantMap', lambda s: s._power_preferences(), notify=SettingsController.stateChanged)
-    inputPreferences = Property('QVariantMap', lambda s: s._input_preferences('key_bindings'), notify=SettingsController.stateChanged)
-    fnPreferences = Property('QVariantMap', lambda s: s._input_preferences('fn_lock'), notify=SettingsController.stateChanged)
+    powerPreferences = Property('QVariantMap', lambda s: s._power_preferences(), notify=detailsChanged)
+    inputPreferences = Property('QVariantMap', lambda s: s._input_preferences('key_bindings'), notify=detailsChanged)
+    fnPreferences = Property('QVariantMap', lambda s: s._input_preferences('fn_lock'), notify=detailsChanged)
 
     def _power_preferences(self):
         if self.app.demo:

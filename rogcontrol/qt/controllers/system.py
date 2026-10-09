@@ -111,8 +111,17 @@ class SystemController(SettingsController):
             return
         def report():
             from ... import diagnostics
-            text = diagnostics.hardware_report_text()
-            path = diagnostics.write_hardware_report()
+            from ...profile_requests import hardware_apply_lock
+            from pathlib import Path
+            # Capability diagnostics include a temporary GPU setter probe.
+            # Keep generation and saving in one physical transaction and save
+            # the exact text returned for copy/display, without probing twice.
+            with hardware_apply_lock():
+                if self._closed:
+                    raise RuntimeError('Report cancelled on shutdown')
+                text = diagnostics.hardware_report_text()
+                path = diagnostics.hardware_report_path()
+                Path(path).write_text(text)
             return str(path), text
         def done(result, error):
             if not error:

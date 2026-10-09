@@ -1,6 +1,6 @@
 """Independent GPU gates, positively confirmed voltage, backend mode workflows."""
 from copy import deepcopy
-from PySide6.QtCore import Property, Slot, QTimer
+from PySide6.QtCore import Signal, Property, Slot, QTimer
 from .tuning import TuningController, number
 
 CAPS = {'watts': 'gpu_power_limit', 'clock_limit': 'gpu_clock_limit',
@@ -11,6 +11,7 @@ DIRECT = ('watts', 'clock_limit', 'clock_offset', 'mem_clock_offset', 'voltage_b
 
 
 class GpuController(TuningController):
+    detailsChanged = Signal()
     section = 'gpu'
 
     def __init__(self, app, parent=None):
@@ -21,8 +22,9 @@ class GpuController(TuningController):
         self._last_mode = None
         self._demo_mode = 'Hybrid'
         super().__init__(app, parent)
+        self.stateChanged.connect(self.detailsChanged.emit)
 
-    rebootPending = Property(bool, lambda s: s._reboot_pending, notify=TuningController.stateChanged)
+    rebootPending = Property(bool, lambda s: s._reboot_pending, notify=detailsChanged)
 
     def demo_caps(self):
         return dict({v: True for v in CAPS.values()}, gpu_limits={'min_w': 35, 'max_w': 140, 'clock_limit_max': 3090},

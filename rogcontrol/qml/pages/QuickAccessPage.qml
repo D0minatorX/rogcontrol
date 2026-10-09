@@ -29,7 +29,7 @@ ColumnLayout {
         }
         Text { text: fansController.live.boost_seconds > 0 ? 'Boost active · ' + fansController.live.boost_seconds + ' seconds remaining' : 'Profile fan curves active'; color: root.colors.mutedText }
         Flow {
-            spacing: 8; Layout.fillWidth: true; implicitHeight: childrenRect.height
+            spacing: 8; Layout.fillWidth: true
             RogButton { colors: root.colors; text: 'CPU settings'; onClicked: appController.navigate('cpu') }
             RogButton { colors: root.colors; text: 'GPU settings'; onClicked: appController.navigate('gpu') }
             RogButton { colors: root.colors; text: 'Fan settings'; onClicked: appController.navigate('fans') }

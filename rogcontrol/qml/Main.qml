@@ -60,7 +60,7 @@ ApplicationWindow {
                         colors: theme; title: 'Operating profile'
                         ComboBox { Layout.fillWidth: true; model: appController.profileNames; currentIndex: appController.profileNames.indexOf(appController.activeProfile); enabled: !appController.busy; onActivated: appController.selectProfile(currentText); Accessible.name: 'Operating profile'; palette.button: theme.panel; palette.buttonText: theme.text }
                         Flow {
-                            Layout.fillWidth: true; spacing: 6; implicitHeight: childrenRect.height
+                            Layout.fillWidth: true; spacing: 6
                             RogButton { colors: theme; text: 'New'; enabled: !appController.busy; onClicked: { profileDialog.operation = 'create'; profileDialog.open() } }
                             RogButton { colors: theme; text: 'Duplicate'; enabled: !appController.busy; onClicked: { profileDialog.operation = 'duplicate'; profileDialog.open() } }
                             RogButton { colors: theme; text: 'Delete'; enabled: !appController.busy && appController.profileNames.length > 1; onClicked: profileController.delete(appController.activeProfile) }

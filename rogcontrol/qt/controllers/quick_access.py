@@ -1,14 +1,16 @@
 """Editable automatic switching and startup; choices never apply a profile."""
 from copy import deepcopy
-from PySide6.QtCore import Slot, Property
+from PySide6.QtCore import Signal, Slot, Property
 from .settings import SettingsController
 
 
 class QuickAccessController(SettingsController):
+    detailsChanged = Signal()
     page = 'quick_access'
 
     def __init__(self, app, parent=None):
         super().__init__(app, parent)
+        self.stateChanged.connect(self.detailsChanged.emit)
         self.refresh()
 
     def fixture(self):
@@ -41,8 +43,8 @@ class QuickAccessController(SettingsController):
             startup.set_enabled(enabled)
         self.write(change)
 
-    powerMizerChoices = Property('QVariantList', lambda s: s._power_choices(), notify=SettingsController.stateChanged)
-    powerMizerLabels = Property('QStringList', lambda s: [{0: 'Adaptive', 1: 'Prefer Maximum Performance', 2: 'Driver controlled / Auto', 3: 'Prefer Consistent Performance'}.get(v, str(v)) for v in s._power_choices()], notify=SettingsController.stateChanged)
+    powerMizerChoices = Property('QVariantList', lambda s: s._power_choices(), notify=detailsChanged)
+    powerMizerLabels = Property('QStringList', lambda s: [{0: 'Adaptive', 1: 'Prefer Maximum Performance', 2: 'Driver controlled / Auto', 3: 'Prefer Consistent Performance'}.get(v, str(v)) for v in s._power_choices()], notify=detailsChanged)
 
     def _power_choices(self):
         page = getattr(self.app, 'tuningPages', {}).get('gpu')

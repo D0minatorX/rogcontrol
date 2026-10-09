@@ -1,13 +1,14 @@
 """Editable fan curves, paced channel writes, calibration and durable boost."""
 from copy import deepcopy
 import time
-from PySide6.QtCore import Property, Slot
+from PySide6.QtCore import Signal, Property, Slot
 from .tuning import TuningController
 
 DEFAULT_CURVE = [[30, 20], [45, 30], [60, 45], [75, 65], [90, 100]]
 
 
 class FansController(TuningController):
+    detailsChanged = Signal()
     section = 'fans'
 
     def __init__(self, app, parent=None):
@@ -15,9 +16,10 @@ class FansController(TuningController):
         self._nudge_pending = False
         self._demo_boost_until = 0
         super().__init__(app, parent)
+        self.stateChanged.connect(self.detailsChanged.emit)
 
-    channels = Property('QVariantList', lambda s: s._channels(), notify=TuningController.stateChanged)
-    displayUnit = Property(str, lambda s: s.app.config.get('fan_display_unit', 'percent'), notify=TuningController.stateChanged)
+    channels = Property('QVariantList', lambda s: s._channels(), notify=detailsChanged)
+    displayUnit = Property(str, lambda s: s.app.config.get('fan_display_unit', 'percent'), notify=detailsChanged)
 
     def _safe_progress(self, message):
         # Progress is informational; QObject teardown must never skip restore.

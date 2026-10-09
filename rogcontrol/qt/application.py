@@ -100,6 +100,8 @@ def main(argv=None):
         engine.rootContext().setContextProperty(key, value)
     engine.load(str(Path(__file__).resolve().parents[1] / 'qml' / 'Main.qml'))
     if not engine.rootObjects():
+        for warning in qml_errors:
+            print(warning.toString(), file=sys.stderr)
         controller.close()
         overview.close()
         for tuning in (cpu, gpu, fans, profiles):
