@@ -22,6 +22,19 @@ application must no longer require GTK 3 or GTK 4 to install or run.
 
 ## Current system
 
+### Approved visual direction (2026-10-09)
+
+The user approved the revised Armoury-inspired mockup with a black background
+and near-black panels, red accents, a compact icon rail, a large CPU/GPU
+frequency gauge, adjacent hardware readings, individual fan speeds, and
+prominent operating-profile buttons. Earlier generic dashboard concepts were
+rejected. The implementation should retain this layout and use actual backend
+readings; illustrative mockup telemetry belongs only in an explicit demo mode.
+
+The design reference is the conversation artifact `rog-control-armoury.html`.
+Its full path at approval is
+`/home/dominatorx/.codex/visualizations/2026/10/09/01a12210-e51e-7e90-9113-7c3ce2ff0280/rog-control-armoury.html`.
+
 The desktop shell is `rogcontrol/app.py`, built on GTK 4 and libadwaita. Its
 feature pages and custom widgets are also GTK classes, with roughly 529 GTK and
 Adwaita references across the desktop UI modules. The pages combine widget
