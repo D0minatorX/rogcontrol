@@ -23,6 +23,8 @@ class AppController(QObject):
         self.config = deepcopy(DEMO_CONFIG) if demo else {}
         self._page, self._status, self._write = 'quick_access', '', None
         self._closed = False
+        self._geometry = None
+        self._geometry_dirty = False
         self._pending_cache = False
         self._gpu_limits = None
         self._write_epoch = 0
@@ -95,7 +97,12 @@ class AppController(QObject):
         self._write = (owner, callback)
         self._status = 'Working…'
         self.stateChanged.emit()
-        self.runner.submit('write', function)
+        def serialized():
+            try:
+                return function()
+            finally:
+                self._flush_geometry()
+        self.runner.submit('write', serialized)
         return True
 
     @Slot(str)
@@ -161,6 +168,44 @@ class AppController(QObject):
             if callback:
                 callback(result, error)
             self.refresh()
+
+    @Slot(int, int)
+    def saveGeometry(self, width, height):
+        if self._closed or width < 360 or height < 480:
+            return
+        self._geometry = [width, height]
+        self._geometry_dirty = True
+        if self.demo:
+            self.config['window_size'] = list(self._geometry)
+            self._geometry_dirty = False
+        elif not self.busy:
+            self.submitWrite('geometry', lambda: None)
+
+    def _flush_geometry(self):
+        if self.demo or not self._geometry_dirty:
+            return
+        from ... import config
+        from ...profile_requests import selection_lock
+        geometry = list(self._geometry)
+        with selection_lock():
+            config.update_config(lambda cfg: cfg.update(window_size=geometry))
+        if self._geometry == geometry:
+            self._geometry_dirty = False
+
+    @Slot(str)
+    def setOverviewLayout(self, layout):
+        if layout not in ('list', 'dashboard'):
+            return
+        if self.demo:
+            self.config['overview_layout'] = layout
+            self.configChanged.emit()
+            return
+        def save():
+            from ... import config
+            from ...profile_requests import selection_lock
+            with selection_lock():
+                config.update_config(lambda cfg: cfg.update(overview_layout=layout))
+        self.submitWrite('overview-layout', save)
 
     def close(self):
         self._closed = True

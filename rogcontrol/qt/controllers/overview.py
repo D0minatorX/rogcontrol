@@ -13,6 +13,7 @@ class OverviewController(QObject):
         self._closed = False
         self._sample_error = ''
         self._consecutive_failures = 0
+        app.configChanged.connect(self.stateChanged)
         app.runner.finished.connect(self._complete)
         self.timer = QTimer(self)
         self.timer.setInterval(2000)
@@ -21,6 +22,8 @@ class OverviewController(QObject):
         self.refresh()
 
     data = Property('QVariantMap', lambda s: s._data, notify=stateChanged)
+
+    layout = Property(str, lambda s: s.app.config.get('overview_layout', 'list'), notify=stateChanged)
 
     sampleError = Property(str, lambda s: s._sample_error, notify=stateChanged)
 

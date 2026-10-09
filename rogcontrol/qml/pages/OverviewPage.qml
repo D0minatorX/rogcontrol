@@ -10,7 +10,7 @@ ColumnLayout {
     property bool compact: width < 660
     function format(value, unit) { return value === undefined || value === null ? "—" : Number(value).toLocaleString(Qt.locale(), 'f', 0) + " " + unit }
     function memory(value) { return !value || value[0] === null || value[1] === null ? '—' : (value[0]/1024).toFixed(1) + ' / ' + (value[1]/1024).toFixed(1) + ' GiB' }
-    function curveStatus() { var state = sample.curve_enabled || {}; var known = Object.keys(state).filter(function(key) { return state[key] !== null }); return !known.length ? 'Unavailable' : known.every(function(key) { return state[key] }) ? 'Held by EC' : 'Dropped — reapply in existing UI' }
+    function curveStatus() { var state = sample.curve_enabled || {}; var known = Object.keys(state).filter(function(key) { return state[key] !== null }); return !known.length ? 'Unavailable' : known.every(function(key) { return state[key] }) ? 'Held by EC' : 'Dropped — reapply the profile' }
     spacing: 14
     Text {
         visible: overviewController.sampleError.length > 0
@@ -19,7 +19,21 @@ ColumnLayout {
         wrapMode: Text.WordWrap
         Layout.fillWidth: true
     }
+    SettingsChoice { visible: appController.currentPage === 'overview'; colors: root.colors; title: 'Readings layout'; choices: ['list','dashboard']; labels: ['List','Dashboard']; value: overviewController.layout; enabled: !appController.busy; Layout.fillWidth: true; onEdited: value => appController.setOverviewLayout(value) }
+    MetricCard {
+        visible: appController.currentPage === 'overview' && overviewController.layout === 'list'
+        colors: root.colors; title: 'Live readings'; Layout.fillWidth: true
+        Repeater {
+            model: [{key:'cpu_temp', label:'CPU temperature', unit:'°C'}, {key:'cpu_clock', label:'CPU clock', unit:'MHz'}, {key:'cpu_power', label:'CPU power', unit:'W'}, {key:'gpu_temp', label:'GPU temperature', unit:'°C'}, {key:'gpu_clock', label:'GPU clock', unit:'MHz'}, {key:'gpu_power', label:'GPU power', unit:'W'}]
+            StatusRow { required property var modelData; colors: root.colors; label: modelData.label; value: root.format(root.sample[modelData.key], modelData.unit) }
+        }
+        StatusRow { colors: root.colors; label: 'RAM'; value: root.memory(root.sample.ram) }
+        StatusRow { colors: root.colors; label: 'VRAM'; value: root.memory(root.sample.vram) }
+        Repeater { model: ['1','2','3']; StatusRow { required property string modelData; colors: root.colors; label: 'Fan ' + modelData; value: root.format((root.sample.fan_rpm || {})[modelData], 'RPM') } }
+        StatusRow { colors: root.colors; label: 'Battery'; value: root.sample.battery ? root.format(root.sample.battery[0], '%') : 'Unavailable' }
+    }
     GridLayout {
+        visible: appController.currentPage !== 'overview' || overviewController.layout === 'dashboard'
         columns: root.compact ? 1 : 2
         columnSpacing: 14
         rowSpacing: 14
@@ -119,7 +133,7 @@ ColumnLayout {
             }
             MetricCard {
                 colors: root.colors; title: 'System configuration'; Layout.fillWidth: true
-                Text { text: "Hardware controls are being migrated. Open the existing desktop interface to edit device settings."; wrapMode: Text.WordWrap; color: root.colors.mutedText; font.pixelSize: 11; Layout.fillWidth: true }
+                Text { text: "Use the device pages to edit hardware and settings."; wrapMode: Text.WordWrap; color: root.colors.mutedText; font.pixelSize: 11; Layout.fillWidth: true }
                 Button { text: 'Refresh readings'; Layout.fillWidth: true; onClicked: overviewController.refresh(); palette.button: root.colors.hover; palette.buttonText: root.colors.text }
             }
         }

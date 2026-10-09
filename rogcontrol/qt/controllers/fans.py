@@ -19,6 +19,13 @@ class FansController(TuningController):
     channels = Property('QVariantList', lambda s: s._channels(), notify=TuningController.stateChanged)
     displayUnit = Property(str, lambda s: s.app.config.get('fan_display_unit', 'percent'), notify=TuningController.stateChanged)
 
+    def _safe_progress(self, message):
+        # Progress is informational; QObject teardown must never skip restore.
+        try:
+            self.progressChanged.emit(message)
+        except RuntimeError:
+            pass
+
     def demo_caps(self):
         return {'fan_curve': True, 'fan_rpm': True}
 
@@ -120,7 +127,7 @@ class FansController(TuningController):
         for i, ch in enumerate(channels):
             if i:
                 time.sleep(fancurve.CHANNEL_GAP_S)
-            self.progressChanged.emit('Writing ' + h.FAN_LABELS[ch] + '…')
+            self._safe_progress('Writing ' + h.FAN_LABELS[ch] + '…')
             try:
                 ok, message = h.run_helper('fan', ch, *fancurve.curve_to_flat(snapshot[ch], 8), timeout=30)
                 if ok:
@@ -201,21 +208,25 @@ class FansController(TuningController):
                     raise RuntimeError('Cannot pause enforcer; calibration was not started')
                 try:
                     for step, pct in enumerate((20, 45, 70, 100), 1):
+                        if self._closed:
+                            raise RuntimeError('Calibration cancelled on shutdown')
                         for i, ch in enumerate(channels):
                             if i:
                                 time.sleep(fancurve.CHANNEL_GAP_S)
-                            self.progressChanged.emit(f'Calibration {step}/4: {h.FAN_LABELS[ch]} at {pct}%')
+                            self._safe_progress(f'Calibration {step}/4: {h.FAN_LABELS[ch]} at {pct}%')
                             flat = [v for temp in h.FAN_BOOST_TEMPS for v in (temp, fancurve.pct_to_pwm255(pct))]
                             ok, message = h.run_helper('fan', ch, *flat, timeout=30)
                             if not ok:
                                 raise RuntimeError(h.FAN_LABELS[ch] + ': ' + str(message))
                         history, start = {ch: [] for ch in channels}, time.monotonic()
                         while True:
+                            if self._closed:
+                                raise RuntimeError('Calibration cancelled on shutdown')
                             rpms = h.read_fan_rpms()
                             for ch in channels:
                                 history[ch].append(rpms.get(ch))
                             elapsed = time.monotonic() - start
-                            self.progressChanged.emit(f'Calibration {step}/4 at {pct}%: settling, {int(elapsed)}s')
+                            self._safe_progress(f'Calibration {step}/4 at {pct}%: settling, {int(elapsed)}s')
                             settled = all(len(hist) >= 3 and all(v is not None for v in hist[-3:]) and max(hist[-3:]) - min(hist[-3:]) <= 150 for hist in history.values())
                             if settled or elapsed >= 100:
                                 break
@@ -232,7 +243,7 @@ class FansController(TuningController):
                             if i:
                                 time.sleep(fancurve.CHANNEL_GAP_S)
                             try:
-                                self.progressChanged.emit('Restoring ' + h.FAN_LABELS[ch] + '…')
+                                self._safe_progress('Restoring ' + h.FAN_LABELS[ch] + '…')
                                 ok, message = h.run_helper('fan', ch, *[v for pair in originals[ch] for v in pair], timeout=30)
                                 if not ok:
                                     failures.append('Restore ' + ch + ': ' + str(message))

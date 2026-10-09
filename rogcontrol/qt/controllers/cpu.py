@@ -86,7 +86,7 @@ class CpuController(TuningController):
                 saved.update({key: values[key] for key in mapping[step] if key in values})
             else:
                 failed.append(step + ': ' + str(message))
-        if values.get('limits_enabled') != baseline.get('limits_enabled', True):
+        if 'limits_enabled' in values and values['limits_enabled'] != baseline.get('limits_enabled', True):
             saved['limits_enabled'] = values['limits_enabled']
         self._reset_took = any(step == 'fwreset' for step, _ in plan) and not any(s.startswith('fwreset:') for s in failed)
         return saved, failed

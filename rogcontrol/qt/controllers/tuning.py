@@ -107,7 +107,7 @@ class TuningController(QObject):
 
     @Slot()
     def refresh(self):
-        if self._closed or self.app.currentPage != self.section or self.app.runner.active('tuning-' + self.section):
+        if self._closed or self.app.currentPage not in (self.section, 'quick_access') or self.app.runner.active('tuning-' + self.section):
             return
         if self.app.demo:
             if not self._ready:

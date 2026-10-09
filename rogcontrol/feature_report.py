@@ -91,7 +91,7 @@ def detect_feature_rows():
         hardware.probe_nvidia_voltage_boost() is not None
         if caps["nvidia"] else False)
     try:
-        from .widgets.ambient import ambient_available
+        from .ambient import ambient_available
         caps["kbd_ambient"] = ambient_available()
     except Exception:
         caps["kbd_ambient"] = False

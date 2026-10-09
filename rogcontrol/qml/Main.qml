@@ -9,6 +9,7 @@ ApplicationWindow {
     width: 1040; height: 860
     minimumWidth: 360; minimumHeight: 480
     visible: false
+    onClosing: close => { close.accepted = false; appController.command('quit') }
     title: 'ROG Control' + (appController.demoMode ? ' · Demo' : ' · Qt Preview')
     color: theme.window
     Palette { id: theme; appearance: appController.appearance }
@@ -72,7 +73,7 @@ ApplicationWindow {
                     }
                     Loader {
                         Layout.fillWidth: true; Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
-                        sourceComponent: appController.currentPage === 'quick_access' ? home : appController.currentPage === 'overview' ? overview : appController.currentPage === 'cpu' ? cpu : appController.currentPage === 'gpu' ? gpu : appController.currentPage === 'fans' ? fans : pending
+                        sourceComponent: appController.currentPage === 'quick_access' ? home : appController.currentPage === 'overview' ? overview : appController.currentPage === 'cpu' ? cpu : appController.currentPage === 'gpu' ? gpu : appController.currentPage === 'fans' ? fans : appController.currentPage === 'battery' ? battery : appController.currentPage === 'keyboard' ? keyboard : system
                     }
                     Text { text: 'ROG CONTROL / LINUX'; color: theme.mutedText; font.pixelSize: 10; Layout.leftMargin: 22 }
                     Item { Layout.preferredHeight: 14 }
@@ -89,7 +90,9 @@ ApplicationWindow {
     Component { id: cpu; CpuPage { colors: theme } }
     Component { id: gpu; GpuPage { colors: theme } }
     Component { id: fans; FansPage { colors: theme } }
-    Component { id: pending; MetricCard { colors: theme; title: appController.pageTitle; Text { Layout.fillWidth: true; text: 'This page is being migrated to Qt. Use the existing desktop interface for ' + appController.pageTitle.toLowerCase() + ' controls.'; color: theme.mutedText; wrapMode: Text.WordWrap } } }
+    Component { id: battery; BatteryPage { colors: theme } }
+    Component { id: keyboard; KeyboardPage { colors: theme } }
+    Component { id: system; SystemPage { colors: theme } }
     ProfileDialog { id: profileDialog; colors: theme }
     function ask(controller, action, message) {
         confirmation.controller = controller; confirmation.action = action; confirmation.message = message; confirmation.open()
@@ -98,6 +101,8 @@ ApplicationWindow {
     Connections { target: cpuController; function onConfirmationRequested(action, message) { window.ask(cpuController, action, message) } }
     Connections { target: gpuController; function onConfirmationRequested(action, message) { window.ask(gpuController, action, message) } }
     Connections { target: fansController; function onConfirmationRequested(action, message) { window.ask(fansController, action, message) } }
+    Connections { target: systemController; function onConfirmationRequested(action, message) { window.ask(systemController, action, message) } }
+    Connections { target: updatesController; function onConfirmationRequested(action, message) { window.ask(updatesController, action, message) } }
     Dialog {
         id: confirmation; property var controller; property string action; property string message
         title: 'Confirm operation'; anchors.centerIn: parent; width: Math.min(window.width - 40, 460); modal: true; standardButtons: Dialog.Yes | Dialog.No
