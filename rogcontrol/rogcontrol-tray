@@ -9,6 +9,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 
 _HERE = Path(__file__).resolve().parent
 for _candidate in (_HERE.parent, Path.home() / '.local/lib'):
@@ -18,7 +19,7 @@ for _candidate in (_HERE.parent, Path.home() / '.local/lib'):
         break
 
 try:
-    from PySide6.QtCore import QTimer
+    from PySide6.QtCore import QObject, QTimer, Signal, Slot, Qt
     from PySide6.QtGui import QAction, QActionGroup, QIcon
     from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 except ImportError as error:
@@ -66,8 +67,31 @@ def spawn(argv, env=None):
         return False
 
 
-class Tray:
+class ProfileRequestSignals(QObject):
+    completed = Signal(object, str, object)
+
+
+def request_profile_in_background(signals, name):
+    fresh = None
+    requested = ''
+    error = None
+    try:
+        fresh = config_mod.load_config()
+        if name != fresh.get('current_profile'):
+            profile_requests.request_profile(name, origin='decky')
+            requested = name
+    except Exception as failure:
+        error = failure
+    try:
+        signals.completed.emit(fresh, requested, error)
+    except RuntimeError:
+        # QApplication may already have destroyed the bridge during shutdown.
+        pass
+
+
+class Tray(QObject):
     def __init__(self):
+        super().__init__()
         self.app = QApplication.instance()
         if self.app is None:
             raise RuntimeError('Create QApplication before the tray')
@@ -75,6 +99,11 @@ class Tray:
         self.config = config_mod.load_config()
         self._last_config_mtime = config_mod.config_mtime()
         self.user_quit = False
+        self._closed = False
+        self._request_pending = False
+        self._request_signals = ProfileRequestSignals(self.app)
+        self._request_signals.completed.connect(
+            self._on_profile_completed, Qt.ConnectionType.QueuedConnection)
         self._items = {}
         self._shown = []
         self._icon_profile = None
@@ -142,16 +171,30 @@ class Tray:
         self.indicator.setToolTip(f'ROG Control — {current or "No profile"}')
 
     def _on_profile(self, name):
-        try:
-            self.config = config_mod.load_config()
-            if name != self.config.get('current_profile'):
-                # The shared worker commits the profile only when its apply starts.
-                profile_requests.request_profile(name, origin='decky')
-                self.indicator.setToolTip(f'ROG Control — requested {name}')
-        except (OSError, ValueError, RuntimeError) as error:
+        if self._closed:
+            return
+        self._sync_menu(self.config.get('current_profile'))
+        if self._request_pending:
+            return
+        self._request_pending = True
+        # A daemon thread cannot hold the sidecar open on a contested lock.
+        # It touches no widgets; completion is queued to this QObject's thread.
+        threading.Thread(target=request_profile_in_background,
+                         args=(self._request_signals, name), daemon=True).start()
+
+    @Slot(object, str, object)
+    def _on_profile_completed(self, fresh, requested, error):
+        if self._closed:
+            return
+        self._request_pending = False
+        if fresh is not None:
+            self.config = fresh
+        self._sync_menu(self.config.get('current_profile'))
+        if error is not None:
             self.indicator.setToolTip(f'ROG Control — {error}')
             print(f'rogcontrol-tray: profile request failed: {error}', file=sys.stderr)
-        self._sync_menu(self.config.get('current_profile'))
+        elif requested:
+            self.indicator.setToolTip(f'ROG Control — requested {requested}')
 
     def _on_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -168,6 +211,7 @@ class Tray:
         self.stop()
 
     def stop(self, *_args):
+        self._closed = True
         self.timer.stop()
         self.indicator.hide()
         self.app.quit()
