@@ -48,17 +48,21 @@ class FansController(TuningController):
             return
         if not 0 <= temperature <= 100 or not 0 <= percent <= 100:
             return
-        points = self._values[channel]
+        if self.app.demo:
+            points = deepcopy(self._values[channel])
+        else:
+            from ... import fancurve
+            # Validate the displayed index against the same normalized list
+            # used by _channels, keeping the saved baseline untouched.
+            points = fancurve.editor_points(self._values[channel])
         if not 0 <= index < len(points):
             return
         if self.app.demo:
-            points = deepcopy(points)
             low = points[index - 1][0] + 1 if index else 0
             high = points[index + 1][0] - 1 if index + 1 < len(points) else 100
             points[index] = [max(low, min(high, round(temperature))), round(percent)]
         else:
-            from ... import fancurve
-            points = fancurve.move_point(fancurve.editor_points(points), index, temperature, percent)
+            points = fancurve.move_point(points, index, temperature, percent)
         self._values[channel] = points
         self.stateChanged.emit()
 

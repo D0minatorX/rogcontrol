@@ -52,7 +52,8 @@ class GpuController(TuningController):
                 'fan': h.read_fan_rpms().get('2'), 'mode': mode or '',
                 'modes': h.gpu_mode_choices(mode, modes), 'backend': 'cardwire' if cardwire else 'supergfxctl',
                 'access': access or ('GPU is asleep' if suspended else ''), 'mode_gate': gate,
-                'daemon': daemon, 'firmware_boost': h.read_nv_dynamic_boost(),
+                'daemon': daemon, 'pending_action': h.PENDING_NONE if cardwire else h.read_gpu_pending_action(),
+                'firmware_boost': h.read_nv_dynamic_boost(),
                 'firmware_temp': h.read_nv_temp_target()}
 
     @Slot()
@@ -66,6 +67,13 @@ class GpuController(TuningController):
         self.app.runner.submit('gpu-deferred-availability', read)
 
     def after_read(self):
+        pending = self._live.get('pending_action')
+        # Unknown readback retains the last known state; an authoritative
+        # none/logout clears an obsolete reboot action on the GUI thread.
+        if self._live.get('backend') == 'cardwire':
+            self._reboot_pending = False
+        elif pending is not None:
+            self._reboot_pending = pending == 'reboot'
         mode = self._live.get('mode')
         if mode == 'Hybrid' and self._last_mode not in (None, 'Hybrid'):
             self._probed = False
@@ -241,19 +249,25 @@ class GpuController(TuningController):
                     raise RuntimeError('Graphics mode changed while the dialog was open; refresh and retry.')
                 wanted = 'Hybrid' if backend != 'cardwire' and h.mode_needs_hybrid_first(current, target) else target
                 ok, message = h.set_gpu_mode(wanted)
-                reboot = ok and backend != 'cardwire' and (h.supergfxd_always_reboot() or h.read_gpu_pending_action() == h.PENDING_REBOOT or h.mode_change_needs_reboot(current, wanted))
-                return ok, message, wanted, reboot
+                pending = h.PENDING_NONE if backend == 'cardwire' else h.read_gpu_pending_action()
+                reboot = ok and backend != 'cardwire' and (h.supergfxd_always_reboot() or pending == h.PENDING_REBOOT or h.mode_change_needs_reboot(current, wanted))
+                return ok, message, wanted, reboot, pending
         def done(result, error):
             if self._closed:
                 return
             if error:
                 self._status = str(error)
             else:
-                ok, message, wanted, reboot = result
+                ok, message, wanted, reboot, pending = result
                 self._status = str(message) or ('Request accepted' if ok else 'Request refused')
                 if wanted != target:
                     self._status += '\nHybrid must take effect before selecting ' + target + ' again.'
-                self._reboot_pending = bool(reboot)
+                if ok:
+                    self._reboot_pending = bool(reboot)
+                elif pending is not None:
+                    self._reboot_pending = pending == 'reboot'
+                # A refused request with unknown readback cannot erase a
+                # previous pending transition. Only accepted changes prompt.
                 if reboot:
                     self.confirmationRequested.emit('reboot', 'The graphics transition needs a reboot. Restart in 5 seconds?')
                 elif ok:
