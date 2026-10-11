@@ -48,7 +48,7 @@ class QuickAccessController(SettingsController):
 
     def _power_choices(self):
         page = getattr(self.app, 'tuningPages', {}).get('gpu')
-        return next((r.get('choices', []) for r in page.rows if r['key'] == 'powermizer_mode' and r['enabled']), []) if page else []
+        return next((r.get('choices', []) for r in page.rows if r['key'] == 'powermizer_mode'), []) if page else []
 
     @Slot(bool)
     def setCpuBoost(self, enabled):

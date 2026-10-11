@@ -4,13 +4,13 @@ ColumnLayout {
     id: root
     property var colors
     Repeater {
-        model: [{key:'ac_profile', label:'AC power'}, {key:'battery_profile', label:'Battery'}, {key:'usbc_profile', label:'USB-C power'}]
+        model: [{key:'ac_profile', label:'On AC power'}, {key:'battery_profile', label:'On battery'}, {key:'usbc_profile', label:'On Type-C charger'}]
         SettingsChoice {
             required property var modelData
             Layout.fillWidth: true
             colors: root.colors; title: modelData.label
             choices: [''].concat(appController.profileNames)
-            labels: ['No automatic switch'].concat(appController.profileNames)
+            labels: ['Don’t auto-switch'].concat(appController.profileNames)
             value: quickAccessController.settings[modelData.key] || ''
             enabled: !appController.busy && (modelData.key !== 'gamescope_profile' || !!quickAccessController.data.gamescope)
             onEdited: value => quickAccessController.setAutomaticProfile(modelData.key, value)

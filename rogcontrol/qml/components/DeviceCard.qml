@@ -12,7 +12,7 @@ MetricCard {
         elide: Text.ElideRight; Layout.fillWidth: true
     }
     Item {
-        Layout.fillWidth: true; Layout.preferredHeight: 164
+        Layout.fillWidth: true; Layout.preferredHeight: 150
         Canvas {
             id: gauge
             anchors.centerIn: parent; width: 210; height: 164
@@ -21,7 +21,7 @@ MetricCard {
             onPaint: {
                 var ctx = getContext('2d'); ctx.reset()
                 var start = Math.PI * .8, end = Math.PI * 2.2
-                ctx.lineWidth = 8; ctx.lineCap = 'round'; ctx.strokeStyle = root.colors.border
+                ctx.lineWidth = 6; ctx.lineCap = 'round'; ctx.strokeStyle = root.colors.border
                 ctx.beginPath(); ctx.arc(105, 91, 75, start, end); ctx.stroke()
                 ctx.strokeStyle = root.colors.accent
                 ctx.beginPath(); ctx.arc(105, 91, 75, start, start + (end-start) * Math.min(frequency / (root.device === 'gpu' ? 3000 : 6000), 1)); ctx.stroke()
@@ -30,7 +30,7 @@ MetricCard {
         }
         Column {
             anchors.centerIn: parent; anchors.verticalCenterOffset: 8; spacing: 3
-            Text { anchors.horizontalCenter: parent.horizontalCenter; text: root.format(root.readings[root.device + '_clock'], ''); color: root.colors.text; font.pixelSize: 34; font.weight: Font.Medium }
+            Text { anchors.horizontalCenter: parent.horizontalCenter; text: root.format(root.readings[root.device + '_clock'], ''); color: root.colors.text; font.pixelSize: 38; font.weight: Font.Medium }
             Text { anchors.horizontalCenter: parent.horizontalCenter; text: 'MHz'; color: root.colors.mutedText; font.pixelSize: 11 }
         }
     }
@@ -42,7 +42,7 @@ MetricCard {
                 required property var modelData
                 Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 6
                 Text { Layout.fillWidth: true; text: modelData.label; color: root.colors.mutedText; font.pixelSize: 9; font.letterSpacing: .6 }
-                Text { Layout.fillWidth: true; text: root.format(modelData.value, modelData.unit); color: root.colors.text; font.pixelSize: 16 }
+                Text { Layout.fillWidth: true; text: root.format(modelData.value, modelData.unit); color: root.colors.text; font.pixelSize: 17; font.weight: Font.Medium }
             }
         }
     }

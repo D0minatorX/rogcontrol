@@ -25,6 +25,7 @@ class KeyboardController(SettingsController):
         self._ambient_stop = None
         self._ambient_mode = False
         self._ambient_generation = 0
+        self._last_mode = None
         self.debounce = QTimer(self)
         self.debounce.setSingleShot(True)
         self.debounce.setInterval(300)
@@ -102,7 +103,7 @@ class KeyboardController(SettingsController):
             raw = deepcopy(self.app.config.get('kbd_rgb', {}))
             color1, color2 = kbdcolor.saved_color(raw), kbdcolor.saved_color(raw, '2')
         result = dict(mode=raw.get('mode', 'Static'), speed=raw.get('speed', 2),
-                      brightness=self.app.config.get('kbd_brightness', 3),
+                      brightness=self._data.get('brightness', self.app.config.get('kbd_brightness', 3)),
                       color1=self.hexcolor(color1), color2=self.hexcolor(color2))
         result.update(self._edits)
         return result
@@ -110,7 +111,7 @@ class KeyboardController(SettingsController):
     def fixture(self):
         return dict(modes=['Static', 'Breathing', 'Pulse', 'Color Cycle', 'Rainbow', 'Gradient Static',
                            'GPU Temp Color', 'CPU Temp Color', 'Battery Level', 'Ambient', 'Profile Color'],
-                    hint='Demo lighting fixture', idle='Idle detection available', dimmed=False,
+                    hint='Demo lighting fixture', idle='Idle detection available', idle_supported=True, dimmed=False,
                     power_supported=True, bindings_supported=True, fn_supported=True,
                     input_status='Background service owns keyboard input', runtime='',
                     bindings=[{'key': k, 'label': v} for k, v in [('rog', 'ROG / M5'), ('aura', 'Fn+F4'), ('performance', 'Fn+F5')]],
@@ -121,7 +122,7 @@ class KeyboardController(SettingsController):
                     fn_labels=['Do nothing', 'Show / hide', 'Cycle profile'],
                     power={'enabled': False, 'keyboard': dict.fromkeys(['boot','awake','sleep','shutdown','battery'], True), 'lightbar': dict.fromkeys(['boot','awake','sleep','shutdown','battery'], True)},
                     key_bindings={'enabled': False, 'rog': 'toggle', 'aura': 'aura', 'performance': 'profile'},
-                    fn_lock={'enabled': False, 'media': True, 'map': {}}, caps={'kbd_ambient': True})
+                    fn_lock={'enabled': False, 'media': True, 'map': {}}, caps={'kbd_ambient': True, 'kbd_rgb': True, 'kbd_rgb_zones': True, 'kbd_backlight': True})
 
     def sample(self):
         from ... import hardware, keyboard_idle, keyboard_power, hotkeys, fnlock, config, kbdcolor
@@ -133,15 +134,38 @@ class KeyboardController(SettingsController):
             caps['kbd_ambient'] = False
         supported, fn_supported, message = hotkeys.support_status()
         cfg = config.load_config()
-        return dict(caps=caps, modes=kbdcolor.supported_modes(caps),
+        idle = keyboard_idle.support_status()
+        dimmed = keyboard_idle.is_dimmed()
+        brightness = hardware.read_kbd_brightness()
+        dimmed = dimmed or keyboard_idle.is_dimmed()
+        return dict(brightness=brightness if brightness is not None else cfg.get('kbd_brightness', 3),
+                    saved_brightness=cfg.get('kbd_brightness', 3), caps=caps, modes=kbdcolor.supported_modes(caps),
                     hint='' if caps.get('kbd_rgb') else 'RGB detection failed. Install rogauracore or reconnect the keyboard, then retry.',
-                    idle=keyboard_idle.support_status(), dimmed=keyboard_idle.is_dimmed(),
+                    idle=idle, idle_supported=idle != keyboard_idle.UNAVAILABLE, dimmed=dimmed,
                     power_supported=keyboard_power.supported(), bindings_supported=supported,
                     fn_supported=fn_supported, input_status=message, runtime=hotkeys.runtime_status(),
                     bindings=[{'key': k, 'label': v} for k, v in hotkeys.BUTTONS.items()],
                     actions=list(hotkeys.ACTIONS), action_labels=list(hotkeys.ACTIONS.values()),
                     fn_keys=[str(n) for n in fnlock.F_KEYS], fn_targets=list(fnlock.TARGETS), fn_labels=list(fnlock.TARGETS.values()),
                     power=keyboard_power.preferences(cfg), key_bindings=hotkeys.preferences(cfg), fn_lock=fnlock.preferences(cfg))
+
+    @Slot(str, object, object)
+    def _read_done(self, job, result, error):
+        current = (not self._closed and job == 'settings-' + self.page
+                   and self._read_epoch == self.app._write_epoch and not self.app.busy)
+        super()._read_done(job, result, error)
+        if not current or error or not result or self.app.demo or 'brightness' in self._edits:
+            return
+        level = result.get('brightness')
+        saved = result.get('saved_brightness')
+        if level is None or result.get('dimmed') or level == saved:
+            return
+        # Fn-key changes should survive login; idle dimming must never replace
+        # the user's saved brightness. Preserve any edit made since sampling.
+        def save(cfg):
+            if cfg.get('kbd_brightness', 3) == saved:
+                cfg['kbd_brightness'] = level
+        self.persist(save)
 
     @Slot()
     def retry(self):
@@ -316,7 +340,9 @@ class KeyboardController(SettingsController):
 
     @Slot(str, str, bool)
     def setPower(self, zone, state, enabled):
-        if zone not in ('keyboard', 'lightbar', '') or state not in ('enabled', 'boot', 'awake', 'sleep', 'shutdown', 'battery'):
+        if state not in ('enabled', 'boot', 'awake', 'sleep', 'shutdown', 'battery'):
+            return
+        if zone not in (('keyboard', 'lightbar', '') if state == 'enabled' else ('keyboard', 'lightbar')):
             return
         base = self._power_preferences()
         if not base:
@@ -387,12 +413,17 @@ class KeyboardController(SettingsController):
         if self._closed or self.app.demo:
             return
         mode = self.app.config.get('kbd_rgb', {}).get('mode')
+        if mode != self._last_mode:
+            self._last_mode = mode
+            self._ambient_generation += 1
+            self._colors = self._last_colors = None
         if mode == 'Ambient' and not self._ambient_mode:
             self._start_ambient()
         elif mode != 'Ambient' and self._ambient_mode:
             self._stop_ambient()
 
     def _start_ambient(self):
+        self._last_mode = 'Ambient'
         self._ambient_mode = True
         self._ambient_generation += 1
         generation = self._ambient_generation
@@ -469,6 +500,7 @@ class KeyboardController(SettingsController):
         if not colors or colors == self._last_colors or self.app.busy or self.app.demo or self._closed:
             return
         generation = self._ambient_generation
+        expected_mode = self.app.config.get('kbd_rgb', {}).get('mode')
         zonal = bool(self._data.get('caps', {}).get('kbd_rgb_zones'))
         def apply():
             from ... import hardware, config
@@ -477,6 +509,8 @@ class KeyboardController(SettingsController):
                 if self._closed or generation != self._ambient_generation:
                     return None
                 mode = config.load_config().get('kbd_rgb', {}).get('mode')
+                if mode != expected_mode:
+                    return None
                 if mode == 'Ambient':
                     args = ('kbdrgb', 'multi_static', *[channel for zone in colors for channel in zone]) if zonal else ('kbdrgb', 'single_static', *[round(sum(z[i] for z in colors) / len(colors)) for i in range(3)])
                 elif mode in ('CPU Temp Color', 'GPU Temp Color', 'Battery Level'):
@@ -488,7 +522,7 @@ class KeyboardController(SettingsController):
                     raise RuntimeError(message)
                 return colors
         def done(result, error):
-            if not error and result:
+            if not error and result and generation == self._ambient_generation:
                 self._last_colors = result
         self.write(apply, done)
 

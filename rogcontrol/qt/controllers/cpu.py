@@ -26,16 +26,16 @@ class CpuController(TuningController):
         rows = []
         backend = caps.get('cpu_power_limits') or ('ryzenadj' if caps.get('ryzenadj') else None)
         if backend:
-            rows.append(toggle('limits_enabled', 'Override firmware power limits'))
+            rows.append(toggle('limits_enabled', 'Apply power limits'))
         if backend == 'ryzenadj':
-            rows += [number('stapm', 'Sustained power', 15, 150, 55000, 'W', 1000),
-                     number('fast', 'Short boost power', 15, 165, 65000, 'W', 1000),
-                     number('slow', 'Long boost power', 15, 150, 55000, 'W', 1000),
+            rows += [number('stapm', 'STAPM limit', 15, 150, 55000, 'W', 1000),
+                     number('fast', 'Fast limit', 15, 165, 65000, 'W', 1000),
+                     number('slow', 'Slow limit', 15, 150, 55000, 'W', 1000),
                      number('temp', 'Temperature target', 60, 100, 90, '°C'),
-                     number('coall', 'Curve Optimizer', -30, 0, 0)]
+                     number('coall', 'Curve Optimizer (voltage offset)', -30, 0, 0)]
         elif backend in ('ppt', 'rapl'):
-            rows += [number('pl1', 'Sustained power (PL1)', 5, 150, 55, 'W'),
-                     number('pl2', 'Boost power (PL2)', 5, 150, 65, 'W')]
+            rows += [number('pl1', 'PL1 limit', 5, 150, 55, 'W'),
+                     number('pl2', 'PL2 limit', 5, 150, 65, 'W')]
         if caps.get('cpu_boost'):
             rows.append(toggle('boost', 'Turbo boost'))
         if caps.get('cpu_epp'):
@@ -43,9 +43,9 @@ class CpuController(TuningController):
                              choices=caps['cpu_epp'], default=caps['cpu_epp'][0]))
         clock = caps.get('cpu_clock')
         if clock:
-            rows.append(number('max_freq', 'Clock ceiling (0 = unlimited)', 0, clock[1] / 1e6, 0, 'GHz', 1000000, .1))
+            rows.append(number('max_freq', 'Maximum core clock', 0, clock[1] / 1e6, 0, 'GHz', 1000000, .1))
         if caps.get('cpu_clock_floor') and clock:
-            rows.append(number('min_freq', 'Clock floor (0 = automatic)', 0, clock[1] / 1e6, 0, 'GHz', 1000000, .1))
+            rows.append(number('min_freq', 'Minimum core clock', 0, clock[1] / 1e6, 0, 'GHz', 1000000, .1))
         return rows
 
     def row_enabled(self, row):

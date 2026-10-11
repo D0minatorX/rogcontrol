@@ -3,7 +3,7 @@ from copy import deepcopy
 from PySide6.QtCore import QObject, Property, Signal, Slot, QTimer
 
 PAGES = {'quick_access': 'Home', 'cpu': 'CPU', 'gpu': 'GPU', 'fans': 'Fans',
-         'battery': 'Battery', 'keyboard': 'Lighting', 'system': 'System'}
+         'battery': 'Battery', 'keyboard': 'Keyboard', 'system': 'System'}
 DEMO_CONFIG = {'current_profile': 'Balanced Performance', 'appearance': 'dark',
                'profiles': {name: {} for name in ('Quiet', 'Balanced Power', 'Balanced Performance', 'Performance')},
                'start_on_boot': True, 'ac_profile': 'Balanced Performance',

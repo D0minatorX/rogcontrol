@@ -4,28 +4,38 @@ ColumnLayout {
     id: root
     property var colors
     property var readings: batteryController.data
-    spacing: 12
-    RowLayout {
+    property var rates: readings.rates || []
+    spacing: 10
+    GridLayout {
         Layout.fillWidth: true
-        Text { text: 'INTERNAL DISPLAY'; color: root.colors.mutedText; font.pixelSize: 10; font.letterSpacing: 1; Layout.fillWidth: true }
-        Text { text: root.readings.current_rate === null || root.readings.current_rate === undefined ? 'Unavailable' : root.readings.current_rate + ' Hz'; color: root.colors.text; font.pixelSize: 12 }
-    }
-    Flow {
-        Layout.fillWidth: true; spacing: 6
-        Repeater {
-            model: root.readings.rates || []
-            RogButton {
-                required property var modelData
-                colors: root.colors; text: modelData + ' Hz'; primary: modelData === root.readings.current_rate
-                implicitWidth: 78
+        columns: root.width < 380 ? 1 : 2
+        columnSpacing: 16; rowSpacing: 10
+        ColumnLayout {
+            Layout.fillWidth: true
+            Text { text: 'Automatic refresh switching'; color: root.colors.text; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Text { text: 'Use this rate on battery; restore the previous rate on charger.'; color: root.colors.mutedText; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        }
+        RowLayout {
+            Layout.alignment: Qt.AlignRight
+            spacing: 10
+            RogComboBox {
+                colors: root.colors; Layout.preferredWidth: 100
+                model: root.rates.map(rate => rate + ' Hz')
+                currentIndex: root.rates.indexOf(batteryController.settings.battery_display_refresh_hz || 60)
+                Accessible.name: 'Battery refresh rate'
+                enabled: !!root.readings.display_supported && root.rates.length > 0 && !appController.busy
+                onActivated: batteryController.setDisplay('battery_display_refresh_hz', root.rates[currentIndex])
+            }
+            RogSwitch {
+                colors: root.colors; text: ''; implicitWidth: 44
+                Accessible.name: 'Automatic refresh switching'
+                checked: !!batteryController.settings.auto_display_refresh
                 enabled: !!root.readings.display_supported && !appController.busy
-                onClicked: batteryController.setRefreshRate(Number(modelData))
+                onToggled: batteryController.setDisplay('auto_display_refresh', checked)
             }
         }
     }
-    SettingsSwitch { colors: root.colors; title: 'Lower refresh rate on battery'; value: !!batteryController.settings.auto_display_refresh; enabled: !!root.readings.display_supported && !appController.busy; description: 'Restores your AC refresh rate when plugged in.'; onEdited: value => batteryController.setDisplay('auto_display_refresh', value) }
-    SettingsChoice { visible: !!batteryController.settings.auto_display_refresh; colors: root.colors; title: 'On battery'; choices: root.readings.rates || []; labels: choices.map(rate => rate + ' Hz'); value: batteryController.settings.battery_display_refresh_hz || 60; enabled: !!root.readings.display_supported && choices.length > 0 && !appController.busy; onEdited: value => batteryController.setDisplay('battery_display_refresh_hz', value); Layout.fillWidth: true }
     Text { text: root.readings.display_reason || ''; visible: text.length > 0; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 11 }
-    RogButton { colors: root.colors; text: 'Detect display'; enabled: !appController.busy; onClicked: batteryController.refresh() }
+    RogButton { visible: !root.readings.display_supported; colors: root.colors; text: 'Detect display'; enabled: !appController.busy; onClicked: batteryController.refresh() }
     Text { text: batteryController.status; visible: text.length > 0; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 11 }
 }

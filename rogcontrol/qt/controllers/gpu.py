@@ -143,11 +143,11 @@ class GpuController(TuningController):
 
     def build_rows(self, caps):
         limits = caps.get('gpu_limits') or {'min_w': 1, 'max_w': 140, 'clock_limit_max': 3090}
-        rows = [number('watts', 'Board power limit', limits['min_w'], limits['max_w'], limits['max_w'], 'W'),
-                number('clock_limit', 'Clock ceiling (maximum = unlimited)', 200, limits['clock_limit_max'], limits['clock_limit_max'], 'MHz', step=15),
-                number('dyn_boost', 'Dynamic Boost', 5, 25, self._live.get('firmware_boost') or 5, 'W'),
+        rows = [number('watts', 'Power limit', limits['min_w'], limits['max_w'], limits['max_w'], 'W'),
+                number('clock_limit', 'Clock ceiling', 200, limits['clock_limit_max'], limits['clock_limit_max'], 'MHz', step=15),
+                number('dyn_boost', 'NVIDIA Dynamic Boost', 5, 25, self._live.get('firmware_boost') or 5, 'W'),
                 number('temp_target', 'Temperature target', 75, 87, self._live.get('firmware_temp') or 75, '°C'),
-                number('voltage_boost', 'Voltage boost (0 = stock)', 0, 100, 0, '%')]
+                number('voltage_boost', 'Voltage Boost', 0, 100, 0, '%')]
         for key, kind, title in [('clock_offset', 'core', 'Core clock offset'), ('mem_clock_offset', 'memory', 'Memory clock offset')]:
             bounds = caps.get('gpu_offset_limits', {}).get(kind, {})
             rows.append(number(key, title, max(-1000, bounds.get('minimum', -1000)), min(1000, bounds.get('maximum', 1000)), 0, 'MHz', step=15 if kind == 'core' else 50))

@@ -5,12 +5,37 @@ ColumnLayout {
     id: root
     property var colors
     spacing: 14
+    Text { visible: appController.safetyTripped; text: 'Curve Optimizer is held at stock after repeated boot failures. Review the undervolt before enabling it again.'; color: root.colors.accent; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+    RogButton { visible: appController.safetyTripped; colors: root.colors; text: 'Recover undervolt control'; enabled: !appController.busy; onClicked: cpuController.recoverSafety() }
+    GridLayout {
+        Layout.fillWidth: true; columns: root.width >= 760 ? 2 : 1; columnSpacing: 14; rowSpacing: 14
+        ColumnLayout {
+            Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 14
     MetricCard {
-        Layout.fillWidth: true; colors: root.colors; title: 'Power and clocks'
-        Text { visible: appController.safetyTripped; text: 'Curve Optimizer is held at stock after repeated boot failures. Review the undervolt before enabling it again.'; color: colors.accent; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-        RogButton { visible: appController.safetyTripped; colors: root.colors; text: 'Recover undervolt control'; enabled: !appController.busy; onClicked: cpuController.recoverSafety() }
-        Text { visible: cpuController.ready && cpuController.rows.length === 0; text: 'No supported CPU tuning interface was detected.'; color: colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-        TuningControls { Layout.fillWidth: true; colors: root.colors; controller: cpuController; excludedKeys: ['boost'] }
+        Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop
+        colors: root.colors; title: 'Power limits'; visible: controls0.hasControls
+        TuningControls { id: controls0; Layout.fillWidth: true; colors: root.colors; controller: cpuController; includedKeys: ['limits_enabled', 'stapm', 'fast', 'slow', 'pl1', 'pl2'] }
     }
-    Text { Layout.fillWidth: true; text: cpuController.status; visible: text.length > 0; color: colors.mutedText; wrapMode: Text.WordWrap; font.pixelSize: 12 }
+    MetricCard {
+        Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop
+        colors: root.colors; title: 'Temperature and voltage'; visible: controls2.hasControls
+        TuningControls { id: controls2; Layout.fillWidth: true; colors: root.colors; controller: cpuController; includedKeys: ['temp', 'coall'] }
+    }
+        }
+        ColumnLayout {
+            Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 14
+    MetricCard {
+        Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop
+        colors: root.colors; title: 'Clocks'; visible: controls1.hasControls
+        TuningControls { id: controls1; Layout.fillWidth: true; colors: root.colors; controller: cpuController; includedKeys: ['max_freq', 'min_freq'] }
+    }
+    MetricCard {
+        Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop
+        colors: root.colors; title: 'Energy preference'; visible: efficiency.hasControls
+        TuningControls { id: efficiency; Layout.fillWidth: true; colors: root.colors; controller: cpuController; includedKeys: ['epp'] }
+    }
+        }
+    }
+    Text { visible: cpuController.ready && !controls0.hasControls && !controls1.hasControls && !controls2.hasControls && !efficiency.hasControls; text: 'No supported tuning controls detected.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+    Text { Layout.fillWidth: true; text: cpuController.status; visible: text.length > 0; color: root.colors.mutedText; wrapMode: Text.WordWrap; font.pixelSize: 12 }
 }

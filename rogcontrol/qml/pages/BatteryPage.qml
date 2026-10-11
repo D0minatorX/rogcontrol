@@ -42,11 +42,11 @@ ColumnLayout {
         Text { visible: !!root.readings.health && root.readings.health.percent > 100; text: 'A new battery can report more than 100% of its design capacity.'; color: root.colors.mutedText; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true }
     }
     MetricCard {
-        title: 'Charge protection'; colors: root.colors; Layout.fillWidth: true
-        SliderRow { Layout.fillWidth: true; colors: root.colors; title: 'Normal charge cap'; unit: '%'; value: batteryController.settings.charge_limit === undefined ? 100 : batteryController.settings.charge_limit; enabled: !!root.readings.charge_supported && !appController.busy; onEdited: value => batteryController.setLimit(Math.round(value)) }
+        objectName: 'chargingCard'; visible: !!root.readings.charge_supported; title: 'Charging'; colors: root.colors; Layout.fillWidth: true
+        SliderRow { Layout.fillWidth: true; colors: root.colors; title: 'Charge limit'; unit: '%'; value: batteryController.settings.charge_limit === undefined ? 100 : batteryController.settings.charge_limit; enabled: !!root.readings.charge_supported && !appController.busy; onEdited: value => batteryController.setLimit(Math.round(value)) }
         StatusRow { colors: root.colors; label: 'Firmware charge cap'; value: root.readings.limit === undefined || root.readings.limit === null ? 'Unsupported' : root.readings.limit + '%' }
         RogButton { colors: root.colors; text: root.readings.once ? 'Cancel one full charge' : 'Charge to 100% once'; enabled: !!root.readings.charge_supported && !appController.busy; onClicked: batteryController.toggleOnce() }
-        Text { text: root.readings.once ? 'One full charge is active. The normal cap is restored on full charge or unplugging.' : 'The normal charge cap is global across profiles.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        Text { visible: !!root.readings.once; text: 'One full charge is active. The normal cap is restored on full charge or unplugging.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
     }
     Text { text: batteryController.status; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
 }

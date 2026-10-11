@@ -15,7 +15,8 @@ class SystemController(SettingsController):
         self.refresh()
 
     def fixture(self):
-        return dict(version='Demo', caps={'boot_sound': True, 'panel_od': True, 'psr_toggle': True},
+        from ... import APP_VERSION
+        return dict(version=APP_VERSION, caps={'boot_sound': True, 'panel_od': True, 'psr_toggle': True},
                     boot_sound=True, panel_od=True, power_mode='balanced', expected_mode='balanced',
                     asusd={'installed': True, 'state': 'stopped'}, uninstall='sudo pacman -Rns asusctl',
                     graphics={'state': 'running'}, backend='supergfxctl', psr_pending=False,
@@ -48,15 +49,6 @@ class SystemController(SettingsController):
             from ... import hardware
             return hardware.run_helper('bootsound' if key == 'boot_sound' else 'panelod', int(enabled))
         self.physical(apply, lambda cfg: cfg.update({key: int(enabled)}))
-
-    @Slot(str)
-    def setPowerMode(self, mode):
-        if mode not in ('power-saver', 'balanced', 'performance'):
-            return
-        def apply():
-            from ... import hardware
-            return hardware.set_power_mode(mode)
-        self.physical(apply)
 
     @Slot(bool)
     def setAsusd(self, running):

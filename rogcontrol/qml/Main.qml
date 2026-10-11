@@ -8,24 +8,32 @@ ApplicationWindow {
     id: window
     width: 1040; height: 860
     minimumWidth: 360; minimumHeight: 480
+    flags: Qt.Window | Qt.FramelessWindowHint
     visible: false
     onClosing: close => { close.accepted = false; appController.command('quit') }
     title: 'ROG Control' + (appController.demoMode ? ' · Demo' : '')
-    color: theme.window
+    color: "transparent"
+    readonly property int cornerRadius: visibility === Window.Maximized || visibility === Window.FullScreen ? 0 : 14
+    background: Rectangle { color: theme.window; radius: window.cornerRadius }
     Palette { id: theme; appearance: appController.appearance }
     property bool narrow: width < 620
     property var tuningPage: appController.currentPage === 'cpu' ? cpuController : appController.currentPage === 'gpu' ? gpuController : appController.currentPage === 'fans' ? fansController : null
-    property var pages: [{id:'quick_access',title:'Home',icon:'⌂'}, {id:'cpu',title:'CPU',icon:'▣'}, {id:'gpu',title:'GPU',icon:'▱'}, {id:'fans',title:'Fans',icon:'✣'}, {id:'battery',title:'Battery',icon:'▰'}, {id:'keyboard',title:'Lighting',icon:'⌨'}, {id:'system',title:'System',icon:'⚙'}]
+    property var pages: [{id:'quick_access',title:'Home',icon:'⌂'}, {id:'cpu',title:'CPU',icon:'▣'}, {id:'gpu',title:'GPU',icon:'▱'}, {id:'fans',title:'Fans',icon:'✣'}, {id:'battery',title:'Battery',icon:'▰'}, {id:'keyboard',title:'Keyboard',icon:'⌨'}, {id:'system',title:'System',icon:'⚙'}]
     header: Rectangle {
-        height: 48; color: theme.window
+        height: 52; color: theme.sidebar; radius: window.cornerRadius
+        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: parent.height / 2; color: theme.sidebar }
+        MouseArea {
+            anchors.fill: parent
+            onPressed: window.startSystemMove()
+            onDoubleClicked: window.visibility === Window.Maximized ? window.showNormal() : window.showMaximized()
+        }
         RowLayout {
-            anchors.fill: parent; anchors.leftMargin: 22; anchors.rightMargin: 22
+            anchors.fill: parent; anchors.leftMargin: 22; anchors.rightMargin: 8
             Text { text: 'ROG'; color: theme.accent; font.pixelSize: 14; font.letterSpacing: 2 }
             Text { text: 'CONTROL'; color: theme.text; font.pixelSize: 14; font.letterSpacing: 2; Layout.fillWidth: true }
-            Text { text: appController.activeProfile; visible: !window.narrow; color: theme.mutedText; font.pixelSize: 12; Layout.maximumWidth: Math.min(220, window.width * .25); elide: Text.ElideRight; Accessible.name: 'Active profile: ' + text }
-            RogButton {
+            WindowControl {
                 id: profileMenuButton
-                colors: theme; text: '☰'; implicitWidth: 38; implicitHeight: 34
+                colors: theme; glyph: 'menu'; text: 'Profile actions'
                 Accessible.name: 'Profile actions'
                 onClicked: profileMenu.open()
                 Menu {
@@ -47,33 +55,55 @@ ApplicationWindow {
                     Action { text: 'Export backup…'; enabled: !appController.busy; onTriggered: profileController.chooseExport() }
                 }
             }
-            Text { text: appController.demoMode ? (appController.liveReadings ? (window.narrow ? 'LIVE / DEMO' : 'LIVE READINGS / DEMO CONTROLS') : 'DEMO / SAMPLE READINGS') : 'LIVE READINGS'; color: theme.mutedText; font.pixelSize: 10 }
+            WindowControl { colors: theme; glyph: 'minimize'; text: 'Minimize'; Accessible.name: 'Minimize window'; onClicked: window.showMinimized() }
+            WindowControl { colors: theme; glyph: window.visibility === Window.Maximized ? 'restore' : 'maximize'; text: window.visibility === Window.Maximized ? 'Restore' : 'Maximize'; Accessible.name: 'Maximize or restore window'; onClicked: window.visibility === Window.Maximized ? window.showNormal() : window.showMaximized() }
+            WindowControl { colors: theme; glyph: 'close'; text: 'Close'; Accessible.name: 'Close window'; onClicked: window.close() }
         }
-        Rectangle { height: 1; width: parent.width; anchors.bottom: parent.bottom; color: theme.border }
+    }
+    Repeater {
+        model: [Qt.TopEdge, Qt.BottomEdge, Qt.LeftEdge, Qt.RightEdge,
+                Qt.TopEdge | Qt.LeftEdge, Qt.TopEdge | Qt.RightEdge,
+                Qt.BottomEdge | Qt.LeftEdge, Qt.BottomEdge | Qt.RightEdge]
+        MouseArea {
+            required property int modelData
+            parent: window.contentItem
+            z: 100
+            visible: window.visibility !== Window.Maximized && window.visibility !== Window.FullScreen
+            property bool horizontalEdge: !!(modelData & (Qt.LeftEdge | Qt.RightEdge))
+            property bool verticalEdge: !!(modelData & (Qt.TopEdge | Qt.BottomEdge))
+            width: horizontalEdge ? 6 : parent.width - 12
+            height: verticalEdge ? 6 : parent.height + window.header.height - 12
+            x: modelData & Qt.RightEdge ? parent.width - width : horizontalEdge ? 0 : 6
+            y: modelData & Qt.BottomEdge ? parent.height - height : -window.header.height + (verticalEdge ? 0 : 6)
+            cursorShape: horizontalEdge && verticalEdge ? ((modelData === (Qt.TopEdge | Qt.LeftEdge) || modelData === (Qt.BottomEdge | Qt.RightEdge)) ? Qt.SizeFDiagCursor : Qt.SizeBDiagCursor) : horizontalEdge ? Qt.SizeHorCursor : Qt.SizeVerCursor
+            onPressed: window.startSystemResize(modelData)
+        }
     }
     RowLayout {
         anchors.fill: parent; spacing: 0
         Rectangle {
-            Layout.fillHeight: true; Layout.preferredWidth: 66; color: theme.sidebar; visible: !window.narrow
-            Column { anchors.top: parent.top; anchors.topMargin: 16; anchors.horizontalCenter: parent.horizontalCenter; spacing: 5
-                Repeater { model: window.pages; NavigationItem { required property var modelData; text: modelData.title; symbol: modelData.icon; selected: appController.currentPage === modelData.id; colors: theme; onClicked: appController.navigate(modelData.id) } }
+            Layout.fillHeight: true; Layout.preferredWidth: window.width >= 980 ? 164 : 82; color: theme.sidebar; visible: !window.narrow
+            radius: window.cornerRadius
+            Rectangle { anchors.top: parent.top; width: parent.width; height: parent.height / 2; color: theme.sidebar }
+            Rectangle { anchors.right: parent.right; width: parent.width / 2; height: parent.height; color: theme.sidebar }
+            Column { anchors.top: parent.top; anchors.topMargin: 12; anchors.horizontalCenter: parent.horizontalCenter; spacing: 5
+                Repeater { model: window.pages; NavigationItem { expanded: window.width >= 980; required property var modelData; text: modelData.title; symbol: modelData.id; selected: appController.currentPage === modelData.id; colors: theme; onClicked: appController.navigate(modelData.id) } }
             }
-            Rectangle { width: 1; height: parent.height; anchors.right: parent.right; color: theme.border }
         }
         ColumnLayout {
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
             ScrollView {
                 visible: window.narrow; Layout.fillWidth: true; Layout.preferredHeight: 62; contentWidth: compactNav.implicitWidth; clip: true
-                Row { id: compactNav; spacing: 0; Repeater { model: window.pages; NavigationItem { required property var modelData; text: modelData.title; symbol: modelData.icon; selected: appController.currentPage === modelData.id; colors: theme; onClicked: appController.navigate(modelData.id) } } }
+                Row { id: compactNav; spacing: 0; Repeater { model: window.pages; NavigationItem { required property var modelData; text: modelData.title; symbol: modelData.id; selected: appController.currentPage === modelData.id; colors: theme; onClicked: appController.navigate(modelData.id) } } }
             }
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
-                Layout.topMargin: 20; Layout.bottomMargin: 18
+                Layout.topMargin: 22; Layout.bottomMargin: 20
                 spacing: 7
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
-                    Text { text: appController.pageTitle === 'Home' ? 'ROG CONTROL' : appController.pageTitle.toUpperCase(); color: theme.text; font.pixelSize: window.narrow ? 21 : 25; font.letterSpacing: 1; Layout.fillWidth: true }
+                    Text { text: appController.pageTitle === 'Home' ? 'ROG CONTROL' : appController.pageTitle.toUpperCase(); color: theme.text; font.pixelSize: window.narrow ? 21 : 24; font.letterSpacing: 1; Layout.fillWidth: true }
                     RogButton { colors: theme; visible: appController.currentPage === 'fans'; text: window.narrow ? 'Calibrate' : 'Calibrate fans'; implicitWidth: window.narrow ? 78 : 120; enabled: !appController.busy && fansController.channels.length > 0 && (appController.demoMode || !!fansController.live.calibration_available); onClicked: fansController.calibrate() }
                     RogButton { colors: theme; visible: window.tuningPage !== null; text: 'Revert'; implicitWidth: window.narrow ? 62 : 90; enabled: window.tuningPage !== null && window.tuningPage.dirty && !appController.busy; onClicked: window.tuningPage.revert() }
                     RogButton { colors: theme; visible: window.tuningPage !== null; text: 'Apply'; implicitWidth: window.narrow ? 62 : 90; primary: true; enabled: window.tuningPage !== null && window.tuningPage.ready && !appController.busy; onClicked: window.tuningPage.apply() }
@@ -96,7 +126,6 @@ ApplicationWindow {
                         Layout.fillWidth: true; Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
                         sourceComponent: appController.currentPage === 'quick_access' ? home : appController.currentPage === 'cpu' ? cpu : appController.currentPage === 'gpu' ? gpu : appController.currentPage === 'fans' ? fans : appController.currentPage === 'battery' ? battery : appController.currentPage === 'keyboard' ? keyboard : system
                     }
-                    Text { text: 'ROG CONTROL / LINUX'; color: theme.mutedText; font.pixelSize: 10; Layout.leftMargin: 22 }
                     Item { Layout.preferredHeight: 14 }
                 }
             }
@@ -104,7 +133,7 @@ ApplicationWindow {
                 visible: status.text.length > 0; Layout.fillWidth: true; Layout.preferredHeight: status.implicitHeight + 20; color: theme.selected
                 Text { id: status; anchors.fill: parent; anchors.margins: 10; color: theme.text; font.pixelSize: 11; wrapMode: Text.WordWrap; text: appController.statusText }
             }
-            ProfileBar { colors: theme; Layout.fillWidth: true; Layout.preferredHeight: implicitHeight }
+            ProfileBar { cornerRadius: window.cornerRadius; colors: theme; Layout.fillWidth: true; Layout.preferredHeight: implicitHeight }
         }
     }
     Component { id: home; QuickAccessPage { colors: theme } }

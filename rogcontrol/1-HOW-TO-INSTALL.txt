@@ -37,9 +37,17 @@ installer detects what is missing and installs supported dependencies:
 INSTALLING
 ----------
 
-Unzip it, then from inside the folder:
+For version 1.0.2.2, unzip Rog-Control-V1.0.2.2.zip, then run:
 
-    ./install.sh
+    cd Rog-Control-V1.0.2.2/rogcontrol
+    bash install.sh
+
+For a preview before installing, run this from the extracted
+Rog-Control-V1.0.2.2 directory:
+
+    python3 -m rogcontrol --demo
+
+The preview uses fixture data and does not change hardware or saved settings.
 
 One command everywhere. The installer reads /etc/os-release and works by
 distro family rather than by name, so CachyOS is handled as Arch and Bazzite

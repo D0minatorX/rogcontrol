@@ -1,9 +1,11 @@
 import QtQuick
+import "SettingHelp.js" as Help
 import QtQuick.Controls
 import QtQuick.Layouts
 ColumnLayout {
     id: root
     property var colors
+    property string helpText: Help.forTitle(title)
     property string title
     property string unit: ''
     property real minimum: 0
@@ -24,15 +26,18 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         Text { text: root.title; color: root.colors.text; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+        HelpInfo { colors: root.colors; helpText: root.helpText }
         TextField {
             id: entry
-            Layout.preferredWidth: 78
+            Layout.preferredWidth: 70
+            implicitHeight: 30
+            font.pixelSize: 13; font.weight: Font.Medium
             text: root.formatted(root.value)
             color: root.colors.text
             horizontalAlignment: Text.AlignRight
             selectByMouse: true
             Accessible.name: root.title + ' ' + root.unit
-            background: Rectangle { color: root.colors.window; border.color: entry.activeFocus ? root.colors.accent : root.colors.border; radius: 3 }
+            background: Rectangle { color: root.colors.window; border.color: entry.activeFocus ? root.colors.accent : 'transparent'; radius: 8 }
             onEditingFinished: root.acceptInput()
             Keys.onEscapePressed: { text = Qt.binding(function() { return root.formatted(root.value) }); root.inputError = ''; focus = false }
         }
@@ -44,8 +49,8 @@ ColumnLayout {
         from: root.minimum; to: root.maximum; stepSize: root.step; value: root.value
         Accessible.name: root.title
         onMoved: { root.inputError = ''; root.edited(value) }
-        background: Rectangle { x: slider.leftPadding; y: slider.topPadding + slider.availableHeight / 2 - 2; width: slider.availableWidth; height: 4; color: root.colors.border; Rectangle { height: parent.height; width: slider.visualPosition * parent.width; color: root.colors.accent } }
-        handle: Rectangle { x: slider.leftPadding + slider.visualPosition * (slider.availableWidth - width); y: slider.topPadding + slider.availableHeight / 2 - height / 2; width: 12; height: 12; radius: 2; color: root.colors.accent; border.color: slider.activeFocus ? root.colors.text : root.colors.accent }
+        background: Rectangle { x: slider.leftPadding; y: slider.topPadding + slider.availableHeight / 2 - 2; width: slider.availableWidth; height: 4; radius: 2; color: root.colors.border; Rectangle { height: parent.height; width: slider.visualPosition * parent.width; color: root.colors.accent } }
+        handle: Rectangle { x: slider.leftPadding + slider.visualPosition * (slider.availableWidth - width); y: slider.topPadding + slider.availableHeight / 2 - height / 2; width: 14; height: 14; radius: 7; color: root.colors.text; border.width: 3; border.color: root.colors.accent }
     }
     Text { visible: root.inputError.length > 0; text: root.inputError; color: root.colors.accent; font.pixelSize: 11 }
 }

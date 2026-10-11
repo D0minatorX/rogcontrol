@@ -3,7 +3,7 @@ import QtQuick.Controls
 ComboBox {
     id: control
     property var colors
-    implicitHeight: 42
+    implicitHeight: 38
     implicitWidth: 230
     leftPadding: 13
     rightPadding: 34
@@ -21,9 +21,9 @@ ComboBox {
         text: control.popup.visible ? '⌃' : '⌄'; font.pixelSize: 19; color: control.colors.mutedText
     }
     background: Rectangle {
-        radius: 6
-        color: control.hovered ? control.colors.hover : control.colors.window
-        border.color: control.activeFocus || control.popup.visible ? control.colors.accent : control.colors.border
+        radius: 10
+        color: control.hovered ? control.colors.hover : control.colors.sidebar
+        border.color: control.activeFocus || control.popup.visible ? control.colors.accent : 'transparent'
     }
     delegate: ItemDelegate {
         id: entry
@@ -36,7 +36,7 @@ ComboBox {
             color: control.currentIndex === entry.index ? control.colors.accent : control.colors.text
             font.pixelSize: 12; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
         }
-        background: Rectangle { radius: 4; color: entry.highlighted ? control.colors.hover : 'transparent' }
+        background: Rectangle { radius: 7; color: entry.highlighted ? control.colors.hover : 'transparent' }
     }
     popup: Popup {
         y: control.height + 6; width: control.width
@@ -49,6 +49,6 @@ ComboBox {
             currentIndex: control.highlightedIndex
             ScrollIndicator.vertical: ScrollIndicator { }
         }
-        background: Rectangle { radius: 7; color: control.colors.panel; border.color: control.colors.border }
+        background: Rectangle { radius: 12; color: control.colors.panel; border.color: control.colors.border }
     }
 }

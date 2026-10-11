@@ -1,15 +1,21 @@
 import QtQuick
+import "SettingHelp.js" as Help
 import QtQuick.Layouts
 ColumnLayout {
     id: root
     property var colors
+    property string helpText: Help.forTitle(title)
     property string title
     property string description: ''
     property var choices: []
     property var labels: choices
     property var value
     signal edited(var value)
+    RowLayout {
+        Layout.fillWidth: true
     Text { text: root.title; color: root.colors.text; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 12 }
+        HelpInfo { colors: root.colors; helpText: root.helpText }
+    }
     RogComboBox {
         colors: root.colors
         Layout.fillWidth: true

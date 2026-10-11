@@ -246,7 +246,7 @@ class UpdatesController(QObject):
 
     @Slot(str)
     def setAutomatic(self, value):
-        if value not in ('off', 'launch', 'daily'):
+        if value not in ('off', 'launch', 'daily', '48h', 'weekly', 'monthly'):
             return
         if self.app.demo:
             self.app.config['update_check'] = value
@@ -264,8 +264,13 @@ class UpdatesController(QObject):
         if self._closed or self.app.demo:
             return
         mode = self.app.config.get('update_check', 'off')
-        due = mode == 'daily' and time.time() - float(self.app.config.get('last_update_check', 0)) >= 86400
-        if not self._launch_checked and mode in ('launch', 'daily'):
+        intervals = {'daily': 86400, '48h': 172800, 'weekly': 604800, 'monthly': 2592000}
+        try:
+            last = float(self.app.config.get('last_update_check', 0))
+        except (ValueError, TypeError):
+            last = 0
+        due = mode in intervals and time.time() - last >= intervals[mode]
+        if not self._launch_checked and mode in ('launch', *intervals):
             self._launch_checked = True
             if mode == 'launch' or due:
                 self.check('app')

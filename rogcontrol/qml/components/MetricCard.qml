@@ -5,14 +5,21 @@ Rectangle {
     property var colors
     property string title
     default property alias body: content.data
+    radius: 14
     color: colors.panel
-    border.color: colors.border
+    border.width: 0
     implicitHeight: content.implicitHeight + 36
     ColumnLayout {
         id: content
-        anchors.fill: parent
-        anchors.margins: 17
-        spacing: 13
-        Text { text: root.title.toUpperCase(); color: colors.text; font.pixelSize: 12; font.letterSpacing: 1.3; Layout.fillWidth: true }
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.margins: 18
+        spacing: 18
+        RowLayout {
+            Layout.fillWidth: true; spacing: 9
+            Rectangle { implicitWidth: 14; implicitHeight: 2; radius: 1; color: root.colors.accent }
+            Text { text: root.title; color: root.colors.text; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: .1; Layout.fillWidth: true; elide: Text.ElideRight }
+        }
     }
 }
