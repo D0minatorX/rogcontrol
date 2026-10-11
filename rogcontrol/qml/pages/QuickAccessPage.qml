@@ -5,14 +5,14 @@ ColumnLayout {
     id: root
     property var colors
     spacing: 16
-    OverviewPage { colors: root.colors; Layout.fillWidth: true }
+    HomeReadings { colors: root.colors; Layout.fillWidth: true }
     GridLayout {
         columns: root.width < 720 ? 1 : 2
         Layout.fillWidth: true; columnSpacing: 14; rowSpacing: 14
         MetricCard {
             title: 'Quick controls'; colors: root.colors
             Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop
-            SettingsSwitch { colors: root.colors; title: 'CPU boost'; value: !!cpuController.values.boost; enabled: !appController.busy && cpuController.ready && cpuController.rows.some(row => row.key === 'boost'); onEdited: value => quickAccessController.setCpuBoost(value) }
+            SettingsSwitch { colors: root.colors; title: 'Turbo boost'; value: !!cpuController.values.boost; enabled: !appController.busy && cpuController.ready && cpuController.rows.some(row => row.key === 'boost'); onEdited: value => quickAccessController.setCpuBoost(value) }
             SettingsChoice { colors: root.colors; title: 'GPU mode'; choices: gpuController.live.modes || []; value: gpuController.live.mode; enabled: !appController.busy && !(gpuController.live.mode_gate || '').length; Layout.fillWidth: true; onEdited: value => gpuController.changeMode(value) }
             Text { text: gpuController.live.mode_gate || ''; visible: text.length > 0; color: root.colors.mutedText; wrapMode: Text.WordWrap; Layout.fillWidth: true; font.pixelSize: 11 }
             RogButton { colors: root.colors; text: 'Enable graphics daemon'; visible: (gpuController.live.mode_gate || '').indexOf('daemon') >= 0; enabled: !appController.busy; onClicked: gpuController.enableDaemon() }

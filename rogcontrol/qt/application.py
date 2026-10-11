@@ -9,7 +9,8 @@ import sys
 def main(argv=None):
     parser = argparse.ArgumentParser(description='ROG Control desktop')
     parser.add_argument('--self-test', action='store_true', help='Build and refresh Qt pages using isolated fixtures, without hardware or capture')
-    parser.add_argument('--demo', action='store_true', help='Use fixtures; never access config or hardware')
+    parser.add_argument('--demo', action='store_true', help='Simulate controls with sample readings; add --live-readings for read-only telemetry')
+    parser.add_argument('--live-readings', action='store_true', help='Show read-only hardware telemetry while demo controls remain simulated')
     parser.add_argument('--show', action='store_true')
     parser.add_argument('--hide', action='store_true')
     parser.add_argument('--quit', action='store_true')
@@ -20,6 +21,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.self_test:
         args.demo = True
+        args.live_readings = False
+    if args.live_readings and not args.demo:
+        parser.error('--live-readings is only needed with --demo')
     if args.screenshot and not args.demo:
         parser.error('--screenshot requires --demo')
     try:
@@ -76,7 +80,7 @@ def main(argv=None):
             return 1
 
     runner = TaskRunner(application)
-    controller = AppController(runner, args.demo, application)
+    controller = AppController(runner, args.demo, application, live_readings=args.live_readings)
     overview = OverviewController(controller, application)
     quick = QuickAccessController(controller, application)
     cpu = CpuController(controller, application)
@@ -212,7 +216,7 @@ def main(argv=None):
     if args.self_test:
         # UI self-test intentionally opts out of screen capture, services,
         # config and hardware; each Loader page is built using demo fixtures.
-        sequence = list(controller.tuningPages) + ['battery', 'keyboard', 'system', 'overview', 'quick_access']
+        sequence = list(controller.tuningPages) + ['battery', 'keyboard', 'system', 'quick_access']
         def advance():
             if sequence:
                 controller.navigate(sequence.pop(0))

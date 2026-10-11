@@ -3,8 +3,7 @@ from copy import deepcopy
 from PySide6.QtCore import QObject, Property, Signal, Slot, QTimer
 
 PAGES = {'quick_access': 'Home', 'cpu': 'CPU', 'gpu': 'GPU', 'fans': 'Fans',
-         'battery': 'Battery', 'keyboard': 'Lighting', 'system': 'System',
-         'overview': 'Overview'}
+         'battery': 'Battery', 'keyboard': 'Lighting', 'system': 'System'}
 DEMO_CONFIG = {'current_profile': 'Balanced Performance', 'appearance': 'dark',
                'profiles': {name: {} for name in ('Quiet', 'Balanced Power', 'Balanced Performance', 'Performance')},
                'start_on_boot': True, 'ac_profile': 'Balanced Performance',
@@ -17,9 +16,10 @@ class AppController(QObject):
     windowCommand = Signal(str)
     configChanged = Signal()
 
-    def __init__(self, runner, demo=False, parent=None):
+    def __init__(self, runner, demo=False, parent=None, live_readings=False):
         super().__init__(parent)
         self.runner, self.demo = runner, demo
+        self.live_readings = bool(live_readings or not demo)
         self.config = deepcopy(DEMO_CONFIG) if demo else {}
         self._page, self._status, self._write = 'quick_access', '', None
         self._closed = False
@@ -48,6 +48,7 @@ class AppController(QObject):
     safetyTripped = Property(bool, lambda s: bool(s.config.get('safety_tripped')), notify=stateChanged)
     statusText = Property(str, lambda s: s._status, notify=stateChanged)
     demoMode = Property(bool, lambda s: s.demo, constant=True)
+    liveReadings = Property(bool, lambda s: s.live_readings, constant=True)
 
     @Slot()
     def tuningStateChanged(self):
@@ -114,7 +115,7 @@ class AppController(QObject):
             return
         if self.demo:
             self.config['current_profile'] = name
-            self._status = 'Demo profile selected'
+            self._status = 'Demo profile applied · hardware controls are simulated'
             self.configChanged.emit()
             self.stateChanged.emit()
             return

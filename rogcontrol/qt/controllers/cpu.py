@@ -1,4 +1,5 @@
 """CPU controls use the canonical ordered backend plan and exact stored units."""
+from glob import glob
 from PySide6.QtCore import Slot
 from .tuning import TuningController, number, toggle
 
@@ -12,13 +13,14 @@ class CpuController(TuningController):
                 'cpu_clock': [400000, 5400000], 'cpu_clock_floor': 400000, 'fw_power_reset': True}
 
     def demo_live(self):
-        return {'temperature': '58 °C', 'clock': '3650 MHz', 'power': '42 W', 'fan': '2400 RPM'}
+        return {'temperature': '58 °C', 'clock': '3650 MHz', 'power': '42 W', 'fan': '2400 RPM', 'governor': 'powersave'}
 
     def sample(self, caps):
         from ... import hardware as h
+        governors = sorted({value for path in glob('/sys/devices/system/cpu/cpufreq/policy*/scaling_governor') if (value := h.read_file(path))})
         return {'temperature': h.read_cpu_temp(), 'clock': h.read_peak_core_clock_mhz(),
                 'power': h.read_cpu_power_w(), 'fan': h.read_fan_rpms().get('1'),
-                'vendor': caps.get('cpu_vendor', '')}
+                'vendor': caps.get('cpu_vendor', ''), 'governor': ', '.join(governors) or 'unavailable'}
 
     def build_rows(self, caps):
         rows = []

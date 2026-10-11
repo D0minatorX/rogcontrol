@@ -14,9 +14,10 @@ class OverviewController(QObject):
         self._sample_error = ''
         self._consecutive_failures = 0
         app.configChanged.connect(self.stateChanged)
+        app.stateChanged.connect(self.refresh)
         app.runner.finished.connect(self._complete)
         self.timer = QTimer(self)
-        self.timer.setInterval(2000)
+        self.timer.setInterval(1000)
         self.timer.timeout.connect(self.refresh)
         self.timer.start()
         self.refresh()
@@ -31,9 +32,9 @@ class OverviewController(QObject):
     def refresh(self):
         if self._closed or self.app.runner.active('overview'):
             return
-        if self.app.currentPage not in ('quick_access', 'overview'):
+        if self.app.currentPage != 'quick_access':
             return
-        if self.app.demo:
+        if not self.app.live_readings:
             self._data = {'cpu_name': 'AMD Ryzen 9 8940HX', 'gpu_name': 'NVIDIA GeForce RTX 5070 Ti',
                           'cpu_temp': 58, 'cpu_clock': 3650, 'cpu_power': 42,
                           'gpu_temp': 51, 'gpu_clock': 1620, 'gpu_power': 36,

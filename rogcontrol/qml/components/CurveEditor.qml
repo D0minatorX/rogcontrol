@@ -8,6 +8,35 @@ ColumnLayout {
     property var calibration: [0, 1]
     property string displayUnit: 'percent'
     property int selectedPoint: 0
+    property int draggingPoint: -1
+    property var dragPoints: []
+    property var dragBase: []
+    property string dragProfile: ''
+    readonly property var displayPoints: draggingPoint >= 0 ? dragPoints : points
+    function cancelDrag() { draggingPoint = -1; dragPoints = []; dragBase = [] }
+    function startDrag(index) {
+        dragProfile = appController.activeProfile
+        dragBase = points.map(point => [point[0], point[1]])
+        dragPoints = dragBase.map(point => [point[0], point[1]])
+        selectedPoint = index
+        draggingPoint = index
+    }
+    function dragTo(temperature, percent) {
+        if (draggingPoint < 0) return
+        var copy = dragPoints.slice(), index = draggingPoint
+        var low = index ? copy[index-1][0]+1 : 0
+        var high = index+1 < copy.length ? copy[index+1][0]-1 : 100
+        copy[index] = [Math.max(low, Math.min(high, Math.round(temperature))), Math.max(0, Math.min(100, Math.round(percent)))]
+        dragPoints = copy
+    }
+    function finishDrag() {
+        if (draggingPoint < 0) return
+        var index = draggingPoint, point = dragPoints[index]
+        var valid = enabled && appController.activeProfile === dragProfile && JSON.stringify(points) === JSON.stringify(dragBase)
+        // One bridge call per gesture, after a responsive local preview.
+        if (valid) pointMoved(index, point[0], point[1])
+        cancelDrag()
+    }
     signal pointMoved(int index, real temperature, real percent)
     signal pointAdded(real temperature, real percent)
     signal pointRemoved(int index)
@@ -46,6 +75,7 @@ ColumnLayout {
         function temperature(x) { return Math.max(0, Math.min(100, (x-leftInset)/(width-leftInset-rightInset)*100)) }
         function duty(y) { return Math.max(0, Math.min(100, (1-(y-topInset)/(height-topInset-bottomInset))*100)) }
         Keys.onPressed: event => {
+            if (root.draggingPoint >= 0) { event.accepted = true; return }
             if (event.key === Qt.Key_Plus || event.key === Qt.Key_Insert) { root.addPoint(); event.accepted = true; return }
             if (root.selectedPoint < 0 || root.selectedPoint >= root.points.length) return
             var point = root.points[root.selectedPoint]
@@ -73,27 +103,28 @@ ColumnLayout {
                     ctx.fillText(Math.round(root.ordinate(tick)).toString(), chart.leftInset-9, chart.py(tick)+4)
                     ctx.textAlign = 'center'; ctx.fillText(tick + '°', chart.px(tick), height-12)
                 }
-                if (!root.points.length) return
-                var first = root.points[0], last = root.points[root.points.length-1]
+                if (!root.displayPoints.length) return
+                var first = root.displayPoints[0], last = root.displayPoints[root.displayPoints.length-1]
                 var fill = ctx.createLinearGradient(0, chart.py(100), 0, chart.py(0))
                 fill.addColorStop(0, '#44200f18'); fill.addColorStop(1, '#08200f18')
                 ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(chart.px(0), chart.py(0)); ctx.lineTo(chart.px(0), chart.py(first[1]))
-                for (var i = 0; i < root.points.length; i++) ctx.lineTo(chart.px(root.points[i][0]), chart.py(root.points[i][1]))
+                for (var i = 0; i < root.displayPoints.length; i++) ctx.lineTo(chart.px(root.displayPoints[i][0]), chart.py(root.displayPoints[i][1]))
                 ctx.lineTo(chart.px(100), chart.py(last[1])); ctx.lineTo(chart.px(100), chart.py(0)); ctx.closePath(); ctx.fill()
                 ctx.strokeStyle = root.colors.accent; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(chart.px(0), chart.py(first[1]))
-                for (i = 0; i < root.points.length; i++) ctx.lineTo(chart.px(root.points[i][0]), chart.py(root.points[i][1]))
+                for (i = 0; i < root.displayPoints.length; i++) ctx.lineTo(chart.px(root.displayPoints[i][0]), chart.py(root.displayPoints[i][1]))
                 ctx.lineTo(chart.px(100), chart.py(last[1])); ctx.stroke()
-                for (i = 0; i < root.points.length; i++) {
+                for (i = 0; i < root.displayPoints.length; i++) {
                     ctx.fillStyle = i === root.selectedPoint ? root.colors.text : root.colors.accent
                     ctx.strokeStyle = root.colors.window; ctx.lineWidth = 3
-                    ctx.beginPath(); ctx.arc(chart.px(root.points[i][0]), chart.py(root.points[i][1]), i === root.selectedPoint ? 7 : 5.5, 0, Math.PI*2); ctx.fill(); ctx.stroke()
+                    ctx.beginPath(); ctx.arc(chart.px(root.displayPoints[i][0]), chart.py(root.displayPoints[i][1]), i === root.selectedPoint ? 7 : 5.5, 0, Math.PI*2); ctx.fill(); ctx.stroke()
                 }
             }
         }
         MouseArea {
             anchors.fill: parent; hoverEnabled: true
-            property int dragging: -1
-            cursorShape: dragging >= 0 ? Qt.ClosedHandCursor : Qt.CrossCursor
+            preventStealing: root.draggingPoint >= 0
+            scrollGestureEnabled: false
+            cursorShape: root.draggingPoint >= 0 ? Qt.ClosedHandCursor : Qt.CrossCursor
             function nearest(x, y) {
                 var best = -1, distance = 18*18
                 for (var i = 0; i < root.points.length; i++) {
@@ -102,10 +133,10 @@ ColumnLayout {
                 }
                 return best
             }
-            onPressed: mouse => { chart.forceActiveFocus(); dragging = nearest(mouse.x, mouse.y); if (dragging >= 0) root.selectedPoint = dragging }
-            onPositionChanged: mouse => { if (pressed && dragging >= 0) root.pointMoved(dragging, chart.temperature(mouse.x), chart.duty(mouse.y)) }
-            onReleased: dragging = -1
-            onCanceled: dragging = -1
+            onPressed: mouse => { chart.forceActiveFocus(); var index = nearest(mouse.x, mouse.y); if (index >= 0) root.startDrag(index) }
+            onPositionChanged: mouse => { if (pressed && root.draggingPoint >= 0) root.dragTo(chart.temperature(mouse.x), chart.duty(mouse.y)) }
+            onReleased: root.finishDrag()
+            onCanceled: root.cancelDrag()
             onDoubleClicked: mouse => {
                 if (nearest(mouse.x, mouse.y) < 0 && mouse.x >= chart.leftInset && mouse.x <= width-chart.rightInset && mouse.y >= chart.topInset && mouse.y <= height-chart.bottomInset)
                     root.pointAdded(chart.temperature(mouse.x), chart.duty(mouse.y))
@@ -115,13 +146,20 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         Text {
-            text: root.selectedPoint >= 0 && root.selectedPoint < root.points.length ? 'Point ' + (root.selectedPoint+1) + '   ·   ' + root.points[root.selectedPoint][0] + ' °C   /   ' + Math.round(root.ordinate(root.points[root.selectedPoint][1])) + (root.displayUnit === 'rpm' ? ' RPM' : ' %') : 'Select a point'
+            text: root.selectedPoint >= 0 && root.selectedPoint < root.displayPoints.length ? 'Point ' + (root.selectedPoint+1) + '   ·   ' + root.displayPoints[root.selectedPoint][0] + ' °C   /   ' + Math.round(root.ordinate(root.displayPoints[root.selectedPoint][1])) + (root.displayUnit === 'rpm' ? ' RPM' : ' %') : 'Select a point'
             color: root.colors.text; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap
         }
-        Text { text: root.points.length + ' / 8 points'; color: root.colors.mutedText; font.pixelSize: 11 }
+        Text { text: root.displayPoints.length + ' / 8 points'; color: root.colors.mutedText; font.pixelSize: 11 }
     }
     Text { text: 'Drag to adjust · Double-click the graph to add · Arrow keys for fine control'; color: root.colors.mutedText; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-    onPointsChanged: { selectedPoint = Math.min(selectedPoint, points.length-1); graph.requestPaint() }
+    onPointsChanged: {
+        if (draggingPoint >= 0 && JSON.stringify(points) !== JSON.stringify(dragBase)) cancelDrag()
+        selectedPoint = Math.min(selectedPoint, points.length-1)
+        graph.requestPaint()
+    }
+    onDisplayPointsChanged: graph.requestPaint()
+    onEnabledChanged: if (!enabled) cancelDrag()
+    Connections { target: appController; function onStateChanged() { if (root.draggingPoint >= 0 && appController.activeProfile !== root.dragProfile) root.cancelDrag() } }
     onSelectedPointChanged: graph.requestPaint()
     onDisplayUnitChanged: graph.requestPaint()
     onCalibrationChanged: graph.requestPaint()

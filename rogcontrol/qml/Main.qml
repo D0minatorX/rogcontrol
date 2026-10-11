@@ -14,7 +14,8 @@ ApplicationWindow {
     color: theme.window
     Palette { id: theme; appearance: appController.appearance }
     property bool narrow: width < 620
-    property var pages: [{id:'quick_access',title:'Home',icon:'⌂'}, {id:'cpu',title:'CPU',icon:'▣'}, {id:'gpu',title:'GPU',icon:'▱'}, {id:'fans',title:'Fans',icon:'✣'}, {id:'battery',title:'Battery',icon:'▰'}, {id:'keyboard',title:'Lighting',icon:'⌨'}, {id:'system',title:'System',icon:'⚙'}, {id:'overview',title:'Overview',icon:'◉'}]
+    property var tuningPage: appController.currentPage === 'cpu' ? cpuController : appController.currentPage === 'gpu' ? gpuController : appController.currentPage === 'fans' ? fansController : null
+    property var pages: [{id:'quick_access',title:'Home',icon:'⌂'}, {id:'cpu',title:'CPU',icon:'▣'}, {id:'gpu',title:'GPU',icon:'▱'}, {id:'fans',title:'Fans',icon:'✣'}, {id:'battery',title:'Battery',icon:'▰'}, {id:'keyboard',title:'Lighting',icon:'⌨'}, {id:'system',title:'System',icon:'⚙'}]
     header: Rectangle {
         height: 48; color: theme.window
         RowLayout {
@@ -44,11 +45,9 @@ ApplicationWindow {
                     MenuSeparator { }
                     Action { text: 'Import…'; enabled: !appController.busy; onTriggered: profileController.chooseImport() }
                     Action { text: 'Export backup…'; enabled: !appController.busy; onTriggered: profileController.chooseExport() }
-                    MenuSeparator { }
-                    Action { text: 'Apply saved profile'; enabled: !appController.busy; onTriggered: profileController.apply() }
                 }
             }
-            Text { text: appController.demoMode ? 'DEMO / SAMPLE READINGS' : 'SYSTEM CONTROL'; color: theme.mutedText; font.pixelSize: 10 }
+            Text { text: appController.demoMode ? (appController.liveReadings ? (window.narrow ? 'LIVE / DEMO' : 'LIVE READINGS / DEMO CONTROLS') : 'DEMO / SAMPLE READINGS') : 'LIVE READINGS'; color: theme.mutedText; font.pixelSize: 10 }
         }
         Rectangle { height: 1; width: parent.width; anchors.bottom: parent.bottom; color: theme.border }
     }
@@ -67,6 +66,14 @@ ApplicationWindow {
                 visible: window.narrow; Layout.fillWidth: true; Layout.preferredHeight: 62; contentWidth: compactNav.implicitWidth; clip: true
                 Row { id: compactNav; spacing: 0; Repeater { model: window.pages; NavigationItem { required property var modelData; text: modelData.title; symbol: modelData.icon; selected: appController.currentPage === modelData.id; colors: theme; onClicked: appController.navigate(modelData.id) } } }
             }
+            RowLayout {
+                visible: window.tuningPage !== null
+                Layout.fillWidth: true; Layout.preferredHeight: 52
+                Layout.leftMargin: 22; Layout.rightMargin: 22
+                Item { Layout.fillWidth: true }
+                RogButton { colors: theme; text: 'Revert'; enabled: window.tuningPage !== null && window.tuningPage.dirty && !appController.busy; onClicked: window.tuningPage.revert() }
+                RogButton { colors: theme; text: 'Apply'; primary: true; enabled: window.tuningPage !== null && window.tuningPage.ready && !appController.busy; onClicked: window.tuningPage.apply() }
+            }
             ScrollView {
                 id: scroll
                 Layout.fillWidth: true; Layout.fillHeight: true; clip: true
@@ -78,8 +85,7 @@ ApplicationWindow {
                     ColumnLayout {
                         Layout.fillWidth: true; Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
                         spacing: 6
-                        Text { text: 'DEVICE / ' + appController.pageTitle.toUpperCase(); color: theme.mutedText; font.pixelSize: 10; font.letterSpacing: 1.6 }
-                        Text { text: appController.pageTitle === 'Home' || appController.pageTitle === 'Overview' ? 'ROG CONTROL' : appController.pageTitle.toUpperCase(); color: theme.text; font.pixelSize: 25; font.letterSpacing: 1 }
+                        Text { text: appController.pageTitle === 'Home' ? 'ROG CONTROL' : appController.pageTitle.toUpperCase(); color: theme.text; font.pixelSize: 25; font.letterSpacing: 1 }
                         Text { text: (overviewController.data.cpu_name || 'Detecting processor…') + ' / ' + (overviewController.data.gpu_name || 'Detecting graphics…'); color: theme.mutedText; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     }
                     Text {
@@ -89,7 +95,7 @@ ApplicationWindow {
                     }
                     Loader {
                         Layout.fillWidth: true; Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
-                        sourceComponent: appController.currentPage === 'quick_access' ? home : appController.currentPage === 'overview' ? overview : appController.currentPage === 'cpu' ? cpu : appController.currentPage === 'gpu' ? gpu : appController.currentPage === 'fans' ? fans : appController.currentPage === 'battery' ? battery : appController.currentPage === 'keyboard' ? keyboard : system
+                        sourceComponent: appController.currentPage === 'quick_access' ? home : appController.currentPage === 'cpu' ? cpu : appController.currentPage === 'gpu' ? gpu : appController.currentPage === 'fans' ? fans : appController.currentPage === 'battery' ? battery : appController.currentPage === 'keyboard' ? keyboard : system
                     }
                     Text { text: 'ROG CONTROL / LINUX'; color: theme.mutedText; font.pixelSize: 10; Layout.leftMargin: 22 }
                     Item { Layout.preferredHeight: 14 }
@@ -99,10 +105,10 @@ ApplicationWindow {
                 visible: status.text.length > 0; Layout.fillWidth: true; Layout.preferredHeight: status.implicitHeight + 20; color: theme.selected
                 Text { id: status; anchors.fill: parent; anchors.margins: 10; color: theme.text; font.pixelSize: 11; wrapMode: Text.WordWrap; text: appController.statusText }
             }
+            ProfileBar { colors: theme; Layout.fillWidth: true; Layout.preferredHeight: implicitHeight }
         }
     }
     Component { id: home; QuickAccessPage { colors: theme } }
-    Component { id: overview; OverviewPage { colors: theme } }
     Component { id: cpu; CpuPage { colors: theme } }
     Component { id: gpu; GpuPage { colors: theme } }
     Component { id: fans; FansPage { colors: theme } }

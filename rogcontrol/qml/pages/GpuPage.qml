@@ -10,6 +10,5 @@ ColumnLayout {
         TuningControls { Layout.fillWidth: true; colors: root.colors; controller: gpuController; excludedKeys: ['powermizer_mode'] }
         RogButton { colors: root.colors; text: 'Refresh tuning capabilities'; enabled: !appController.busy; onClicked: gpuController.probe() }
     }
-    PendingChangesBar { Layout.fillWidth: true; colors: root.colors; pending: gpuController.dirty; busy: appController.busy; onApplyRequested: gpuController.apply(); onRevertRequested: gpuController.revert() }
     Text { Layout.fillWidth: true; text: gpuController.status; visible: text.length > 0; color: colors.mutedText; wrapMode: Text.WordWrap; font.pixelSize: 12 }
 }

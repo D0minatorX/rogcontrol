@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
 ColumnLayout {
     id: root
@@ -14,17 +13,22 @@ ColumnLayout {
             property var modelData: root.controller.rows[index]
             Layout.fillWidth: true
             visible: root.excludedKeys.indexOf(modelData.key) < 0
-            Switch {
+            RogSwitch {
+                colors: root.colors
+                Layout.fillWidth: true
                 visible: modelData.kind === 'bool'
                 text: modelData.title; checked: !!modelData.value; enabled: modelData.enabled
                 palette.windowText: root.colors.text; palette.highlight: root.colors.accent
                 Accessible.name: text
-                onToggled: root.controller.stageValue(modelData.key, checked)
+                onClicked: root.controller.stageValue(modelData.key, checked)
             }
-            RowLayout {
+            SettingsChoice {
                 visible: modelData.kind === 'choice'; Layout.fillWidth: true
-                Text { Layout.fillWidth: true; text: modelData.title; color: root.colors.text; font.pixelSize: 12; wrapMode: Text.WordWrap }
-                RogComboBox { colors: root.colors; Layout.preferredWidth: 230; Layout.maximumWidth: root.width * .6; model: modelData.choiceLabels || modelData.choices || []; currentIndex: (modelData.choices || []).indexOf(modelData.value); enabled: modelData.enabled; Accessible.name: modelData.title; onActivated: root.controller.stageValue(modelData.key, modelData.choices[currentIndex]); palette.button: root.colors.panel; palette.buttonText: root.colors.text }
+                colors: root.colors
+                title: modelData.key === 'epp' ? 'Energy preference (governor: ' + (root.controller.live.governor || 'unavailable') + ')' : modelData.title
+                choices: modelData.choices || []; labels: modelData.choiceLabels || modelData.choices || []
+                value: modelData.value; enabled: modelData.enabled
+                onEdited: value => root.controller.stageValue(modelData.key, value)
             }
             SliderRow {
                 Layout.fillWidth: true

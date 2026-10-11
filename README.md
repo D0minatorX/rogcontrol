@@ -228,6 +228,12 @@ For a fixture-only preview from the repository (no hardware or saved settings):
 python3 -m rogcontrol --demo
 ```
 
+For live read-only CPU/GPU readings with simulated controls:
+
+```bash
+python3 -m rogcontrol --demo --live-readings
+```
+
 To diagnose the installed Qt/QML dependencies without accessing hardware:
 
 ```sh

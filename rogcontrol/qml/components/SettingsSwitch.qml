@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
 ColumnLayout {
     id: root
@@ -8,7 +7,8 @@ ColumnLayout {
     property string description: ''
     property bool value: false
     signal edited(bool value)
-    Switch {
+    RogSwitch {
+        colors: root.colors
         Layout.fillWidth: true
         text: root.title; checked: root.value
         palette.windowText: root.colors.text

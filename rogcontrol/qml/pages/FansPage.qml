@@ -32,7 +32,6 @@ ColumnLayout {
         }
     }
     Text { text: (fansController.live.mismatch || []).length ? 'Driver curve mismatch or disabled channel: ' + fansController.live.mismatch.join(', ') + '. Apply to restore curves.' : ''; visible: text.length > 0; color: root.colors.accent; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-    PendingChangesBar { Layout.fillWidth: true; colors: root.colors; pending: fansController.dirty; busy: appController.busy; onApplyRequested: fansController.apply(); onRevertRequested: fansController.revert() }
     MetricCard {
         Layout.fillWidth: true; colors: root.colors; title: 'Fan calibration'
         Text { text: 'RPM estimates use this machine’s measured calibration when available. Calibration measures 20%, 45%, 70% and 100% duty.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 11 }
