@@ -66,13 +66,19 @@ ApplicationWindow {
                 visible: window.narrow; Layout.fillWidth: true; Layout.preferredHeight: 62; contentWidth: compactNav.implicitWidth; clip: true
                 Row { id: compactNav; spacing: 0; Repeater { model: window.pages; NavigationItem { required property var modelData; text: modelData.title; symbol: modelData.icon; selected: appController.currentPage === modelData.id; colors: theme; onClicked: appController.navigate(modelData.id) } } }
             }
-            RowLayout {
-                visible: window.tuningPage !== null
-                Layout.fillWidth: true; Layout.preferredHeight: 52
-                Layout.leftMargin: 22; Layout.rightMargin: 22
-                Item { Layout.fillWidth: true }
-                RogButton { colors: theme; text: 'Revert'; enabled: window.tuningPage !== null && window.tuningPage.dirty && !appController.busy; onClicked: window.tuningPage.revert() }
-                RogButton { colors: theme; text: 'Apply'; primary: true; enabled: window.tuningPage !== null && window.tuningPage.ready && !appController.busy; onClicked: window.tuningPage.apply() }
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
+                Layout.topMargin: 20; Layout.bottomMargin: 18
+                spacing: 7
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 8
+                    Text { text: appController.pageTitle === 'Home' ? 'ROG CONTROL' : appController.pageTitle.toUpperCase(); color: theme.text; font.pixelSize: window.narrow ? 21 : 25; font.letterSpacing: 1; Layout.fillWidth: true }
+                    RogButton { colors: theme; visible: appController.currentPage === 'fans'; text: window.narrow ? 'Calibrate' : 'Calibrate fans'; implicitWidth: window.narrow ? 78 : 120; enabled: !appController.busy && fansController.channels.length > 0 && (appController.demoMode || !!fansController.live.calibration_available); onClicked: fansController.calibrate() }
+                    RogButton { colors: theme; visible: window.tuningPage !== null; text: 'Revert'; implicitWidth: window.narrow ? 62 : 90; enabled: window.tuningPage !== null && window.tuningPage.dirty && !appController.busy; onClicked: window.tuningPage.revert() }
+                    RogButton { colors: theme; visible: window.tuningPage !== null; text: 'Apply'; implicitWidth: window.narrow ? 62 : 90; primary: true; enabled: window.tuningPage !== null && window.tuningPage.ready && !appController.busy; onClicked: window.tuningPage.apply() }
+                }
+                Text { text: (overviewController.data.cpu_name || 'Detecting processor…') + ' / ' + (overviewController.data.gpu_name || 'Detecting graphics…'); color: theme.mutedText; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true }
             }
             ScrollView {
                 id: scroll
@@ -81,13 +87,6 @@ ApplicationWindow {
                 ColumnLayout {
                     width: scroll.availableWidth
                     spacing: 14
-                    Item { Layout.preferredHeight: 8 }
-                    ColumnLayout {
-                        Layout.fillWidth: true; Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
-                        spacing: 6
-                        Text { text: appController.pageTitle === 'Home' ? 'ROG CONTROL' : appController.pageTitle.toUpperCase(); color: theme.text; font.pixelSize: 25; font.letterSpacing: 1 }
-                        Text { text: (overviewController.data.cpu_name || 'Detecting processor…') + ' / ' + (overviewController.data.gpu_name || 'Detecting graphics…'); color: theme.mutedText; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                    }
                     Text {
                         text: profileController.status; visible: text.length > 0
                         color: theme.mutedText; Layout.fillWidth: true; Layout.leftMargin: 22; Layout.rightMargin: 22

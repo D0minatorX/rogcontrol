@@ -30,7 +30,7 @@ Rectangle {
                     ToolTip.text: modelData + ' · Select and apply'
                     contentItem: Column {
                         spacing: 5
-                        Text { text: profile.modelData.toLowerCase().includes('quiet') ? '◌' : profile.modelData.toLowerCase().includes('performance') ? 'ϟ' : '◇'; color: profile.selected ? root.colors.accent : root.colors.mutedText; font.pixelSize: 20; anchors.horizontalCenter: parent.horizontalCenter }
+                        ProfileIcon { profileName: profile.modelData; tint: profile.selected ? root.colors.accent : root.colors.mutedText; anchors.horizontalCenter: parent.horizontalCenter }
                         Text { width: parent.width; text: profile.modelData; color: root.colors.text; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; elide: Text.ElideRight }
                     }
                     background: Rectangle {

@@ -10,6 +10,7 @@ class BatteryController(SettingsController):
         super().__init__(app, parent)
         self._limit = None
         self._demo_once = None
+        self._demo_rate = 165
         self.debounce = QTimer(self)
         self.debounce.setSingleShot(True)
         self.debounce.setInterval(300)
@@ -20,7 +21,7 @@ class BatteryController(SettingsController):
         return dict(percent=76, charging=True, source='AC power', limit=100 if self._demo_once else self.app.config.get('charge_limit', 80), once=self._demo_once,
                     health=dict(percent=102, full=91.8, design=90, unit='Wh', cycles=12),
                     charge_supported=True, usbc=True, display_supported=True,
-                    display_reason='', rates=[60, 120, 165], current_rate=165)
+                    display_reason='', rates=[60, 120, 165], current_rate=self._demo_rate)
 
     def sample(self):
         from ... import hardware, charge_once, display_refresh
@@ -94,6 +95,10 @@ class BatteryController(SettingsController):
     @Slot(float)
     def setRefreshRate(self, rate):
         if rate not in self._data.get('rates', []):
+            return
+        if self.app.demo:
+            self._demo_rate = rate
+            self.refresh()
             return
         def apply():
             from ... import display_refresh

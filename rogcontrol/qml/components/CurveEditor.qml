@@ -60,7 +60,7 @@ ColumnLayout {
     }
     Rectangle {
         id: chart
-        Layout.fillWidth: true; Layout.preferredHeight: 270
+        Layout.fillWidth: true; Layout.preferredHeight: Math.max(230, Math.min(300, root.width * .4))
         color: root.colors.window; radius: 6
         border.color: activeFocus ? root.colors.accent : root.colors.border
         activeFocusOnTab: true
@@ -103,6 +103,9 @@ ColumnLayout {
                     ctx.fillText(Math.round(root.ordinate(tick)).toString(), chart.leftInset-9, chart.py(tick)+4)
                     ctx.textAlign = 'center'; ctx.fillText(tick + '°', chart.px(tick), height-12)
                 }
+                for (var column = 0; column <= 100; column += 20) {
+                    ctx.strokeStyle = root.colors.border; ctx.beginPath(); ctx.moveTo(chart.px(column), chart.py(0)); ctx.lineTo(chart.px(column), chart.py(100)); ctx.stroke()
+                }
                 if (!root.displayPoints.length) return
                 var first = root.displayPoints[0], last = root.displayPoints[root.displayPoints.length-1]
                 var fill = ctx.createLinearGradient(0, chart.py(100), 0, chart.py(0))
@@ -113,6 +116,13 @@ ColumnLayout {
                 ctx.strokeStyle = root.colors.accent; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(chart.px(0), chart.py(first[1]))
                 for (i = 0; i < root.displayPoints.length; i++) ctx.lineTo(chart.px(root.displayPoints[i][0]), chart.py(root.displayPoints[i][1]))
                 ctx.lineTo(chart.px(100), chart.py(last[1])); ctx.stroke()
+                if (root.selectedPoint >= 0 && root.selectedPoint < root.displayPoints.length) {
+                    var selected = root.displayPoints[root.selectedPoint]
+                    ctx.strokeStyle = root.colors.mutedText; ctx.lineWidth = 1
+                    ctx.setLineDash([3, 5]); ctx.beginPath()
+                    ctx.moveTo(chart.px(selected[0]), chart.py(0)); ctx.lineTo(chart.px(selected[0]), chart.py(selected[1]))
+                    ctx.lineTo(chart.px(0), chart.py(selected[1])); ctx.stroke(); ctx.setLineDash([])
+                }
                 for (i = 0; i < root.displayPoints.length; i++) {
                     ctx.fillStyle = i === root.selectedPoint ? root.colors.text : root.colors.accent
                     ctx.strokeStyle = root.colors.window; ctx.lineWidth = 3
@@ -147,7 +157,7 @@ ColumnLayout {
         Layout.fillWidth: true
         Text {
             text: root.selectedPoint >= 0 && root.selectedPoint < root.displayPoints.length ? 'Point ' + (root.selectedPoint+1) + '   ·   ' + root.displayPoints[root.selectedPoint][0] + ' °C   /   ' + Math.round(root.ordinate(root.displayPoints[root.selectedPoint][1])) + (root.displayUnit === 'rpm' ? ' RPM' : ' %') : 'Select a point'
-            color: root.colors.text; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap
+            color: root.colors.accent; font.pixelSize: 13; font.weight: Font.Medium; Layout.fillWidth: true; wrapMode: Text.WordWrap
         }
         Text { text: root.displayPoints.length + ' / 8 points'; color: root.colors.mutedText; font.pixelSize: 11 }
     }

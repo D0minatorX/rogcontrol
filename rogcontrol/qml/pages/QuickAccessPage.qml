@@ -22,6 +22,8 @@ ColumnLayout {
             SettingsSwitch { colors: root.colors; title: 'Boot sound'; visible: !!systemController.data.caps && !!systemController.data.caps.boot_sound; value: !!systemController.data.boot_sound; enabled: !appController.busy; onEdited: value => systemController.setFirmware('boot_sound', value) }
             SettingsSwitch { colors: root.colors; title: 'Panel overdrive'; visible: !!systemController.data.caps && !!systemController.data.caps.panel_od; value: !!systemController.data.panel_od; enabled: !appController.busy; onEdited: value => systemController.setFirmware('panel_od', value) }
             Rectangle { Layout.fillWidth: true; height: 1; color: root.colors.border }
+            DisplayControls { colors: root.colors; Layout.fillWidth: true }
+            Rectangle { Layout.fillWidth: true; height: 1; color: root.colors.border }
             Text { text: 'TEMPORARY FAN BOOST'; color: root.colors.mutedText; font.pixelSize: 10; font.letterSpacing: 1 }
             NumberSetting { id: boostPercent; Layout.fillWidth: true; colors: root.colors; title: 'Fan speed'; unit: '%'; minimum: 20; maximum: 100; value: 85; enabled: !appController.busy }
             NumberSetting { id: boostDuration; Layout.fillWidth: true; colors: root.colors; title: 'Duration'; unit: 's'; minimum: 10; maximum: 600; step: 10; value: 60; enabled: !appController.busy }
