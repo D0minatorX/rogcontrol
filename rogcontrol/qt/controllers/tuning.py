@@ -170,7 +170,8 @@ class TuningController(QObject):
             if self._status == 'Detecting supported controls…' or self._status.startswith('Readings are stale:'):
                 self._status = ''
             self.reload()
-            if self.app.currentPage == self.section:
+            if (self.app.currentPage == self.section
+                    or (self.section == 'gpu' and self.app.currentPage == 'quick_access')):
                 self.after_read()
         self.stateChanged.emit()
 

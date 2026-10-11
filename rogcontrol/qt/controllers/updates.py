@@ -135,24 +135,35 @@ class UpdatesController(QObject):
         def install():
             from ... import updater, decky_install
             import tempfile
-            if self._closed:
-                raise RuntimeError('Installation cancelled on shutdown')
-            if kind == 'app':
-                fd, status = tempfile.mkstemp(prefix='rogcontrol-update-', suffix='.status')
-                os.close(fd)
-                ok, message = updater.launch_update_terminal(stage, status, app_pid=os.getpid(), cleanup_staging=True)
-                if not ok:
-                    self._remove_status(status)
-                    raise RuntimeError(message)
-            else:
-                decky_install.install_archive(stage, expected_version=release['version'])
-                fd, status = tempfile.mkstemp(prefix='rogcontrol-decky-', suffix='.status')
-                os.close(fd)
-                launched = decky_install.launch_loader_restart(status, app_pid=os.getpid(), cleanup_archive=stage)
-                if not launched['ok']:
-                    self._remove_status(status)
-                    raise RuntimeError('Plugin files installed; Loader restart failed: ' + str(launched['message']))
-            return status
+            status = None
+            handed_off = False
+            try:
+                if self._closed:
+                    raise RuntimeError('Installation cancelled on shutdown')
+                if kind == 'app':
+                    fd, status = tempfile.mkstemp(prefix='rogcontrol-update-', suffix='.status')
+                    os.close(fd)
+                    ok, message = updater.launch_update_terminal(stage, status, app_pid=os.getpid(), cleanup_staging=True)
+                    if not ok:
+                        raise RuntimeError(message)
+                else:
+                    decky_install.install_archive(stage, expected_version=release['version'])
+                    fd, status = tempfile.mkstemp(prefix='rogcontrol-decky-', suffix='.status')
+                    os.close(fd)
+                    launched = decky_install.launch_loader_restart(status, app_pid=os.getpid(), cleanup_archive=stage)
+                    if not launched['ok']:
+                        raise RuntimeError('Plugin files installed; Loader restart failed: ' + str(launched['message']))
+                handed_off = True
+                return status
+            finally:
+                if not handed_off:
+                    # Worker owns failed pre-handoff attempts. Release before
+                    # checking close so either worker or close cleans the stage.
+                    self._installing.discard(kind)
+                    if status:
+                        self._remove_status(status)
+                    if self._closed:
+                        self._remove_stage(kind, stage)
         def done(result, error):
             if self._closed:
                 return

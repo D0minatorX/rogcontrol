@@ -82,12 +82,15 @@ def launch_loader_restart(status_path, *, app_pid=None, cleanup_archive=None):
                 or not status_file.name.startswith('rogcontrol-decky-')
                 or app_pid is None):
             return {'ok': False, 'message': 'Refusing cleanup outside private Decky staging.'}
-        # A surviving GUI owns retry state. After it exits, the terminal
-        # owns both the archive and status, including failed restarts.
-        cleanup = (
+        # A detached completion watcher owns cleanup until the GUI consumes
+        # status or exits, including exit after restart but before its poll.
+        watcher = (
+            f'while kill -0 {int(app_pid)} 2>/dev/null '
+            f'&& [ -e {shlex.quote(str(status_file))} ]; do sleep 1; done; '
             f'if ! kill -0 {int(app_pid)} 2>/dev/null; then '
             f'rm -rf -- {shlex.quote(str(archive.parent))}; '
-            f'rm -f -- {shlex.quote(str(status_file))}; fi; ')
+            f'rm -f -- {shlex.quote(str(status_file))}; fi')
+        cleanup = f'nohup bash -c {shlex.quote(watcher)} </dev/null >/dev/null 2>&1 & '
     status = shlex.quote(str(status_path))
     command = (
         f"printf 'running:%s\\n' \"$$\" > {status}; "
