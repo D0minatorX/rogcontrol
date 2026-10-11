@@ -26,7 +26,7 @@ ColumnLayout {
         Text { text: root.readings.graphics ? root.readings.graphics.message || root.readings.graphics.error || '' : ''; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         RowLayout {
             RogButton { colors: root.colors; text: 'Enable graphics daemon'; enabled: !appController.busy && !!root.readings.caps && !!root.readings.caps[root.readings.backend === 'cardwire' ? 'cardwire' : 'supergfxctl']; onClicked: systemController.enableGraphics() }
-            RogButton { colors: root.colors; text: 'Graphics modes'; onClicked: appController.navigate('gpu') }
+            RogButton { colors: root.colors; text: 'Graphics modes'; onClicked: appController.navigate('quick_access') }
         }
     }
     MetricCard {

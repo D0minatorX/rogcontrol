@@ -21,6 +21,33 @@ ApplicationWindow {
             anchors.fill: parent; anchors.leftMargin: 22; anchors.rightMargin: 22
             Text { text: 'ROG'; color: theme.accent; font.pixelSize: 14; font.letterSpacing: 2 }
             Text { text: 'CONTROL'; color: theme.text; font.pixelSize: 14; font.letterSpacing: 2; Layout.fillWidth: true }
+            Text { text: appController.activeProfile; visible: !window.narrow; color: theme.mutedText; font.pixelSize: 12; Layout.maximumWidth: Math.min(220, window.width * .25); elide: Text.ElideRight; Accessible.name: 'Active profile: ' + text }
+            RogButton {
+                id: profileMenuButton
+                colors: theme; text: '☰'; implicitWidth: 38; implicitHeight: 34
+                Accessible.name: 'Profile actions'
+                onClicked: profileMenu.open()
+                Menu {
+                    id: profileMenu
+                    x: profileMenuButton.width - width; y: profileMenuButton.height + 8
+                    width: 232; padding: 6
+                    background: Rectangle { radius: 8; color: theme.panel; border.color: theme.border }
+                    delegate: MenuItem {
+                        id: menuEntry
+                        implicitHeight: 40
+                        contentItem: Text { text: menuEntry.text; color: menuEntry.enabled ? theme.text : theme.mutedText; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle { radius: 4; color: menuEntry.highlighted ? theme.hover : 'transparent' }
+                    }
+                    Action { text: 'New profile…'; enabled: !appController.busy; onTriggered: { profileDialog.operation = 'create'; profileDialog.open() } }
+                    Action { text: 'Duplicate profile…'; enabled: !appController.busy; onTriggered: { profileDialog.operation = 'duplicate'; profileDialog.open() } }
+                    Action { text: 'Delete profile…'; enabled: !appController.busy && appController.profileNames.length > 1; onTriggered: profileController.delete(appController.activeProfile) }
+                    MenuSeparator { }
+                    Action { text: 'Import…'; enabled: !appController.busy; onTriggered: profileController.chooseImport() }
+                    Action { text: 'Export backup…'; enabled: !appController.busy; onTriggered: profileController.chooseExport() }
+                    MenuSeparator { }
+                    Action { text: 'Apply saved profile'; enabled: !appController.busy; onTriggered: profileController.apply() }
+                }
+            }
             Text { text: appController.demoMode ? 'DEMO / SAMPLE READINGS' : 'SYSTEM CONTROL'; color: theme.mutedText; font.pixelSize: 10 }
         }
         Rectangle { height: 1; width: parent.width; anchors.bottom: parent.bottom; color: theme.border }
@@ -55,21 +82,10 @@ ApplicationWindow {
                         Text { text: appController.pageTitle === 'Home' || appController.pageTitle === 'Overview' ? 'ROG CONTROL' : appController.pageTitle.toUpperCase(); color: theme.text; font.pixelSize: 25; font.letterSpacing: 1 }
                         Text { text: (overviewController.data.cpu_name || 'Detecting processor…') + ' / ' + (overviewController.data.gpu_name || 'Detecting graphics…'); color: theme.mutedText; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     }
-                    MetricCard {
-                        Layout.fillWidth: true; Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
-                        colors: theme; title: 'Operating profile'
-                        ComboBox { Layout.fillWidth: true; model: appController.profileNames; currentIndex: appController.profileNames.indexOf(appController.activeProfile); enabled: !appController.busy; onActivated: appController.selectProfile(currentText); Accessible.name: 'Operating profile'; palette.button: theme.panel; palette.buttonText: theme.text }
-                        Flow {
-                            Layout.fillWidth: true; spacing: 6
-                            RogButton { colors: theme; text: 'New'; enabled: !appController.busy; onClicked: { profileDialog.operation = 'create'; profileDialog.open() } }
-                            RogButton { colors: theme; text: 'Duplicate'; enabled: !appController.busy; onClicked: { profileDialog.operation = 'duplicate'; profileDialog.open() } }
-                            RogButton { colors: theme; text: 'Delete'; enabled: !appController.busy && appController.profileNames.length > 1; onClicked: profileController.delete(appController.activeProfile) }
-                            RogButton { colors: theme; text: 'Import'; enabled: !appController.busy; onClicked: profileController.chooseImport() }
-                            RogButton { colors: theme; text: 'Export backup'; enabled: !appController.busy; onClicked: profileController.chooseExport() }
-                            RogButton { colors: theme; text: 'Apply saved profile'; enabled: !appController.busy; onClicked: profileController.apply() }
-                        }
-                        Text { visible: appController.pendingChanges; text: 'Tuning changes are pending. Apply or revert them on their pages.'; color: theme.accent; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 11 }
-                        Text { text: profileController.status; visible: text.length > 0; color: theme.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 11 }
+                    Text {
+                        text: profileController.status; visible: text.length > 0
+                        color: theme.mutedText; Layout.fillWidth: true; Layout.leftMargin: 22; Layout.rightMargin: 22
+                        wrapMode: Text.WordWrap; font.pixelSize: 11
                     }
                     Loader {
                         Layout.fillWidth: true; Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22

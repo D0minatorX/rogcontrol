@@ -5,6 +5,7 @@ ColumnLayout {
     id: root
     property var colors
     property var controller
+    property var excludedKeys: []
     spacing: 12
     Repeater {
         model: root.controller.rows.length
@@ -12,6 +13,7 @@ ColumnLayout {
             required property int index
             property var modelData: root.controller.rows[index]
             Layout.fillWidth: true
+            visible: root.excludedKeys.indexOf(modelData.key) < 0
             Switch {
                 visible: modelData.kind === 'bool'
                 text: modelData.title; checked: !!modelData.value; enabled: modelData.enabled
@@ -22,7 +24,7 @@ ColumnLayout {
             RowLayout {
                 visible: modelData.kind === 'choice'; Layout.fillWidth: true
                 Text { Layout.fillWidth: true; text: modelData.title; color: root.colors.text; font.pixelSize: 12; wrapMode: Text.WordWrap }
-                ComboBox { model: modelData.choiceLabels || modelData.choices || []; currentIndex: (modelData.choices || []).indexOf(modelData.value); enabled: modelData.enabled; Accessible.name: modelData.title; onActivated: root.controller.stageValue(modelData.key, modelData.choices[currentIndex]); palette.button: root.colors.panel; palette.buttonText: root.colors.text }
+                RogComboBox { colors: root.colors; Layout.preferredWidth: 230; Layout.maximumWidth: root.width * .6; model: modelData.choiceLabels || modelData.choices || []; currentIndex: (modelData.choices || []).indexOf(modelData.value); enabled: modelData.enabled; Accessible.name: modelData.title; onActivated: root.controller.stageValue(modelData.key, modelData.choices[currentIndex]); palette.button: root.colors.panel; palette.buttonText: root.colors.text }
             }
             SliderRow {
                 Layout.fillWidth: true

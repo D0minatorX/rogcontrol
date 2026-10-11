@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
 ColumnLayout {
     id: root
@@ -11,7 +10,8 @@ ColumnLayout {
     property var value
     signal edited(var value)
     Text { text: root.title; color: root.colors.text; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 12 }
-    ComboBox {
+    RogComboBox {
+        colors: root.colors
         Layout.fillWidth: true
         model: root.labels
         currentIndex: root.choices.indexOf(root.value)

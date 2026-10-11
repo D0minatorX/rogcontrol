@@ -1,6 +1,7 @@
 """Editable fan curves, paced channel writes, calibration and durable boost."""
 from copy import deepcopy
 import time
+import math
 from PySide6.QtCore import Signal, Property, Slot
 from .tuning import TuningController
 
@@ -44,34 +45,61 @@ class FansController(TuningController):
         if not self.caps.get('fan_curve'):
             return []
         if self.app.demo:
-            return [dict(key=ch, title=title, points=deepcopy(self._values.get(ch, DEFAULT_CURVE)), rpm=self._live.get('rpms', {}).get(ch), calibration=[1600, 50])
+            return [dict(key=ch, title=title, points=self._editable_points(ch), rpm=self._live.get('rpms', {}).get(ch), calibration=[1600, 50])
                     for ch, title in [('1', 'CPU Fan'), ('2', 'GPU Fan'), ('3', 'Mid Fan')]]
         from ... import hardware, fancurve
-        return [dict(key=ch, title=hardware.FAN_LABELS[ch], points=fancurve.editor_points(self._values.get(ch, DEFAULT_CURVE)),
+        return [dict(key=ch, title=hardware.FAN_LABELS[ch], points=self._editable_points(ch),
                      rpm=self._live.get('rpms', {}).get(ch), calibration=list(fancurve.get_rpm_cal(self.app.config, ch) or (0, 1)))
                 for ch in hardware.FAN_CHANNELS]
 
+    def _editable_points(self, channel):
+        from ... import fancurve
+        points = self._values.get(channel, DEFAULT_CURVE)
+        # Keep the user's control points; the existing writer expands to the
+        # firmware's eight slots on apply. Imported long curves are bounded.
+        return fancurve.editor_points(points, count=max(2, min(8, len(points))))
+
     @Slot(str, int, float, float)
     def movePoint(self, channel, index, temperature, percent):
-        if not self.caps.get('fan_curve') or channel not in self._values:
+        if self.app.busy or not self.caps.get('fan_curve') or channel not in self._values:
+            return
+        if not math.isfinite(temperature) or not math.isfinite(percent):
             return
         if not 0 <= temperature <= 100 or not 0 <= percent <= 100:
             return
-        if self.app.demo:
-            points = deepcopy(self._values[channel])
-        else:
-            from ... import fancurve
-            # Validate the displayed index against the same normalized list
-            # used by _channels, keeping the saved baseline untouched.
-            points = fancurve.editor_points(self._values[channel])
+        from ... import fancurve
+        points = self._editable_points(channel)
         if not 0 <= index < len(points):
             return
-        if self.app.demo:
-            low = points[index - 1][0] + 1 if index else 0
-            high = points[index + 1][0] - 1 if index + 1 < len(points) else 100
-            points[index] = [max(low, min(high, round(temperature))), round(percent)]
-        else:
-            points = fancurve.move_point(points, index, temperature, percent)
+        self._values[channel] = fancurve.move_point(points, index, temperature, percent)
+        self.stateChanged.emit()
+
+    @Slot(str, float, float, result=int)
+    def addPoint(self, channel, temperature, percent):
+        if self.app.busy or not self.caps.get('fan_curve') or channel not in self._values:
+            return -1
+        if not math.isfinite(temperature) or not math.isfinite(percent):
+            return -1
+        points = self._editable_points(channel)
+        if len(points) >= 8 or not 0 <= temperature <= 100 or not 0 <= percent <= 100:
+            return -1
+        temperature, percent = round(temperature), round(percent)
+        if any(abs(point[0] - temperature) < 1 for point in points):
+            return -1
+        index = next((i for i, point in enumerate(points) if point[0] > temperature), len(points))
+        points.insert(index, [temperature, percent])
+        self._values[channel] = points
+        self.stateChanged.emit()
+        return index
+
+    @Slot(str, int)
+    def removePoint(self, channel, index):
+        if self.app.busy or not self.caps.get('fan_curve') or channel not in self._values:
+            return
+        points = self._editable_points(channel)
+        if len(points) <= 2 or not 0 <= index < len(points):
+            return
+        points.pop(index)
         self._values[channel] = points
         self.stateChanged.emit()
 
