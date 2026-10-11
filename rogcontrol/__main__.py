@@ -10,11 +10,8 @@ def main(argv=None):
     if args and args[0] in ("profile", "keyboard", "report", "decky", "--help", "-h"):
         from .cli import main as cli_main
         return cli_main(args)
-    if "--qt" in args:
-        from .qt.application import main as qt_main
-        return qt_main([arg for arg in args if arg != "--qt"])
-    from .app import main as gui_main
-    return gui_main(["rogcontrol", *args])
+    from .qt.application import main as qt_main
+    return qt_main([arg for arg in args if arg != "--qt"])
 
 if __name__ == "__main__":
     sys.exit(main())

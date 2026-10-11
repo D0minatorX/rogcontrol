@@ -194,22 +194,47 @@ A switch for the boot chime, remembered so a boot-apply service can restore it a
 - Bundled interface icons that stay consistent when the desktop icon pack changes
 - System, Light, and Dark appearance under **System → Appearance**, saved between launches
 - Live RAM and VRAM use on the overview page
-- A tray icon that shows and switches the active profile (needs `libayatana-appindicator`)
+- A Qt tray icon that shows and switches the active profile (requires a desktop tray host)
 - Optional ASUS button assignments and software Fn Lock, plus commands for custom desktop shortcuts (see [Keyboard shortcuts](#keyboard-shortcuts))
 - Desktop notifications for background events (needs `libnotify`)
 - Everything you configure lives in one file: `~/.config/rogcontrol.json`
 
 ## 📋 What you need
 
-**Required**, checked by the installer before it touches anything:
+The desktop and tray use **Python + PySide6 / Qt Quick (QML)**. They do not
+require GTK, libadwaita, HTML, or a browser engine. PyGObject remains for
+Gio/GLib desktop integrations such as screen capture and power management.
 
-```
-Arch/CachyOS          sudo pacman -S gtk4 libadwaita python-gobject
-Fedora (traditional)  sudo dnf install gtk4 libadwaita python3-gobject
-Debian/Ubuntu         sudo apt install libgtk-4-1 libadwaita-1-0 python3-gi
+**Required**, checked by the installer with the system `python3`:
+
+```sh
+# Arch / CachyOS
+sudo pacman -S pyside6 qt6-declarative qt6-svg qt6-wayland python-gobject
+# Fedora (traditional)
+sudo dnf install python3-pyside6 qt6-qtdeclarative qt6-qtsvg qt6-qtwayland python3-gobject
 ```
 
-**On Bazzite or any other atomic/ostree Fedora system, don't run that Fedora line by hand** — the host must use `rpm-ostree`, even if a `dnf` command is available for containers. Just run `./install.sh`; it detects the atomic system, tells you which packages will be layered, asks for confirmation, and uses `rpm-ostree` itself (see the Bazzite section below).
+On Debian/Ubuntu, run `./install.sh` to install the distribution's modular
+PySide6 bindings and Qt 6 QML Controls, Layouts, Templates, Window, Models,
+WorkerScript, SVG and Wayland runtime packages. Older releases without these
+packages need a newer supported distribution release; the installer does not
+modify system Python using pip. Package references: [Arch PySide6](https://archlinux.org/packages/extra/x86_64/pyside6/),
+[Fedora PySide6](https://packages.fedoraproject.org/pkgs/python-pyside6/python3-pyside6/),
+[Debian Qt Quick bindings](https://packages.debian.org/stable/python/python3-pyside6.qtquick).
+
+For a fixture-only preview from the repository (no hardware or saved settings):
+
+```sh
+python3 -m rogcontrol --demo
+```
+
+To diagnose the installed Qt/QML dependencies without accessing hardware:
+
+```sh
+python3 -m rogcontrol.qt.runtime
+```
+
+**On Bazzite or any other atomic/ostree Fedora system, don't run that Fedora line by hand** — the host must use `rpm-ostree`, even if a `dnf` command is available for containers. Just run `./install.sh`; it detects the atomic system, tells you which packages will be layered, and uses `rpm-ostree` itself (see the Bazzite section below).
 
 **Optional**, each only costing the feature that needs it — the installer detects what's missing and offers to install it:
 
@@ -222,7 +247,6 @@ Debian/Ubuntu         sudo apt install libgtk-4-1 libadwaita-1-0 python3-gi
 | `supergfxctl` | Integrated, Hybrid, and NVIDIA-only graphics modes |
 | [`cardwire`](https://github.com/OpenGamingCollective/cardwire) | Live Integrated, Hybrid, and Smart GPU-access modes on Wayland |
 | `rogauracore` | Keyboard colours and lighting modes |
-| `libayatana-appindicator` | The tray icon |
 | `libnotify` | Desktop notifications |
 
 ## 📦 Installing
@@ -236,7 +260,7 @@ cd rogcontrol/rogcontrol
 
 The `cd ~` first matters: `git clone` puts the `rogcontrol` folder wherever your terminal currently is, and on some setups that's `~/Downloads` (a file manager's "Open Terminal Here", or a terminal that starts there by default) rather than your home folder — then `cd rogcontrol/rogcontrol` still works, it just leaves the clone sitting in Downloads instead of somewhere sensible.
 
-If you used GitHub's green **Code → Download ZIP** button instead of `git clone`, the extracted folder is named `rogcontrol-main` (or `rogcontrol-gtk4-ui`), not `rogcontrol` — `cd rogcontrol/rogcontrol` will fail with "No such file or directory" in that case. Either extract and `cd` into that folder's own `rogcontrol` subfolder instead (e.g. `cd rogcontrol-main/rogcontrol`), or just use `git clone` as above.
+If you used GitHub's green **Code → Download ZIP** button instead of `git clone`, the extracted folder is named `rogcontrol-main`, not `rogcontrol` — `cd rogcontrol/rogcontrol` will fail with "No such file or directory" in that case. Either extract and `cd` into that folder's own `rogcontrol` subfolder instead (e.g. `cd rogcontrol-main/rogcontrol`), or just use `git clone` as above.
 
 One command on every supported distro. The installer reads `/etc/os-release`, so derivatives are handled by family rather than by name — CachyOS is treated as Arch, Bazzite as Fedora — and it detects your desktop (GNOME or KDE Plasma) to tell you whether the tray needs anything extra.
 
@@ -251,7 +275,7 @@ installer selects Supergfx automatically.
 
 Fedora Atomic images (Bazzite, Silverblue, Kinoite — GNOME and KDE Plasma spins alike) have a read-only `/usr`, so packages can't simply be installed the normal way. Even when `dnf` is present for container use, the host package path is `rpm-ostree`. The installer handles all of this itself:
 
-- **GTK4/libadwaita** (required) are listed clearly and, after confirmation, layered onto the system with `rpm-ostree`; then it tells you to reboot and run `./install.sh` once more — the second run finishes automatically.
+- **PySide6/Qt Quick** (required) are listed clearly and automatically layered onto the system with `rpm-ostree`; then it tells you to reboot and run `./install.sh` once more — the second run finishes automatically.
 - **Supergfx** (optional, GPU mode switching) is installed when selected; Fedora users may need the asus-linux repository.
 - **Cardwire** (optional, live GPU access switching) is preinstalled on Bazzite. Fedora users can obtain it from Terra; Arch users can use the Open Gaming Collective repository or AUR. Debian/Ubuntu packages are published on Cardwire's releases page.
 - **power-profiles-daemon** (optional, OS power-mode sync) is skipped automatically if Bazzite's `tuned-ppd` is already on the system — the two packages conflict (both provide the same service), and the app already talks to `tuned-ppd` just as well, so there's nothing to install or resolve yourself.
@@ -264,7 +288,7 @@ Nothing special: `./install.sh` follows the normal pacman path, and builds `ryze
 
 ### The tray icon on GNOME
 
-GNOME Shell has no built-in support for tray icons and needs the **AppIndicator and KStatusNotifierItem Support** extension on top of the `libayatana-appindicator` library — without it the tray runs but shows nothing. The installer checks for it and tells you if it's missing. KDE Plasma needs nothing extra.
+GNOME Shell has no built-in support for tray icons and needs the **AppIndicator and KStatusNotifierItem Support** extension as a host for the Qt tray icon — without it the tray runs but shows nothing. The installer checks for it and tells you if it's missing. KDE Plasma needs nothing extra.
 
 Do **not** run it as root. It asks for your password twice, and only for the two things that genuinely need it:
 
@@ -275,7 +299,7 @@ The rule grants exactly one binary to your user, and is validated with `visudo` 
 
 The installer will:
 
-- check GTK4 and libadwaita, and stop if they're absent
+- check PySide6 and required QML modules, then install missing Qt runtime packages
 - confirm the machine is an ASUS
 - install missing optional dependencies, with your permission
 - build `ryzenadj` (AMD CPUs only) and `rogauracore` from source if your distro has no package for them — Arch/CachyOS only, via an AUR helper; on Fedora and Debian/Ubuntu it only warns, since it carries no source build for those toolchains
@@ -421,8 +445,7 @@ This app talks to hardware through tools built and maintained by other people. N
 - **[rogauracore](https://github.com/aaaaaomg/rogauracore)** — keyboard RGB colour and lighting modes.
 - **[supergfxctl](https://gitlab.com/asus-linux/supergfxctl)** (asus-linux) — Integrated, Hybrid, and NVIDIA-only graphics modes.
 - **[Cardwire](https://github.com/OpenGamingCollective/cardwire)** (Open Gaming Collective) — live GPU access policy switching through eBPF on Wayland.
-- **[GTK4](https://gtk.org/) and [libadwaita](https://gnome.pages.gitlab.gnome.org/libadwaita/)** (GNOME) — the toolkit this app's interface is built on.
-- **[libayatana-appindicator](https://github.com/AyatanaIndicators/libayatana-appindicator)** — the tray icon.
+- **[Qt for Python](https://doc.qt.io/qtforpython-6/)** — PySide6, Qt Quick/QML, and the native system tray.
 
 Special thanks to the **[G-Helper](https://github.com/seerge/g-helper)** developer — G-Helper is what a Windows-side ASUS control panel should look like, and it's the direct inspiration for what this app tries to be on Linux. The bug report template also borrows its structure from G-Helper's own — thanks for that too.
 

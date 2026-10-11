@@ -1,4 +1,4 @@
-"""Optional Qt shell, scoped single-instance IPC, and safe fixture preview."""
+"""Qt desktop, scoped single-instance IPC, and safe fixture preview."""
 import argparse
 import hashlib
 import os
@@ -7,7 +7,7 @@ import sys
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='ROG Control Qt desktop preview')
+    parser = argparse.ArgumentParser(description='ROG Control desktop')
     parser.add_argument('--self-test', action='store_true', help='Build and refresh Qt pages using isolated fixtures, without hardware or capture')
     parser.add_argument('--demo', action='store_true', help='Use fixtures; never access config or hardware')
     parser.add_argument('--show', action='store_true')
@@ -50,7 +50,7 @@ def main(argv=None):
     application.setApplicationName('ROG Control')
     application.setOrganizationName('ROG Control')
     action = next((name for name in ('quit', 'toggle', 'show', 'hide', 'minimized') if getattr(args, name)), 'show')
-    # Separate from GTK IPC; demo runs cannot hide or quit the actual application.
+    # Demo runs cannot hide or quit the actual application.
     scope = hashlib.sha256((str(os.getuid()) + os.environ.get('WAYLAND_DISPLAY', os.environ.get('DISPLAY', ''))).encode()).hexdigest()[:16]
     name = 'rogcontrol-qt-' + scope
     server = lock = None

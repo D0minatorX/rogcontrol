@@ -67,14 +67,33 @@ def install_archive(archive_path, expected_version=None, plugin_root_path=None):
         shutil.rmtree(stage, ignore_errors=True)
 
 
-def launch_loader_restart(status_path):
+def launch_loader_restart(status_path, *, app_pid=None, cleanup_archive=None):
     """Open a terminal for the sudo prompt needed to restart Decky Loader."""
+    cleanup = ''
+    if cleanup_archive is not None:
+        archive = Path(cleanup_archive).resolve()
+        temporary_root = Path(tempfile.gettempdir()).resolve()
+        status_file = Path(status_path).resolve()
+        if (archive.parent.parent != temporary_root
+                or not archive.parent.name.startswith('rogcontrol-decky-')
+                or not archive.name.startswith(decky_release.ASSET_PREFIX)
+                or archive.suffix != '.zip'
+                or status_file.parent != temporary_root
+                or not status_file.name.startswith('rogcontrol-decky-')
+                or app_pid is None):
+            return {'ok': False, 'message': 'Refusing cleanup outside private Decky staging.'}
+        # A surviving GUI owns retry state. After it exits, the terminal
+        # owns both the archive and status, including failed restarts.
+        cleanup = (
+            f'if ! kill -0 {int(app_pid)} 2>/dev/null; then '
+            f'rm -rf -- {shlex.quote(str(archive.parent))}; '
+            f'rm -f -- {shlex.quote(str(status_file))}; fi; ')
     status = shlex.quote(str(status_path))
     command = (
         f"printf 'running:%s\\n' \"$$\" > {status}; "
         "sudo systemctl restart plugin_loader.service; result=$?; "
         f"printf '%s\\n' \"$result\" > {status}; "
-        "echo; if [ \"$result\" -eq 0 ]; then "
+        + cleanup + "echo; if [ \"$result\" -eq 0 ]; then "
         "echo 'Decky Loader restarted.'; else "
         "echo 'Decky Loader restart failed.'; fi; "
         "read -r -p 'Press Enter to close... '")

@@ -8,11 +8,17 @@ For ASUS ROG laptops running Linux. Tested on a ROG Strix G614PR
 WHAT YOU NEED FIRST
 -------------------
 
-GTK4 and libadwaita. The installer detects and installs them if missing:
+Python + PySide6 / Qt Quick (QML), including Qt Quick Controls/Layouts,
+SVG and Wayland runtime support. The window and tray do not need GTK.
+The installer detects and installs the required distribution packages:
 
-    Arch/CachyOS   sudo pacman -S gtk4 libadwaita python-gobject
-    Fedora         sudo dnf install gtk4 libadwaita python3-gobject
-    Debian/Ubuntu  sudo apt install libgtk-4-1 libadwaita-1-0 python3-gi
+    Arch/CachyOS   pyside6 qt6-declarative qt6-svg qt6-wayland python-gobject
+    Fedora        python3-pyside6 qt6-qtdeclarative qt6-qtsvg qt6-qtwayland python3-gobject
+    Debian/Ubuntu modular python3-pyside6 and qml6-module packages (use install.sh)
+
+Older releases without PySide6 packages require a newer distribution release.
+PyGObject remains for non-GTK Gio/GLib desktop integrations.
+The installer checks the system python3 and QML modules without touching hardware.
 
 Everything else is optional and only costs the feature that needs it. The
 installer detects what is missing and installs supported dependencies:
@@ -25,7 +31,6 @@ installer detects what is missing and installs supported dependencies:
     supergfxctl     GPU modes including NVIDIA-only; logout or reboot may be needed
     cardwire        live GPU access modes; Wayland only, no NVIDIA-only mode
     rogauracore     keyboard colours and lighting modes
-    libayatana-appindicator   the tray icon
     libnotify       desktop notifications
 
 
@@ -47,8 +52,8 @@ BAZZITE AND OTHER ATOMIC SYSTEMS
 --------------------------------
 
 Fedora Atomic images -- Bazzite, Silverblue, Kinoite, the GNOME and the KDE
-Plasma spins alike -- have a read-only /usr and no dnf, so GTK4 and
-libadwaita cannot simply be installed the way they are elsewhere. The
+Plasma spins alike -- have a read-only /usr and no dnf, so PySide6 and
+Qt Quick cannot simply be installed the way they are elsewhere. The
 installer notices and layers them onto the system with rpm-ostree instead,
 as real packages. This needs one reboot before the app can run, and layered
 packages make OS updates slower and can occasionally break them.
@@ -80,8 +85,8 @@ shows tray icons natively, so nothing extra is needed for the tray there.
 THE TRAY ICON ON GNOME
 ----------------------
 
-GNOME Shell has no tray-icon support of its own and needs an extension on
-top of the libayatana-appindicator library:
+GNOME Shell has no tray-icon support of its own and needs an extension to host
+the Qt tray icon:
 
     "AppIndicator and KStatusNotifierItem Support"
 
@@ -106,7 +111,7 @@ of sudo entirely.
 
 The installer will:
 
-  * check GTK4 and libadwaita, and install them if they are absent
+  * check PySide6 and QML modules, and install missing runtime packages
   * confirm the machine is an ASUS
   * install missing supported dependencies automatically
   * build ryzenadj (AMD CPUs only) and rogauracore from the AUR if your
@@ -253,3 +258,9 @@ CPU limits do nothing
 The fans do not follow the curve
     Read the fan section of README.txt. This is a real and well
     understood hardware behaviour, and the answer is in the curve's shape.
+
+PREVIEW WITHOUT HARDWARE ACCESS
+-------------------------------
+From the repository root: python3 -m rogcontrol --demo
+This uses sample readings and in-memory settings.
+Runtime dependency diagnostic: python3 -m rogcontrol.qt.runtime

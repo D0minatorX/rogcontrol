@@ -3,7 +3,9 @@ ROG CONTROL — WHAT IT DOES
 
 A G-Helper-style control panel for ASUS ROG laptops on Linux, without needing
 asusctl. One window, a tray icon, and background services that keep your
-settings in force.
+settings in force. The desktop uses Python + Qt Quick (QML), with a black
+and red control-panel design and a Qt system tray. No web runtime or GTK
+is required; Light and System appearance options remain available.
 
 
 PROFILES

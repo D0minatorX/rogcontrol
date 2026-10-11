@@ -88,7 +88,7 @@ step "Stopping services"
 systemctl --user disable --now rogcontrol-enforcer.service >/dev/null 2>&1 || true
 systemctl --user disable --now rogcontrol-apply.service    >/dev/null 2>&1 || true
 systemctl --user disable --now rogcontrol-tray.service     >/dev/null 2>&1 || true
-# The window, the tray sidecar, and the GTK3 app if a pre-GTK4 install is
+# The window, the tray sidecar, and the old standalone app if a legacy install is
 # what is being removed. "python3 -m rogcontrol" is how the window shows up
 # in a process list, since the launcher execs into it. The pkill is also
 # what catches a tray still running the old, pre-service way (a plain

@@ -1,0 +1,99 @@
+# Maintainer: D0minatorX <fdeeb1912@gmail.com>
+pkgname=rogcontrol
+pkgver=1.0.2.1
+pkgrel=1
+pkgdesc="CPU/GPU power, undervolt, fans, keyboard, charge limit, and GPU mode control for ASUS ROG laptops (G614PR)"
+arch=('x86_64')
+url="https://github.com/D0minatorX/rogcontrol"
+license=('GPL3')
+makedepends=('git')
+# Install git before sourcing this recipe: its local source is pinned to HEAD.
+command -v git >/dev/null || { printf '%s\n' 'Install git before using this local-checkout PKGBUILD.' >&2; return 1; }
+depends=(
+  'python'
+  'python-gobject'
+  'pyside6'
+  'qt6-declarative'
+  'qt6-svg'
+  'qt6-wayland'
+)
+optdepends=(
+  'libnotify: desktop notifications'
+  'nvidia-utils: NVIDIA GPU stats and clock offsets'
+  'nvidia-settings: NVIDIA GPU clock offsets'
+  'supergfxctl: hybrid/dGPU graphics mode switching'
+  'power-profiles-daemon: OS power-mode sync'
+  'ryzenadj: CPU power limits and Curve Optimizer (AMD Ryzen only, AUR)'
+  'rogauracore: keyboard RGB control on unsupported models (AUR)'
+)
+install="${pkgname}.install"
+source=("${pkgname}::git+file://${startdir}/..#commit=$(git -C "${startdir}/.." rev-parse HEAD)")
+sha256sums=('SKIP')
+
+package() {
+  cd "${pkgdir}"
+  local app="${srcdir}/${pkgname}/rogcontrol"
+  local pyver
+  pyver="$(python3 -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
+  local sitepkg="usr/lib/python${pyver}/site-packages"
+
+  # -- python package, importable as `python3 -m rogcontrol` -------------
+  install -d "${sitepkg}/rogcontrol"
+  cp -r "${app}"/*.py "${app}/icons" "${app}/qt" "${app}/qml" \
+    "${sitepkg}/rogcontrol/"
+  find "${sitepkg}/rogcontrol" -name '__pycache__' -exec rm -rf {} +
+
+  # -- launcher wrapper ----------------------------------------------------
+  install -d "usr/bin"
+  cat > "usr/bin/${pkgname}" <<'EOF'
+#!/bin/sh
+exec python3 -m rogcontrol "$@"
+EOF
+  chmod 755 "usr/bin/${pkgname}"
+
+  install -m 755 "${app}/rogcontrol-tray" "usr/bin/rogcontrol-tray"
+  install -m 755 "${app}/rogcontrol-apply.py" "usr/bin/rogcontrol-apply"
+  install -m 755 "${app}/rogcontrol-enforcer.py" "usr/bin/rogcontrol-enforcer"
+  install -m 755 "${app}/rogcontrol-cycle-profile.py" "usr/bin/rogcontrol-cycle-profile"
+  install -m 755 "${app}/rogcontrol-adjust-kbdbrightness.py" "usr/bin/rogcontrol-adjust-kbdbrightness"
+  install -m 755 "${app}/rogcontrol-adjust-kbdspeed.py" "usr/bin/rogcontrol-adjust-kbdspeed"
+  install -m 755 "${app}/rogcontrol-cycle-kbdlight.py" "usr/bin/rogcontrol-cycle-kbdlight"
+
+  # -- privileged helper: packaged read-only, NOT wired live here ---------
+  # hardware.py hardcodes /usr/local/bin/rogcontrol-helper, outside
+  # pacman's owned tree by design (matches install.sh) -- see
+  # rogcontrol.install for the postinst step that actually places it and
+  # sets up the scoped sudoers rule.
+  install -d "usr/share/${pkgname}"
+  install -m 755 "${app}/rogcontrol-helper" "usr/share/${pkgname}/rogcontrol-helper"
+
+  # -- desktop files, icons -------------------------------------------------
+  install -d "usr/share/applications"
+  sed -e "s|/home/YOUR_USERNAME/.local/share/icons/hicolor/256x256/apps/rogcontrol.png|/usr/share/icons/hicolor/256x256/apps/rogcontrol.png|" \
+      -e "s|/home/YOUR_USERNAME/.local/bin/rogcontrol|/usr/bin/rogcontrol|" \
+      "${app}/org.rogcontrol.RogControl.desktop" \
+      > "usr/share/applications/org.rogcontrol.RogControl.desktop"
+  sed -e "s|python3 /home/YOUR_USERNAME/.local/bin/rogcontrol-cycle-profile.py|/usr/bin/rogcontrol-cycle-profile|" \
+      "${app}/rogcontrol-cycle-profile.desktop" \
+      > "usr/share/applications/rogcontrol-cycle-profile.desktop"
+
+  install -d "usr/share/icons/hicolor/256x256/apps"
+  install -m 644 "${app}/rogcontrol.png" "usr/share/icons/hicolor/256x256/apps/rogcontrol.png"
+  install -m 644 "${app}/rogcontrol-quiet.png" "usr/share/icons/hicolor/256x256/apps/rogcontrol-quiet.png"
+  install -m 644 "${app}/rogcontrol-balanced.png" "usr/share/icons/hicolor/256x256/apps/rogcontrol-balanced.png"
+
+  install -d "usr/share/${pkgname}/icons"
+  install -m 644 "${app}"/icons/*.svg "usr/share/${pkgname}/icons/"
+
+  # -- systemd user units (rewritten to /usr/bin, not %h/.local/bin) -------
+  install -d "usr/lib/systemd/user"
+  for svc in rogcontrol-apply rogcontrol-enforcer rogcontrol-tray; do
+    sed -e "s|%h/.local/bin/${svc}.py|/usr/bin/${svc}|" \
+        -e "s|%h/.local/bin/${svc}|/usr/bin/${svc}|" \
+        "${app}/${svc}.service" > "usr/lib/systemd/user/${svc}.service"
+  done
+
+  # -- licence ---------------------------------------------------------------
+  install -d "usr/share/licenses/${pkgname}"
+  install -m 644 "${srcdir}/${pkgname}/LICENSE" "usr/share/licenses/${pkgname}/LICENSE"
+}

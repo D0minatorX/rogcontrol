@@ -10,7 +10,7 @@ ApplicationWindow {
     minimumWidth: 360; minimumHeight: 480
     visible: false
     onClosing: close => { close.accepted = false; appController.command('quit') }
-    title: 'ROG Control' + (appController.demoMode ? ' · Demo' : ' · Qt Preview')
+    title: 'ROG Control' + (appController.demoMode ? ' · Demo' : '')
     color: theme.window
     Palette { id: theme; appearance: appController.appearance }
     property bool narrow: width < 620
@@ -21,7 +21,7 @@ ApplicationWindow {
             anchors.fill: parent; anchors.leftMargin: 22; anchors.rightMargin: 22
             Text { text: 'ROG'; color: theme.accent; font.pixelSize: 14; font.letterSpacing: 2 }
             Text { text: 'CONTROL'; color: theme.text; font.pixelSize: 14; font.letterSpacing: 2; Layout.fillWidth: true }
-            Text { text: appController.demoMode ? 'DEMO / SAMPLE READINGS' : 'QT PREVIEW'; color: theme.mutedText; font.pixelSize: 10 }
+            Text { text: appController.demoMode ? 'DEMO / SAMPLE READINGS' : 'SYSTEM CONTROL'; color: theme.mutedText; font.pixelSize: 10 }
         }
         Rectangle { height: 1; width: parent.width; anchors.bottom: parent.bottom; color: theme.border }
     }

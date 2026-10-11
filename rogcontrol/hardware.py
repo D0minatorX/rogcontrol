@@ -3996,6 +3996,6 @@ def detect_capabilities(root=None, probe_gpu=True):
     # kbd_ambient is deliberately absent: answering it needs GStreamer and a
     # session bus, and this module stays importable by the helper scripts and
     # the tests, which have neither. The app fills it in from
-    # widgets.ambient.ambient_available() the same way it fills in gpu_limits.
+    # ambient.ambient_available() the same way it fills in gpu_limits.
     caps["charge_limit"] = read_charge_limit(root=root) is not None
     return caps

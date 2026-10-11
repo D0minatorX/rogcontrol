@@ -89,45 +89,37 @@ case "$(printf '%s' "${XDG_CURRENT_DESKTOP:-${XDG_SESSION_DESKTOP:-}}" \
     *kde*|*plasma*) DESKTOP=kde ;;
 esac
 
-# --- hard requirement: GTK4 + libadwaita ------------------------------------
-# Checked before anything else happens: before any sudo, any package install
-# and even before the settings backup, so a machine that cannot run the app is
-# left exactly as it was found. Everything checked further down only costs a
-# feature if it is missing; this one is the entire window.
-#
-# Named packages rather than the ImportError python would otherwise raise on
-# first launch, which tells the user nothing they can act on.
-step "Checking GTK4 and libadwaita"
-
+# --- hard requirement: PySide6 and Qt Quick ---------------------------------
+step "Checking PySide6 and Qt Quick"
 PENDING_REBOOT=0
-
-# The GUI packages, as one list: GTK4 and libadwaita for the window,
-# PyGObject to reach them from python, GTK3 and an AppIndicator binding for
-# the tray (a separate process -- see the DEPS note further down), cairo for
-# the fan-curve graphs, libnotify for notifications. Only used on an atomic
-# system; everywhere else the hard gate stays a hard gate and the optional
-# ones go through the DEPS table as before.
-GUI_PKGS="gtk4 libadwaita python3-gobject gtk3 libayatana-appindicator-gtk3 python3-cairo libnotify"
-
-GTK4_OK=0
-python3 -c "
-import gi
-gi.require_version('Gtk', '4.0')
-gi.require_version('Adw', '1')
-from gi.repository import Gtk, Adw
-" >/dev/null 2>&1 && GTK4_OK=1
-
-if [ "$GTK4_OK" = 1 ]; then
-    say "GTK4 and libadwaita present"
+# Package names are distribution-specific. PyGObject remains for Gio/GLib
+# desktop integrations; neither the window nor the tray imports GTK.
+case "$PM" in
+    pacman) QT_PACKAGES=(pyside6 qt6-declarative qt6-svg qt6-wayland python-gobject) ;;
+    dnf) QT_PACKAGES=(python3-pyside6 qt6-qtdeclarative qt6-qtsvg qt6-qtwayland python3-gobject) ;;
+    apt) QT_PACKAGES=(python3-pyside6.qtquick python3-pyside6.qtquickcontrols2
+        python3-pyside6.qtwidgets python3-pyside6.qtnetwork python3-pyside6.qtqml
+        qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts
+        qml6-module-qtquick-window qml6-module-qtquick-templates
+        qml6-module-qtqml-models qml6-module-qtqml-workerscript
+        libqt6svg6 qt6-wayland python3-gi) ;;
+    *) QT_PACKAGES=() ;;
+esac
+GUI_PKGS="${QT_PACKAGES[*]}"
+check_qt_runtime() {
+    python3 "$SCRIPT_DIR/qt/runtime.py"
+}
+QT_OK=0
+check_qt_runtime >/dev/null 2>&1 && QT_OK=1
+if [ "$QT_OK" = 1 ]; then
+    say "PySide6 and required Qt Quick modules present"
 else
-    # Missing, on a system where they cannot simply be installed. There is a
-    # way round it, but every one of those ways changes the machine, and the
-    # promise this check makes is that a machine which cannot run the app is
-    # left exactly as it was found -- so the asking and the doing wait until
-    # after the ASUS check below has confirmed the app is worth installing
-    # here at all.
-    warn "GTK4/libadwaita/PyGObject are not usable from this system's python"
-    warn "This is an atomic system - options come after the hardware check"
+    warn "PySide6/Qt Quick is not usable from this system's python"
+    if [ "$ATOMIC" = 1 ]; then
+        warn "This is an atomic system - package layering follows the hardware check"
+    else
+        warn "Required Qt packages will be installed after the hardware check"
+    fi
 fi
 
 # --- the atomic remedy, deferred until the machine has been vetted ----------
@@ -181,7 +173,7 @@ case "$MODE" in
     update)
         # The second half of an rpm-ostree install. Nothing special has to
         # happen -- every step below is written to be safe to repeat, and
-        # the GTK check at the top now passes because the layered packages
+        # the Qt check at the top now passes because the layered packages
         # came up with this boot -- but saying so beats looking like a
         # reinstall the user did not ask for.
         if [ "$(prev_get pending_reboot)" = 1 ]; then
@@ -264,7 +256,7 @@ if after != before:
 esac
 
 # ---------------------------------------------------------------- distro ----
-# Detection itself happened at the top, before the GTK4 gate that depends on
+# Detection itself happened at the top, before the Qt runtime gate that depends on
 # it. This only reports what it found.
 step "Detected system"
 say "Distro: ${OS_NAME:-unknown}${OS_LIKE:+ (family: $OS_LIKE)}"
@@ -349,26 +341,23 @@ fi
 # vendor check and not before it: this is the first step in the whole script
 # that changes anything, and a machine that was going to be turned away
 # should be turned away without a container or a layered package on it.
-if [ "$GTK4_OK" = 0 ] && [ "$ATOMIC" = 1 ]; then
+if [ "$QT_OK" = 0 ] && [ "$ATOMIC" = 1 ]; then
     atomic_gui_setup
-elif [ "$GTK4_OK" = 0 ]; then
+elif [ "$QT_OK" = 0 ]; then
     step "Installing required GUI packages"
     case "$PM" in
-        pacman) sudo pacman -S --needed --noconfirm gtk4 libadwaita python-gobject ;;
-        dnf) sudo dnf install -y gtk4 libadwaita python3-gobject ;;
-        apt) sudo apt-get update && sudo apt-get install -y libgtk-4-1 libadwaita-1-0 python3-gi ;;
-        *) die "No supported package manager to install GTK4 and libadwaita" ;;
-    esac
-    python3 -c "import gi; gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1'); from gi.repository import Gtk, Adw" \
-        || die "GUI packages installed, but GTK4/libadwaita still cannot be imported"
+        pacman) sudo pacman -S --needed --noconfirm "${QT_PACKAGES[@]}" ;;
+        dnf) sudo dnf install -y "${QT_PACKAGES[@]}" ;;
+        apt) sudo apt-get update && sudo apt-get install -y "${QT_PACKAGES[@]}" ;;
+        *) die "Install PySide6, Qt Quick Controls/Layouts, Qt SVG and the Qt Wayland runtime for python3" ;;
+    esac || die "Qt packages could not be installed. Use a distribution release providing PySide6 and Qt 6 QML modules; system-wide pip is not required."
+    check_qt_runtime || die "Qt packages installed, but this python3 still cannot load the required runtime. See the diagnostic above."
+
 fi
 
 # ------------------------------------------------------------ deps: repo ----
-# GTK4 and libadwaita were already required above, hard. What follows is the
-# soft list: each one costs a single feature if it is absent, so it is offered
-# rather than demanded. GTK3 is still on it because the tray icon is a
-# separate GTK3 process (AppIndicator has no GTK4 binding, and one process
-# cannot load both toolkits) -- the window itself no longer touches GTK3.
+# Qt Quick is required above. The following dependencies enable individual
+# hardware or desktop-integration features.
 #
 # tuned-ppd is what Bazzite ships for the same job and it answers on the same
 # D-Bus name (see hardware.py's PPD_BUS_NAMES / read_power_mode) -- the app
@@ -396,12 +385,10 @@ ensure_asus_linux_copr() {
 # name|check-command|pacman|dnf|apt
 DEPS=(
   "python-evdev (key bindings and Fn Lock)|python3 -c 'import evdev'|python-evdev|python3-evdev|python3-evdev"
-  "python-gobject|python3 -c 'import gi'|python-gobject|python3-gobject|python3-gi"
-  "gtk3 (tray icon)|python3 -c 'import gi; gi.require_version(\"Gtk\",\"3.0\")'|gtk3|gtk3|libgtk-3-0"
+  "python-gobject (Gio/GLib integrations)|python3 -c 'import gi'|python-gobject|python3-gobject|python3-gi"
   "libnotify|command -v notify-send|libnotify|libnotify|libnotify-bin"
   "nvidia-utils (nvidia-smi)|command -v nvidia-smi|nvidia-utils|nvidia-driver|nvidia-utils"
   "nvidia-settings|command -v nvidia-settings|nvidia-settings|nvidia-settings|nvidia-settings"
-  "python-cairo (fan curve graphs)|python3 -c 'import cairo'|python-cairo|python3-cairo|python3-cairo"
   "power-profiles-daemon (OS power-mode sync)|have_ppd_or_equiv|power-profiles-daemon|power-profiles-daemon|power-profiles-daemon"
 )
 
@@ -417,20 +404,6 @@ for entry in "${DEPS[@]}"; do
         [ -n "$pkg" ] && missing_pkgs+=("$pkg")
     fi
 done
-
-# AppIndicator: several package names across distros, any one will do
-if ! eval "python3 -c \"
-import gi
-try: gi.require_version('AppIndicator3','0.1')
-except ValueError: gi.require_version('AyatanaAppIndicator3','0.1')
-\"" >/dev/null 2>&1; then
-    missing_names+=("appindicator (system tray icon)")
-    case "$PM" in
-        pacman) missing_pkgs+=("libayatana-appindicator") ;;
-        dnf)    missing_pkgs+=("libayatana-appindicator-gtk3") ;;
-        apt)    missing_pkgs+=("gir1.2-ayatanaappindicator3-0.1") ;;
-    esac
-fi
 
 # rogauracore is the one dependency with no package outside the AUR: it is not
 # in Fedora's repos, not in the asus-linux COPR, and no COPR anywhere carries
@@ -506,7 +479,7 @@ if [ ${#missing_names[@]} -eq 0 ]; then
 elif [ "$PM_HOST" = none ]; then
     # rpm-ostree path. Every one of these is optional, so a failure here
     # costs a feature, not the install -- attempted automatically rather than
-    # just printed, same as the GTK4 layering above, but errors are warned
+    # just printed, same as the Qt package layering above, but errors are warned
     # past instead of fatal.
     warn "Missing: ${missing_names[*]}"
     if [ ${#missing_pkgs[@]} -gt 0 ]; then
@@ -866,7 +839,7 @@ fi
 
 LIBDIR="$HOME/.local/lib/rogcontrol"
 rm -rf "$LIBDIR"
-mkdir -p "$LIBDIR/pages" "$LIBDIR/widgets" "$LIBDIR/icons"
+mkdir -p "$LIBDIR/qt" "$LIBDIR/qml" "$LIBDIR/icons"
 for f in "$SCRIPT_DIR"/*.py; do
     # rogcontrol-*.py are the standalone executables sitting in the same
     # directory. They are not part of the package (and are not even importable
@@ -874,12 +847,12 @@ for f in "$SCRIPT_DIR"/*.py; do
     case "$(basename "$f")" in rogcontrol-*) continue ;; esac
     install -m 644 "$f" "$LIBDIR/"
 done
-for sub in pages widgets; do
-    install -m 644 "$SCRIPT_DIR/$sub"/*.py "$LIBDIR/$sub/"
+for sub in qt qml; do
+    cp -R "$SCRIPT_DIR/$sub/." "$LIBDIR/$sub/"
 done
+find "$LIBDIR" -type d -name __pycache__ -prune -exec rm -rf {} +
 # UI icons are loaded directly from these files, independent of OS themes.
 install -m 644 "$SCRIPT_DIR"/icons/*.svg "$LIBDIR/icons/"
-install -m 644 "$SCRIPT_DIR"/*.css "$LIBDIR/"
 say "Application package installed to ~/.local/lib/rogcontrol"
 
 # The launcher. `python3 -m rogcontrol` with ~/.local/lib on the path, which
@@ -902,14 +875,14 @@ for s in rogcontrol-tray rogcontrol-cycle-profile.py rogcontrol-cycle-kbdlight.p
 done
 say "Tray and shortcut scripts installed to ~/.local/bin"
 
-# The GTK3 application this replaces. Removed so that nothing -- an old
+# The retired standalone application this replaces. Removed so that nothing -- an old
 # autostart entry a desktop has already cached, a hotkey the user bound by
 # hand, muscle memory at a terminal -- can start the retired window against
 # the same config the new one is using. Only that one file: the settings, the
 # services and the helper are shared by both and stay exactly where they are.
 if [ -f "$HOME/.local/bin/rogcontrol.py" ]; then
     rm -f "$HOME/.local/bin/rogcontrol.py"
-    say "Removed the old GTK3 app (~/.local/bin/rogcontrol.py) - settings kept"
+    say "Removed the old standalone app (~/.local/bin/rogcontrol.py) - settings kept"
     if pgrep -f "local/bin/rogcontrol.py" >/dev/null 2>&1; then
         warn "The old app is still running. Quit it from its tray icon (or log"
         warn "out) before using the new one - two trays would fight over the config."
@@ -1029,26 +1002,15 @@ else
     warn "Check $SUDOERS."
 fi
 
-# That the package is importable from where it was just put -- and
-# specifically the app module, not just the empty top-level package: app.py
-# pulls in every page, and pages/fans.py pulls in widgets/curve_editor.py's
-# `import cairo` with it, so this is what actually catches a dependency the
-# DEPS list above missed (pycairo has done exactly this once already).
-# Deliberately not a --self-test: that builds every page and needs a
-# display, which an install run from a TTY does not have, and a plain
-# `import rogcontrol.app` needs none either -- GTK/Adw classes are defined
-# at import time, not realized against a display until something is shown.
-#
-# Skipped entirely when packages have been layered but not yet rebooted
-# into, where a failure would mean nothing except that the reboot has not
-# happened yet.
+# The installed runtime diagnostic loads Qt and QML only. It never imports
+# device controllers, probes hardware, starts services, or needs a display.
 if [ "$PENDING_REBOOT" = 1 ]; then
-    warn "Skipping the import check until after the reboot"
-elif eval "env PYTHONPATH=\"$HOME/.local/lib\" python3 -c \"import rogcontrol.app\"" >/dev/null 2>&1; then
-    say "Application package imports from ~/.local/lib"
+    warn "Skipping the Qt runtime check until after the reboot"
+elif python3 "$LIBDIR/qt/runtime.py"; then
+    say "Installed Qt runtime and QML modules are available"
 else
-    warn "The installed package does not import - the window will not start."
-    warn "Run this to see why: PYTHONPATH=~/.local/lib python3 -c 'import rogcontrol.app'"
+    warn "The installed Qt runtime is incomplete - the window will not start."
+    warn "Run: python3 \"$LIBDIR/qt/runtime.py\""
 fi
 
 # Exec=rogcontrol in the .desktop file resolves through PATH, and the launcher
@@ -1141,7 +1103,7 @@ install -m 755 "$SCRIPT_DIR/uninstall.sh" "$HOME/.local/bin/rogcontrol-uninstall
 # --- confirm the tray ---------------------------------------------------------
 # When startup is enabled, the tray was scheduled in the services step above.
 # Check it rather than assuming success, with the same reasoning as the
-# enforcer check: a tray that fails to launch (no AppIndicator support in
+# enforcer check: a tray that fails to launch (no Qt tray support in
 # the session, e.g. a desktop with no such extension) is silent everywhere
 # except a status check like this one.
 if [ "$START_ON_BOOT" != 1 ]; then
@@ -1191,7 +1153,7 @@ if [ "$PENDING_REBOOT" = 1 ]; then
     echo "Almost done - one reboot to go."
     echo
     echo "  Everything is installed: the helper, the services, your settings,"
-    echo "  the menu entry. The only thing missing is the GTK libraries that"
+    echo "  the menu entry. The only thing missing is the Qt libraries that"
     echo "  were layered a moment ago, and rpm-ostree cannot make those live"
     echo "  in a running system - they arrive with the next boot."
     echo
