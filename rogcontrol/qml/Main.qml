@@ -152,13 +152,15 @@ ApplicationWindow {
     Connections { target: fansController; function onConfirmationRequested(action, message) { window.ask(fansController, action, message) } }
     Connections { target: systemController; function onConfirmationRequested(action, message) { window.ask(systemController, action, message) } }
     Connections { target: updatesController; function onConfirmationRequested(action, message) { window.ask(updatesController, action, message) } }
-    Dialog {
+    RogDialog {
         id: confirmation; property var controller; property string action; property string message
-        title: 'Confirm operation'; anchors.centerIn: parent; width: Math.min(window.width - 40, 460); modal: true; standardButtons: Dialog.Yes | Dialog.No
-        Text { width: parent.width; text: confirmation.message; wrapMode: Text.WordWrap; color: theme.text }
+        colors: theme
+        title: message.indexOf('diagnostic log') >= 0 ? 'Clear diagnostic log?' : 'Confirm operation'
+        acceptText: message.indexOf('diagnostic log') >= 0 ? 'Clear log' : 'Confirm'
+        Text { width: parent.width; text: confirmation.message; wrapMode: Text.WordWrap; color: theme.mutedText; font.pixelSize: 14; lineHeight: 1.25 }
         onAccepted: controller.confirm(action, true)
         onRejected: controller.confirm(action, false)
     }
     Connections { target: appController; function onErrorOccurred(message) { errorDialog.text = message; errorDialog.open() } }
-    Dialog { id: errorDialog; property string text; title: 'ROG Control'; anchors.centerIn: parent; width: Math.min(window.width-40, 450); standardButtons: Dialog.Ok; modal: true; Text { width: parent.width; text: errorDialog.text; wrapMode: Text.WordWrap; color: theme.text } }
+    RogDialog { id: errorDialog; colors: theme; property string text; title: 'ROG Control'; acceptText: 'Close'; showCancel: false; Text { width: parent.width; text: errorDialog.text; wrapMode: Text.WordWrap; color: theme.mutedText; font.pixelSize: 14; lineHeight: 1.25 } }
 }
