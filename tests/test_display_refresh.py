@@ -414,5 +414,21 @@ class AutomaticRefreshPolicyTests(unittest.TestCase):
             self.assertIn('bt2100', command)
 
 
+class SessionStartupTests(unittest.TestCase):
+    def test_missing_display_service_preserves_restore_and_retries_later(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / 'restore.json'
+            original = '{"restore_hz": 165, "panels": ["internal"]}'
+            state.write_text(original)
+            with patch.object(refresh, 'availability', return_value=(True, 'GNOME')), \
+                 patch.object(refresh, '_current_plan', side_effect=RuntimeError(
+                     'GDBus.Error:org.freedesktop.DBus.Error.NameHasNoOwner: Destination does not exist')), \
+                 patch.object(refresh, '_log_failure') as log:
+                result = refresh.tick({'auto_display_refresh': True}, 'ac', state_path=state)
+                self.assertIn('Waiting', result)
+                self.assertEqual(state.read_text(), original)
+                log.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -145,6 +145,7 @@ _last_kbd_color_args = None
 # only the current profile's desired values; the periodic pass retries them
 # after Hybrid access returns, including when the window is closed.
 _pending_gpu_limits = {}
+_pending_gpu_limits_lock = threading.RLock()
 
 # Share the app's mapping so the enforcer restores the same expected mode.
 PROFILE_TO_PPD_MODE = profiles_mod.PROFILE_TO_PPD_MODE
@@ -248,21 +249,14 @@ def get_ppd_active_profile(service_name):
 
 
 def set_ppd_active_profile(service_name, mode):
-    """Set the OS power mode. Failure is not reported: PPD is optional.
-
-    It also keeps using the service name the caller already resolved rather
-    than hardware.set_power_mode, which looks the name up again on every
-    call: on a bus too slow to answer that lookup, this would quietly stop
-    setting the mode at all, where using the name already in hand still
-    works. The try/except is the part that was actually missing."""
+    """Use the shared writer, including its restricted permission fallback."""
     if not service_name:
         return
-    path = "/" + service_name.replace(".", "/")
     try:
-        subprocess.run(
-            ["busctl", "--system", "set-property", service_name, path,
-             service_name, "ActiveProfile", "s", mode],
-            capture_output=True, text=True, timeout=5)
+        ok, message = hardware.set_power_mode(mode, service_name=service_name)
+        if not ok:
+            log(f"could not set the OS power mode to '{mode}': {message}", "WARN",
+                dedupe_key="ppdset")
     except Exception as e:
         log(f"could not set the OS power mode to '{mode}': {e}", "WARN",
             dedupe_key="ppdset")
@@ -1379,6 +1373,12 @@ def _defer_offset(kind, mhz, reason=None):
 
 
 def retry_pending_gpu_limits(gpu, force=False):
+    # The power/profile watchers and periodic cycle share this retry queue.
+    with _pending_gpu_limits_lock:
+        _retry_pending_gpu_limits(gpu, force)
+
+
+def _retry_pending_gpu_limits(gpu, force=False):
     """Apply the current profile's NVIDIA limits when access is available.
 
     A full profile apply queues both values. The ordinary upkeep pass only

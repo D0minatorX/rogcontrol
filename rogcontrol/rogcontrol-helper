@@ -235,6 +235,23 @@ no_args() {
 }
 
 case "$1" in
+    powerprofile)
+        [ "$#" -eq 2 ] || usage
+        case "$2" in
+            power-saver|balanced|performance) ;;
+            *) echo "Invalid OS power mode" >&2; exit 1 ;;
+        esac
+        # Background user services may not have an active-session polkit grant.
+        # Only these fixed PPD services and three validated modes are allowed.
+        for SERVICE in org.freedesktop.UPower.PowerProfiles net.hadess.PowerProfiles; do
+            OBJECT="/${SERVICE//./\/}"
+            if busctl --system --timeout=4 introspect "$SERVICE" "$OBJECT" >/dev/null 2>&1; then
+                exec busctl --system --timeout=4 set-property "$SERVICE" "$OBJECT" "$SERVICE" ActiveProfile s "$2"
+            fi
+        done
+        echo "power-profiles-daemon is not answering" >&2
+        exit 1
+        ;;
     cpu)
         shift
         STAPM="$1"; FAST="$2"; SLOW="$3"; TEMP="$4"; COALL="$5"

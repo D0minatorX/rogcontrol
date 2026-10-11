@@ -8,6 +8,23 @@ from unittest.mock import patch
 from test_enforcer_efficiency import load_enforcer
 
 
+class PowerModePermissionTests(unittest.TestCase):
+    def test_access_denied_uses_validated_helper_fallback(self):
+        from types import SimpleNamespace
+        from rogcontrol import hardware
+        with patch.object(hardware.subprocess, 'run', return_value=SimpleNamespace(
+                returncode=1, stderr='Access denied', stdout='')), \
+             patch.object(hardware, 'run_helper', return_value=(True, '')) as helper:
+            self.assertTrue(hardware.set_power_mode('power-saver', service_name='net.hadess.PowerProfiles')[0])
+            helper.assert_called_once_with('powerprofile', 'power-saver', timeout=15)
+
+    def test_invalid_mode_never_reaches_helper(self):
+        from rogcontrol import hardware
+        with patch.object(hardware, 'run_helper') as helper:
+            self.assertFalse(hardware.set_power_mode('invalid')[0])
+            helper.assert_not_called()
+
+
 class PowerModeSyncTests(unittest.TestCase):
     def setUp(self):
         self.enforcer = load_enforcer()

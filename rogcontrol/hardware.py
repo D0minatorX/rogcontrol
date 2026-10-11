@@ -3177,7 +3177,7 @@ def read_power_mode(timeout=5):
     return None
 
 
-def set_power_mode(mode, timeout=5):
+def set_power_mode(mode, timeout=5, service_name=None):
     """Set the OS power mode (PPD's ActiveProfile). Returns ``(ok, message)``.
 
     This is not cosmetic and it is not optional. Selecting a profile without
@@ -3191,7 +3191,11 @@ def set_power_mode(mode, timeout=5):
 
     No exception on failure: PPD is not guaranteed to be installed, and a
     machine without it must still be able to switch profiles."""
-    service = ppd_service_name(timeout=timeout)
+    if mode not in ('power-saver', 'balanced', 'performance'):
+        return False, 'Unsupported OS power mode'
+    service = service_name or ppd_service_name(timeout=timeout)
+    if service and service not in PPD_BUS_NAMES:
+        return False, 'Unsupported power profiles service'
     if not service:
         return False, "power-profiles-daemon is not answering"
     path = "/" + service.replace(".", "/")
@@ -3203,7 +3207,10 @@ def set_power_mode(mode, timeout=5):
     except Exception as e:
         return False, str(e)
     if result.returncode != 0:
-        return False, (result.stderr or result.stdout or "unknown error").strip()
+        message = (result.stderr or result.stdout or "unknown error").strip()
+        if 'access denied' in message.lower() or 'not authorized' in message.lower():
+            return run_helper('powerprofile', mode, timeout=max(timeout, 15))
+        return False, message
     return True, str(mode)
 
 
