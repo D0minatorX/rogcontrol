@@ -3,7 +3,7 @@ from copy import deepcopy
 from PySide6.QtCore import QObject, Property, Signal, Slot, QTimer
 
 PAGES = {'quick_access': 'Home', 'cpu': 'CPU', 'gpu': 'GPU', 'fans': 'Fans',
-         'battery': 'Battery', 'keyboard': 'Keyboard', 'system': 'System'}
+         'keyboard': 'Keyboard', 'system': 'System'}
 DEMO_CONFIG = {'current_profile': 'Balanced Performance', 'appearance': 'dark',
                'profiles': {name: {} for name in ('Quiet', 'Balanced Power', 'Balanced Performance', 'Performance')},
                'start_on_boot': True, 'ac_profile': 'Balanced Performance',
@@ -31,6 +31,10 @@ class AppController(QObject):
         self._config_read_epoch = 0
         self._config_failures = 0
         self._config_error_status = ''
+        self.statusTimer = QTimer(self)
+        self.statusTimer.setSingleShot(True)
+        self.statusTimer.setInterval(1500)
+        self.statusTimer.timeout.connect(self._clear_status)
         runner.finished.connect(self._complete)
         self.timer = QTimer(self)
         self.timer.setInterval(3000)
@@ -96,7 +100,8 @@ class AppController(QObject):
             return False
         self._write_epoch += 1
         self._write = (owner, callback)
-        self._status = 'Working…'
+        self.statusTimer.stop()
+        self._status = '' if owner in ('geometry', 'background', 'update-check-time', 'gpu-probe', 'fan-calibration-prompt') else 'Working…'
         self.stateChanged.emit()
         def serialized():
             try:
@@ -116,6 +121,7 @@ class AppController(QObject):
         if self.demo:
             self.config['current_profile'] = name
             self._status = 'Demo profile applied · hardware controls are simulated'
+            self.statusTimer.start()
             self.configChanged.emit()
             self.stateChanged.emit()
             return
@@ -162,13 +168,21 @@ class AppController(QObject):
         elif job_id == 'write':
             owner, callback = self._write
             self._write = None
-            self._status = str(error) if error else ('Profile request queued' if owner == 'profile' else 'Saved')
+            self._status = str(error) if error else ('' if owner in ('geometry', 'background', 'update-check-time', 'gpu-probe', 'fan-calibration-prompt') else 'Profile request queued' if owner == 'profile' else 'Saved')
+            if not error and self._status:
+                self.statusTimer.start()
             self.stateChanged.emit()
             if error:
                 self.errorOccurred.emit(str(error))
             if callback:
                 callback(result, error)
             self.refresh()
+
+    @Slot()
+    def _clear_status(self):
+        if not self.busy and self._status != self._config_error_status:
+            self._status = ''
+            self.stateChanged.emit()
 
     @Slot(int, int)
     def saveGeometry(self, width, height):
@@ -211,3 +225,4 @@ class AppController(QObject):
     def close(self):
         self._closed = True
         self.timer.stop()
+        self.statusTimer.stop()

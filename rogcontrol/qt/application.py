@@ -27,7 +27,7 @@ def main(argv=None):
     if args.screenshot and not args.demo:
         parser.error('--screenshot requires --demo')
     try:
-        from PySide6.QtCore import QTimer, QLockFile, QStandardPaths
+        from PySide6.QtCore import QTimer, QLockFile, QStandardPaths, QLocale
         from PySide6.QtNetwork import QLocalServer, QLocalSocket
         from PySide6.QtQml import QQmlApplicationEngine
         from PySide6.QtQuickControls2 import QQuickStyle
@@ -48,6 +48,7 @@ def main(argv=None):
     from .controllers.system import SystemController
     from .controllers.updates import UpdatesController
 
+    QLocale.setDefault(QLocale('en_US'))
     QQuickStyle.setStyle('Basic')
     application = QApplication(['rogcontrol-qt'])
     application.setQuitOnLastWindowClosed(False)
@@ -216,7 +217,7 @@ def main(argv=None):
     if args.self_test:
         # UI self-test intentionally opts out of screen capture, services,
         # config and hardware; each Loader page is built using demo fixtures.
-        sequence = list(controller.tuningPages) + ['battery', 'keyboard', 'system', 'quick_access']
+        sequence = list(controller.tuningPages) + ['keyboard', 'system', 'quick_access']
         def advance():
             if sequence:
                 controller.navigate(sequence.pop(0))

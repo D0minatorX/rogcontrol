@@ -39,7 +39,7 @@ if args.unsupported:
 original_navigate = AppController.navigate
 
 def verify(page):
-    names = {'quick_access': ['turboBoostSetting', 'gpuModeSetting', 'powerMizerSetting', 'psrSetting', 'gamescopeSetting'], 'battery': ['chargingCard']}.get(page, [])
+    names = {'quick_access': ['turboBoostSetting', 'gpuModeSetting', 'powerMizerSetting', 'psrSetting', 'gamescopeSetting', 'chargingCard']}.get(page, [])
     if not names:
         return
     windows = [w for w in QGuiApplication.topLevelWindows() if hasattr(w, 'contentItem')]

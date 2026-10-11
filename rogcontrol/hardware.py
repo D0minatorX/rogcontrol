@@ -826,13 +826,16 @@ def read_cpu_power_w(root=None):
 def read_cpu_clock_range(root=None):
     """(min_khz, max_khz) the cores can be capped between, or None.
 
-    Both come from cpuinfo_*, i.e. what the hardware can do, not the current
-    scaling_* window -- otherwise a cap already in effect would shrink the
-    control's range and there would be no way back up."""
+    Use the hardware range, never the current scaling_* cap. AMD pstate
+    lowers cpuinfo_max_freq to base frequency with boost disabled; its
+    amd_pstate_max_freq retains the boost capability needed by the editor."""
     for path in sorted(glob.glob(
             _under(root, CPUFREQ_GLOB) + "/cpuinfo_max_freq")):
         base = os.path.dirname(path)
         hi = read_int(path)
+        boost_max = read_int(os.path.join(base, "amd_pstate_max_freq"))
+        if hi is not None and boost_max is not None and boost_max > hi:
+            hi = boost_max
         lo = read_int(os.path.join(base, "cpuinfo_min_freq"))
         if hi is not None and lo is not None and hi > lo:
             return lo, hi
@@ -1445,6 +1448,16 @@ def parse_gpu_power_limits(text):
             continue
         if 0 < lo < hi:
             return round(lo), round(hi)
+    return None
+
+
+def read_gpu_name(root=None):
+    """Read NVIDIA's cached model identity without waking a suspended GPU."""
+    for path in sorted(glob.glob(_under(root, '/proc/driver/nvidia/gpus/*/information'))):
+        for line in (read_file(path) or '').splitlines():
+            label, _, value = line.partition(':')
+            if label.strip() == 'Model' and value.strip():
+                return value.strip()
     return None
 
 

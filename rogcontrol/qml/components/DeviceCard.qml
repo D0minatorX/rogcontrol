@@ -5,7 +5,7 @@ MetricCard {
     property string device: 'cpu'
     property var readings: ({})
     title: device.toUpperCase()
-    function format(value, unit) { return value === null || value === undefined ? '—' : Math.round(Number(value)).toLocaleString(Qt.locale(), 'f', 0) + (unit ? ' ' + unit : '') }
+    function format(value, unit) { return value === null || value === undefined ? '—' : Math.round(Number(value)).toLocaleString(Qt.locale('en_US'), 'f', 0) + (unit ? ' ' + unit : '') }
     Text {
         text: root.readings[root.device + '_name'] || 'Detecting device…'
         color: root.colors.mutedText; font.pixelSize: 11

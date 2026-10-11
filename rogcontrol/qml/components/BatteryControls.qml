@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Layouts
-import "../components"
 ColumnLayout {
     id: root
     property var colors
@@ -9,32 +8,32 @@ ColumnLayout {
     MetricCard {
         title: 'Battery'; colors: root.colors; Layout.fillWidth: true
         RowLayout {
-            Layout.fillWidth: true; spacing: 24
+            Layout.fillWidth: true; spacing: 16
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 8
                 Text { text: root.readings.percent === undefined || root.readings.percent === null ? '—' : root.readings.percent + '%'; color: root.colors.text; font.pixelSize: 48; font.weight: Font.Medium }
                 Text { text: (root.readings.charging === undefined || root.readings.charging === null ? 'State unavailable' : root.readings.charging ? 'Charging' : 'Not charging') + '  ·  ' + (root.readings.source || 'Unknown source'); color: root.colors.mutedText; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
             }
             Rectangle {
-                Layout.preferredWidth: root.width < 500 ? 100 : 168; Layout.preferredHeight: 64
-                color: 'transparent'; radius: 9; border.color: root.colors.border; border.width: 2
-                Rectangle { x: 6; y: 6; height: parent.height-12; radius: 4; width: (parent.width-12) * Math.max(0,Math.min(100,Number(root.readings.percent || 0)))/100; color: root.colors.accent }
-                Rectangle { width: 4; height: 22; anchors.left: parent.right; anchors.verticalCenter: parent.verticalCenter; radius: 2; color: root.colors.border }
+                Layout.preferredWidth: 58; Layout.preferredHeight: 30; Layout.rightMargin: 4; Layout.alignment: Qt.AlignVCenter
+                color: 'transparent'; radius: 6; border.color: root.colors.border; border.width: 2
+                Rectangle { x: 4; y: 4; height: parent.height-8; radius: 2; width: (parent.width-8) * Math.max(0,Math.min(100,Number(root.readings.percent || 0)))/100; color: root.colors.accent }
+                Rectangle { width: 3; height: 12; anchors.left: parent.right; anchors.verticalCenter: parent.verticalCenter; radius: 2; color: root.colors.border }
             }
         }
         Rectangle { Layout.fillWidth: true; height: 1; color: root.colors.border }
         GridLayout {
-            columns: root.width < 600 ? 1 : 3; Layout.fillWidth: true; columnSpacing: 22; rowSpacing: 16
+            columns: root.width < 260 ? 1 : root.width < 600 ? 2 : 3; Layout.fillWidth: true; columnSpacing: 22; rowSpacing: 16
             Repeater {
                 model: [
                     {label:'HEALTH', value: root.readings.health && root.readings.health.percent !== null && root.readings.health.percent !== undefined ? Number(root.readings.health.percent).toFixed(1) + '%' : '—'},
                     {label:'FULL / DESIGN CAPACITY', value: root.readings.health ? Number(root.readings.health.full).toFixed(1) + ' / ' + Number(root.readings.health.design).toFixed(1) + ' ' + root.readings.health.unit : '—'},
-                    {label:'CYCLE COUNT', value: root.readings.health && root.readings.health.cycles !== null && root.readings.health.cycles !== undefined ? String(root.readings.health.cycles) : '—'}
-                ]
+                    {label:'CYCLE COUNT', available: !!root.readings.health && root.readings.health.cycles > 0, value: root.readings.health && root.readings.health.cycles !== null && root.readings.health.cycles !== undefined ? String(root.readings.health.cycles) : '—'}
+                ].filter(reading => reading.available !== false)
                 ColumnLayout {
                     required property var modelData
                     Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 8
-                    Text { text: modelData.label; color: root.colors.mutedText; font.pixelSize: 10; Layout.fillWidth: true }
+                    Text { text: modelData.label; color: root.colors.mutedText; font.pixelSize: 10; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                     Text { text: modelData.value; color: root.colors.text; font.pixelSize: 20; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                 }
             }
@@ -48,5 +47,5 @@ ColumnLayout {
         RogButton { colors: root.colors; text: root.readings.once ? 'Cancel one full charge' : 'Charge to 100% once'; enabled: !!root.readings.charge_supported && !appController.busy; onClicked: batteryController.toggleOnce() }
         Text { visible: !!root.readings.once; text: 'One full charge is active. The normal cap is restored on full charge or unplugging.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
     }
-    Text { text: batteryController.status; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+    Text { visible: text.length > 0; text: batteryController.status; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
 }

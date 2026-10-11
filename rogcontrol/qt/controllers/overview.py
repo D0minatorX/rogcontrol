@@ -43,14 +43,16 @@ class OverviewController(QObject):
                           'ram': [12400, 32000], 'vram': [2200, 12000], 'curve_enabled': {'1': True, '2': True, '3': True}}
             self.stateChanged.emit()
             return
-        self.app.runner.submit('overview', self._sample)
+        limits = getattr(self.app, '_gpu_limits', None) or {}
+        gpu_name = limits.get('name') or self._data.get('gpu_name')
+        self.app.runner.submit('overview', lambda: self._sample(gpu_name))
 
     @staticmethod
-    def _sample():
+    def _sample(gpu_name=None):
         from ... import hardware as h
         suspended = h.dgpu_is_suspended() if shutil.which('nvidia-smi') else True
         gpu = (None,) * 4 if suspended else h.read_nvidia_query(('temperature.gpu', 'power.draw', 'clocks.gr', 'utilization.gpu'))
-        return {'cpu_name': h.read_cpu_name() or 'Processor', 'gpu_name': 'NVIDIA GPU' if shutil.which('nvidia-smi') else 'Graphics',
+        return {'cpu_name': h.read_cpu_name() or 'Processor', 'gpu_name': h.read_gpu_name() or gpu_name or ('NVIDIA GPU' if shutil.which('nvidia-smi') else 'Graphics'),
                 'cpu_temp': h.read_cpu_temp(), 'cpu_clock': h.read_peak_core_clock_mhz(),
                 'cpu_power': h.read_cpu_power_w(), 'gpu_temp': gpu[0], 'gpu_power': gpu[1],
                 'gpu_clock': gpu[2], 'gpu_usage': gpu[3], 'dgpu_suspended': suspended,

@@ -20,6 +20,7 @@ class CpuController(TuningController):
         governors = sorted({value for path in glob('/sys/devices/system/cpu/cpufreq/policy*/scaling_governor') if (value := h.read_file(path))})
         return {'temperature': h.read_cpu_temp(), 'clock': h.read_peak_core_clock_mhz(),
                 'power': h.read_cpu_power_w(), 'fan': h.read_fan_rpms().get('1'),
+                'epp': h.read_current_epp(), 'epp_choices': h.read_epp_preferences(),
                 'vendor': caps.get('cpu_vendor', ''), 'governor': ', '.join(governors) or 'unavailable'}
 
     def build_rows(self, caps):
@@ -39,14 +40,29 @@ class CpuController(TuningController):
         if caps.get('cpu_boost'):
             rows.append(toggle('boost', 'Turbo boost'))
         if caps.get('cpu_epp'):
+            choices = list(caps['cpu_epp'])
+            # The performance governor temporarily advertises only performance.
+            # Keep existing profile preferences intact for the powersave governor.
+            if choices == ['performance']:
+                for profile in self.app.config.get('profiles', {}).values():
+                    saved = profile.get('cpu', {}).get('epp')
+                    if isinstance(saved, str) and saved and saved != 'custom' and saved not in choices:
+                        choices.append(saved)
             rows.append(dict(key='epp', title='Energy preference', kind='choice',
-                             choices=caps['cpu_epp'], default=caps['cpu_epp'][0]))
+                             choices=choices, default=choices[0]))
         clock = caps.get('cpu_clock')
         if clock:
             rows.append(number('max_freq', 'Maximum core clock', 0, clock[1] / 1e6, 0, 'GHz', 1000000, .1))
         if caps.get('cpu_clock_floor') and clock:
             rows.append(number('min_freq', 'Minimum core clock', 0, clock[1] / 1e6, 0, 'GHz', 1000000, .1))
         return rows
+
+    def after_read(self):
+        choices = [p for p in self._live.get('epp_choices', []) if p != 'custom']
+        if choices != self.caps.get('cpu_epp', []):
+            self.caps['cpu_epp'] = choices
+            self._rows = self.build_rows(self.caps)
+            self.reload()
 
     def row_enabled(self, row):
         key = row['key']

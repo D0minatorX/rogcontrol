@@ -382,10 +382,50 @@ ensure_asus_linux_copr() {
         -o "$repo_file"
 }
 
+# Check the actual capture elements, not merely an installed gst command.
+have_gst_elements() {
+    python3 - "$@" <<'PY_GST'
+import sys
+try:
+    import gi
+    gi.require_version('Gst', '1.0')
+    from gi.repository import Gst
+    Gst.init(None)
+    raise SystemExit(0 if all(Gst.ElementFactory.find(name) for name in sys.argv[1:]) else 1)
+except (ImportError, ValueError):
+    raise SystemExit(1)
+PY_GST
+}
+
+# Optional feature packages must not prevent unrelated packages installing.
+install_optional_packages() {
+    local package
+    if [ "$PM" = apt ]; then
+        sudo apt-get update || warn "Package index refresh failed; trying the existing index"
+    fi
+    for package in "$@"; do
+        case "$PM" in
+            pacman) if sudo pacman -S --needed --noconfirm "$package"; then
+                say "Installed $package"
+            else warn "Could not install $package; its feature may be unavailable"; fi ;;
+            dnf) if sudo dnf install -y "$package"; then
+                say "Installed $package"
+            else warn "Could not install $package; its feature may be unavailable"; fi ;;
+            apt) if sudo apt-get install -y "$package"; then
+                say "Installed $package"
+            else warn "Could not install $package; its feature may be unavailable"; fi ;;
+        esac
+    done
+}
+
 # name|check-command|pacman|dnf|apt
 DEPS=(
   "python-evdev (key bindings and Fn Lock)|python3 -c 'import evdev'|python-evdev|python3-evdev|python3-evdev"
   "python-gobject (Gio/GLib integrations)|python3 -c 'import gi'|python-gobject|python3-gobject|python3-gi"
+  "GStreamer introspection (Ambient lighting)|have_gst_elements|gstreamer|gstreamer1|gir1.2-gstreamer-1.0"
+  "GStreamer video elements (Ambient lighting)|have_gst_elements videorate videoconvert videoscale appsink|gst-plugins-base|gstreamer1-plugins-base|gstreamer1.0-plugins-base"
+  "PipeWire capture (Ambient lighting)|have_gst_elements pipewiresrc|gst-plugin-pipewire|pipewire-gstreamer|gstreamer1.0-pipewire"
+  "Desktop portal (Ambient lighting)|test -f /usr/share/dbus-1/services/org.freedesktop.portal.Desktop.service|xdg-desktop-portal|xdg-desktop-portal|xdg-desktop-portal"
   "libnotify|command -v notify-send|libnotify|libnotify|libnotify-bin"
   "nvidia-utils (nvidia-smi)|command -v nvidia-smi|nvidia-utils|nvidia-driver|nvidia-utils"
   "nvidia-settings|command -v nvidia-settings|nvidia-settings|nvidia-settings|nvidia-settings"
@@ -490,25 +530,20 @@ elif [ "$PM_HOST" = none ]; then
         echo "  A reboot is required before layered packages become available."
     fi
     if [ ${#missing_pkgs[@]} -gt 0 ]; then
-        if sudo rpm-ostree install --idempotent -y "${missing_pkgs[@]}"; then
-            PENDING_REBOOT=1
-            say "Layered - they become usable after a reboot"
-        else
-            warn "rpm-ostree could not layer some of these - the features they"
-            warn "cover will stay unavailable. To retry by hand:"
-            warn "  sudo rpm-ostree install ${missing_pkgs[*]}"
-        fi
+        for package in "${missing_pkgs[@]}"; do
+            if sudo rpm-ostree install --idempotent -y "$package"; then
+                PENDING_REBOOT=1
+                say "Layered $package - available after a reboot"
+            else
+                warn "Could not layer $package; its feature may be unavailable"
+            fi
+        done
     fi
 else
     warn "Missing: ${missing_names[*]}"
     if [ ${#missing_pkgs[@]} -gt 0 ] && [ "$PM" != unknown ]; then
         echo "  Will install: ${missing_pkgs[*]}"
-        case "$PM" in
-            pacman) sudo pacman -S --needed --noconfirm "${missing_pkgs[@]}" ;;
-            dnf)    sudo dnf install -y "${missing_pkgs[@]}" ;;
-            apt)    sudo apt-get update && sudo apt-get install -y "${missing_pkgs[@]}" ;;
-        esac
-        say "Repository dependencies installed"
+        install_optional_packages "${missing_pkgs[@]}"
     else
         warn "Install these manually for your distro"
     fi

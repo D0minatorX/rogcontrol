@@ -165,7 +165,7 @@ class KeyboardController(SettingsController):
         def save(cfg):
             if cfg.get('kbd_brightness', 3) == saved:
                 cfg['kbd_brightness'] = level
-        self.persist(save)
+        self.persist(save, silent=True)
 
     @Slot()
     def retry(self):
@@ -493,7 +493,7 @@ class KeyboardController(SettingsController):
         if self.app.busy:
             QTimer.singleShot(300, lambda: self._on_token(payload))
             return
-        self.persist(lambda cfg: cfg.setdefault('kbd_rgb', {}).update(ambient_restore_token=token))
+        self.persist(lambda cfg: cfg.setdefault('kbd_rgb', {}).update(ambient_restore_token=token), silent=True)
 
     def _paint(self):
         colors = self._colors
@@ -524,7 +524,7 @@ class KeyboardController(SettingsController):
         def done(result, error):
             if not error and result and generation == self._ambient_generation:
                 self._last_colors = result
-        self.write(apply, done)
+        self.write(apply, done, silent=True)
 
     def _live(self):
         if self._closed or self.app.demo or self.app.busy:

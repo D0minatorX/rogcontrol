@@ -18,6 +18,10 @@ depends=(
   'qt6-wayland'
 )
 optdepends=(
+  'python-evdev: keyboard bindings and Fn Lock'
+  'gst-plugins-base: Ambient keyboard video processing'
+  'gst-plugin-pipewire: Ambient keyboard screen capture'
+  'xdg-desktop-portal: Ambient keyboard screen sharing portal'
   'libnotify: desktop notifications'
   'nvidia-utils: NVIDIA GPU stats and clock offsets'
   'nvidia-settings: NVIDIA GPU clock offsets'

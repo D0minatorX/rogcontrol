@@ -21,6 +21,13 @@ class QuickAccessController(SettingsController):
         return {'startup': startup.is_enabled(), 'gamescope': gamescope.detect_installed(),
                 'usbc': True}
 
+    @Slot(str, int)
+    def setFanBoostPreference(self, key, value):
+        bounds = {'percent': (20, 100), 'seconds': (10, 600)}
+        if key not in bounds or not bounds[key][0] <= value <= bounds[key][1]:
+            return
+        self.persist(lambda cfg: cfg.setdefault('fan_boost_preferences', {}).update({key: value}))
+
     @Slot(str, str)
     def setAutomaticProfile(self, source, name):
         if source not in ('ac_profile', 'battery_profile', 'usbc_profile', 'gamescope_profile'):

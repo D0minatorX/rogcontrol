@@ -66,6 +66,34 @@ def configure_services(enabled, *, start_now=False):
         self.assertEqual(calls, [False, True])
         self.assertIn('WARNING:', output)
 
+    def test_missing_qt_downloads_packages_and_rechecks_runtime(self):
+        source = INSTALLER.read_text()
+        section = source.split('if [ "$QT_OK" = 0 ] && [ "$ATOMIC" = 1 ]; then', 1)[1]
+        section = 'if [ "$QT_OK" = 0 ] && [ "$ATOMIC" = 1 ]; then' + section.split('# ------------------------------------------------------------ deps: repo', 1)[0]
+        for manager in ('pacman', 'apt', 'dnf'):
+            shell = 'set -eu\nstep() { :; }\ndie() { echo "$*"; exit 1; }\n'
+            shell += 'sudo() { echo "INSTALL $*"; }\ncheck_qt_runtime() { echo RECHECK; }\n'
+            shell += f'QT_OK=0; ATOMIC=0; PM={manager}; QT_PACKAGES=(qt-test-package)\n'
+            result = subprocess.run(['bash', '-c', shell + section], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('qt-test-package', result.stdout)
+            self.assertIn('RECHECK', result.stdout)
+
+    def test_optional_packages_continue_after_unavailable_package(self):
+        source = INSTALLER.read_text()
+        self.assertIn('install_optional_packages() {', source)
+        function = source.split('install_optional_packages() {', 1)[1].split('\n}\n', 1)[0]
+        for manager in ('pacman', 'apt', 'dnf'):
+            shell = "set -eu\nwarn() { echo WARN \"$*\"; }\nsay() { echo OK \"$*\"; }\n"
+            shell += 'sudo() { echo "CALL $*"; case "$*" in *missing-package*) return 1;; esac; }\n'
+            shell += 'install_optional_packages() {' + function + '\n}\n'
+            shell += f'PM={manager}\ninstall_optional_packages missing-package good-package\n'
+            result = subprocess.run(['bash', '-c', shell], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('good-package', result.stdout)
+            self.assertIn('WARN', result.stdout)
+            self.assertNotIn('OK Installed missing-package', result.stdout)
+
     def test_atomic_hosts_never_route_packages_through_dnf(self):
         source = INSTALLER.read_text()
         self.assertIn('if [ "$ATOMIC" = 1 ]; then PM_HOST=none; fi', source)

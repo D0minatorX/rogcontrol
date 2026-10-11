@@ -29,9 +29,16 @@ ColumnLayout {
                 visible: modelData.kind === 'choice'; Layout.fillWidth: true
                 colors: root.colors; helpText: root.help(modelData.key)
                 title: modelData.key === 'epp' ? 'Energy preference (governor: ' + (root.controller.live.governor || 'unavailable') + ')' : modelData.title
+                description: modelData.key === 'epp' && root.controller.live.governor === 'performance' ? 'Saved with this profile. The performance governor overrides this preference until powersave is active.' : ''
                 choices: modelData.choices || []; labels: modelData.choiceLabels || modelData.choices || []
                 value: modelData.value; enabled: modelData.enabled
                 onEdited: value => root.controller.stageValue(modelData.key, value)
+            }
+            Text {
+                visible: modelData.key === 'max_freq' && !modelData.enabled
+                text: 'Enable Turbo boost in Quick controls to set the maximum core clock.'
+                color: root.colors.mutedText; font.pixelSize: 11
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
             }
             SliderRow {
                 Layout.fillWidth: true

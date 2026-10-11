@@ -66,22 +66,22 @@ class SettingsController(QObject):
             self._data = result
         self.stateChanged.emit()
 
-    def write(self, function, done=None):
+    def write(self, function, done=None, *, silent=False):
         def complete(result, error):
             if self._closed:
                 return
-            self._status = str(error) if error else 'Saved'
+            self._status = str(error) if error else (self._status if silent else 'Saved')
             if done:
                 done(result, error)
             self.stateChanged.emit()
             self.refresh()
-        if not self.app.submitWrite(self.page, function, complete):
+        if not self.app.submitWrite('background' if silent else self.page, function, complete):
             self._status = 'Another operation is running; retry when it finishes.'
             self.stateChanged.emit()
             return False
         return True
 
-    def persist(self, mutate):
+    def persist(self, mutate, *, silent=False):
         if self.app.demo:
             mutate(self.app.config)
             self.app.configChanged.emit()
@@ -91,7 +91,7 @@ class SettingsController(QObject):
             from ...profile_requests import selection_lock
             with selection_lock():
                 config.update_config(mutate)
-        return self.write(save)
+        return self.write(save, silent=silent)
 
     def physical(self, operation, mutate=None, done=None):
         if self.app.demo:

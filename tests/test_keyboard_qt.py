@@ -44,6 +44,22 @@ class KeyboardQtTests(unittest.TestCase):
     def tearDown(self):
         self.controller.close()
 
+    def test_recheck_refreshes_static_without_reapplying_lighting(self):
+        with patch.object(self.controller, '_start_ambient') as start:
+            self.controller.retry()
+            self.controller.refresh.assert_called_once()
+            start.assert_not_called()
+            self.controller.persist.assert_not_called()
+
+    def test_recheck_restarts_ambient_capture(self):
+        self.app.config['kbd_rgb']['mode'] = 'Ambient'
+        with patch.object(self.controller, '_stop_ambient') as stop, \
+             patch.object(self.controller, '_start_ambient') as start:
+            self.controller.retry()
+            self.controller.refresh.assert_called_once()
+            stop.assert_called_once()
+            start.assert_called_once()
+
     def test_effect_change_invalidates_live_color_cache(self):
         c = self.controller
         c._last_mode = 'CPU Temp Color'
