@@ -35,8 +35,9 @@ _PACKAGE = Path(rogcontrol.__file__).resolve().parent
 _ICON_DIR = Path.home() / '.local/share/icons/hicolor/256x256/apps'
 PROFILE_ICON_NAMES = {'Quiet': 'rogcontrol-quiet.png',
                       'Balanced Power': 'rogcontrol-balanced.png',
-                      'Balanced Performance': 'rogcontrol-balanced.png'}
-DEFAULT_TRAY_ICON = 'rogcontrol-tray.png'
+                      'Balanced Performance': 'rogcontrol-balanced.png',
+                      'Performance': 'rogcontrol-Performance.png'}
+DEFAULT_TRAY_ICON = 'rogcontrol-Performance.png'
 
 
 def icon_for_profile(name):
