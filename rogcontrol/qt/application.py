@@ -31,6 +31,7 @@ def main(argv=None):
         from PySide6.QtNetwork import QLocalServer, QLocalSocket
         from PySide6.QtQml import QQmlApplicationEngine
         from PySide6.QtQuickControls2 import QQuickStyle
+        from PySide6.QtGui import QIcon
         from PySide6.QtWidgets import QApplication
     except ImportError as exc:
         print(f'ROG Control Qt requires PySide6 with Qt Quick: {exc}', file=sys.stderr)
@@ -54,6 +55,9 @@ def main(argv=None):
     application.setQuitOnLastWindowClosed(False)
     application.setApplicationName('ROG Control')
     application.setOrganizationName('ROG Control')
+    icon_path = Path(__file__).resolve().parents[1] / 'rogcontrol.png'
+    if icon_path.is_file():
+        application.setWindowIcon(QIcon(str(icon_path)))
     action = next((name for name in ('quit', 'toggle', 'show', 'hide', 'minimized') if getattr(args, name)), 'show')
     # Demo runs cannot hide or quit the actual application.
     scope = hashlib.sha256((str(os.getuid()) + os.environ.get('WAYLAND_DISPLAY', os.environ.get('DISPLAY', ''))).encode()).hexdigest()[:16]
