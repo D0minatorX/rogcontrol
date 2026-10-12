@@ -927,7 +927,10 @@ fi
 mkdir -p "$HOME/.local/share/icons/hicolor/256x256/apps"
 install -m 644 "$SCRIPT_DIR/rogcontrol.png" \
     "$HOME/.local/share/icons/hicolor/256x256/apps/rogcontrol.png"
-# The tray's per-profile-colour icons -- red is rogcontrol.png itself
+# Keep the tray's legacy base icon separate from the app-grid icon.
+install -m 644 "$SCRIPT_DIR/rogcontrol-tray.png" \
+    "$HOME/.local/share/icons/hicolor/256x256/apps/rogcontrol-tray.png"
+# The tray's per-profile-colour icons
 # (Performance and any custom profile), these two cover Quiet and the two
 # Balanced profiles. See rogcontrol-tray's PROFILE_ICON_PATH.
 install -m 644 "$SCRIPT_DIR/rogcontrol-quiet.png" \

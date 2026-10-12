@@ -133,6 +133,7 @@ for size in 16x16 22x22 24x24 32x32 48x48 64x64 128x128 256x256 512x512; do
           "$HOME/.local/share/icons/hicolor/$size/apps/rogcontrol-balanced.png"
 done
 rm -f "$HOME/.local/share/icons/hicolor/scalable/apps/rogcontrol.svg"
+rm -f "$HOME/.local/share/icons/hicolor/256x256/apps/rogcontrol-tray.png"
 gtk-update-icon-cache -f "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 say "Launchers, autostart and icon removed"
 

@@ -36,12 +36,13 @@ _ICON_DIR = Path.home() / '.local/share/icons/hicolor/256x256/apps'
 PROFILE_ICON_NAMES = {'Quiet': 'rogcontrol-quiet.png',
                       'Balanced Power': 'rogcontrol-balanced.png',
                       'Balanced Performance': 'rogcontrol-balanced.png'}
+DEFAULT_TRAY_ICON = 'rogcontrol-tray.png'
 
 
 def icon_for_profile(name):
-    filename = PROFILE_ICON_NAMES.get(name, 'rogcontrol.png')
+    filename = PROFILE_ICON_NAMES.get(name, DEFAULT_TRAY_ICON)
     for directory in (_PACKAGE, _ICON_DIR):
-        for candidate in (filename, 'rogcontrol.png'):
+        for candidate in (filename, DEFAULT_TRAY_ICON):
             path = directory / candidate
             if path.is_file():
                 return str(path)
