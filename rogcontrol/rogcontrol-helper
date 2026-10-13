@@ -81,7 +81,7 @@ find_hwmon_by_name() {
 }
 
 usage() {
-    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|cpuminclock|cpuppt|cpufwlimits|gpu|nvboost|nvtemp|nvvoltage|gpuclocklimit|fan|kbd|kbdpower|kbdrgb|kbdrgb_brightness|charge|bootsound|panelod|psr|asusd_status|asusd_disable|asusd_enable|cardwired_enable> ..." >&2
+    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|cpuminclock|cpuppt|cpufwlimits|gpu|nvboost|nvtemp|nvvoltage|gpuclocklimit|fan|kbd|kbdpower|kbdrgb|kbdrgb_brightness|charge|bootsound|panelod|psr|asusd_status|asusd_disable|asusd_enable|cardwired_enable|cardwired_disable|supergfxd_enable|supergfxd_disable> ..." >&2
     exit 1
 }
 
@@ -1350,29 +1350,33 @@ case "$1" in
         ;;
 
     cardwired_enable)
-        # Turn on the daemon the graphics-mode picker needs. Some
-        # distributions ship Cardwire with its unit installed but not
-        # enabled, which leaves the window able to see cardwire on
-        # PATH while nothing answers -- indistinguishable, from the GPU page,
-        # from a broken daemon.
-        #
-        # Enable-only, on purpose. This app WANTS cardwired running: without
-        # it the mode picker can neither read nor switch. There is no
-        # cardwired_disable to match asusd's, because nothing here would ever
-        # ask for one, and a disable primitive sitting in a passwordless
-        # helper is worth not having.
-        #
-        # Same shape as asusd_enable: no arguments at all, and the unit name
-        # is written here rather than taken from the caller.
+        # Literal service names only; undo a mask set by the disable action.
         shift
         no_args cardwired_enable "$@"
+        systemctl unmask cardwired.service
         systemctl enable --now cardwired.service
+        ;;
+
+    cardwired_disable)
+        shift
+        no_args cardwired_disable "$@"
+        systemctl disable --now cardwired.service
+        # Prevent D-Bus requests from immediately starting it again.
+        systemctl mask --now cardwired.service
         ;;
 
     supergfxd_enable)
         shift
         no_args supergfxd_enable "$@"
+        systemctl unmask supergfxd.service
         systemctl enable --now supergfxd.service
+        ;;
+
+    supergfxd_disable)
+        shift
+        no_args supergfxd_disable "$@"
+        systemctl disable --now supergfxd.service
+        systemctl mask --now supergfxd.service
         ;;
 
     # There is deliberately no action that removes the asusctl package.

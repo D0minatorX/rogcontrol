@@ -12,6 +12,8 @@ class SystemController(SettingsController):
         self._problems = False
         self._pending = None
         self._report = ''
+        self._demo_graphics = {'state': 'running', 'active': True, 'enabled': True,
+                               'has_unit': True, 'installed': True, 'raw_active': 'active'}
         self.refresh()
 
     def fixture(self):
@@ -21,7 +23,7 @@ class SystemController(SettingsController):
                     asusd={'installed': True, 'state': 'stopped'}, uninstall='sudo pacman -Rns asusctl',
                     ppd={'installed': True, 'has_unit': True, 'state': 'running', 'active': True,
                          'enabled': True, 'masked': False, 'tuned_ppd': False, 'manager': 'pacman'},
-                    graphics={'state': 'running'}, backend='supergfxctl', psr_pending=False,
+                    graphics=dict(self._demo_graphics), backend='supergfxctl', psr_pending=False,
                     psr_live=False, psr_foreign=None, log='Demo log: no hardware or services accessed.', report=self._report)
 
     def sample(self):
@@ -62,13 +64,38 @@ class SystemController(SettingsController):
             return hardware.set_asusd_running(running)
         self.physical(apply)
 
-    @Slot()
-    def enableGraphics(self):
+    @Slot(bool)
+    def setGraphics(self, running):
         backend = self._data.get('backend')
+        state = self._data.get('graphics', {})
+        if (self._closed or self.app.busy or backend not in ('cardwire', 'supergfxctl')
+                or not state.get('has_unit') or state.get('raw_active') not in ('active', 'inactive', 'failed')):
+            return
+        if self.app.demo:
+            self._demo_graphics.update(active=running, enabled=running,
+                                      raw_active='active' if running else 'inactive',
+                                      state='running' if running else 'stopped-disabled')
+            self._data['graphics'] = dict(self._demo_graphics)
+            self._status = 'Demo: graphics service ' + ('enabled' if running else 'disabled')
+            self.stateChanged.emit()
+            return
         def apply():
             from ... import hardware
-            return hardware.set_cardwired_running() if backend == 'cardwire' else hardware.set_supergfxd_running()
-        self.physical(apply)
+            setter = hardware.set_cardwired_running if backend == 'cardwire' else hardware.set_supergfxd_running
+            reader = hardware.read_cardwired_state if backend == 'cardwire' else hardware.read_supergfxd_state
+            ok, message = setter(running=running)
+            if not ok:
+                return False, message
+            actual = reader()
+            if (actual.get('raw_active') not in ('active', 'inactive', 'failed')
+                    or actual.get('active') != running or actual.get('enabled') != running):
+                return False, 'Graphics service did not reach the requested state; check its status and retry.'
+            return True, 'Graphics daemon ' + ('enabled and running.' if running else 'disabled and stopped.'), actual
+        def done(result, error):
+            if not error and result:
+                self._status = result[1]
+                self._data['graphics'] = result[2]
+        self.physical(apply, done=done)
 
     @Slot(str)
     def managePpd(self, action):

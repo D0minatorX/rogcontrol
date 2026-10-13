@@ -45,6 +45,52 @@ class QtControllerTests(unittest.TestCase):
     def setUp(self):
         self.app = App()
 
+    def test_graphics_service_controls_route_both_actions_and_verify_state(self):
+        from rogcontrol.qt.controllers.system import SystemController
+        controller = self.controller(SystemController)
+        controller._data = controller.fixture()
+        for backend, service in [('cardwire', 'cardwired'), ('supergfxctl', 'supergfxd')]:
+            for running in (False, True):
+                with self.subTest(backend=backend, running=running):
+                    controller._data['backend'] = backend
+                    controller.setGraphics(running)
+                    worker, done = self.app.submitWrite.call_args.args[1:]
+                    state = dict(controller._data['graphics'], active=running, enabled=running,
+                                 raw_active='active' if running else 'inactive')
+                    with patch('rogcontrol.profile_requests.hardware_apply_lock', side_effect=nullcontext), patch('rogcontrol.hardware.set_' + service + '_running', return_value=(True, '')) as setter, patch('rogcontrol.hardware.read_' + service + '_state', return_value=state):
+                        result = worker()
+                    setter.assert_called_once_with(running=running)
+                    done(result, None)
+                    self.assertEqual(controller.data['graphics']['active'], running)
+                    self.assertIn('running' if running else 'stopped', controller.status)
+
+    def test_graphics_service_refusal_and_wrong_readback_are_not_success(self):
+        from rogcontrol.qt.controllers.system import SystemController
+        controller = self.controller(SystemController)
+        controller._data = controller.fixture()
+        controller.setGraphics(False)
+        worker = self.app.submitWrite.call_args.args[1]
+        with patch('rogcontrol.profile_requests.hardware_apply_lock', side_effect=nullcontext), patch('rogcontrol.hardware.set_supergfxd_running', return_value=(False, 'permission denied')):
+            with self.assertRaisesRegex(RuntimeError, 'permission denied'):
+                worker()
+        with patch('rogcontrol.profile_requests.hardware_apply_lock', side_effect=nullcontext), patch('rogcontrol.hardware.set_supergfxd_running', return_value=(True, '')), patch('rogcontrol.hardware.read_supergfxd_state', return_value=controller._data['graphics']):
+            with self.assertRaisesRegex(RuntimeError, 'requested state'):
+                worker()
+
+    def test_graphics_demo_toggles_without_writes_and_unknown_state_is_blocked(self):
+        from rogcontrol.qt.controllers.system import SystemController
+        controller = self.controller(SystemController)
+        controller._data = controller.fixture()
+        self.app.demo = True
+        for running in (False, True):
+            controller.setGraphics(running)
+            self.assertEqual(controller.data['graphics']['active'], running)
+            self.assertEqual(controller.fixture()['graphics']['active'], running)
+        self.app.demo = False
+        controller._data['graphics']['raw_active'] = ''
+        controller.setGraphics(False)
+        self.app.submitWrite.assert_not_called()
+
     def test_nvidia_boot_toggle_requires_confirmation_and_routes_to_helper(self):
         gpu = self.controller(GpuController, {})
         gpu._live['display_power'] = {'supported': True, 'enabled': False}

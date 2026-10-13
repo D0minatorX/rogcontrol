@@ -7,6 +7,8 @@ ColumnLayout {
     property var colors
     property var readings: systemController.data
     property var ppd: readings.ppd || ({})
+    property var graphics: readings.graphics || ({})
+    property bool graphicsStateKnown: ['active', 'inactive', 'failed'].indexOf(graphics.raw_active) >= 0
     property string section: 'General'
     spacing: 14
     StatusRow { Layout.fillWidth: true; colors: root.colors; label: 'Installed ROG Control version'; value: root.readings.version || 'Loading…' }
@@ -35,8 +37,14 @@ ColumnLayout {
         title: 'Graphics daemon'; colors: root.colors; Layout.fillWidth: true
         StatusRow { colors: root.colors; label: root.readings.backend || 'Backend'; value: root.readings.graphics ? root.readings.graphics.state || root.readings.graphics.error || 'Unavailable' : 'Checking…' }
         Text { text: root.readings.graphics ? root.readings.graphics.message || root.readings.graphics.error || '' : ''; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        Text { text: 'Manages GPU mode switching. Disable stops the service and automatic startup; GPU mode switching stays unavailable until you enable it again.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         RowLayout {
-            RogButton { colors: root.colors; text: 'Enable graphics daemon'; enabled: !appController.busy && !!root.readings.caps && !!root.readings.caps[root.readings.backend === 'cardwire' ? 'cardwire' : 'supergfxctl']; onClicked: systemController.enableGraphics() }
+            RogButton {
+                objectName: 'graphicsDaemonButton'; colors: root.colors
+                text: !root.readings.graphics ? 'Checking graphics daemon…' : !root.graphics.has_unit ? 'Graphics daemon unavailable' : !root.graphicsStateKnown ? 'Checking graphics daemon…' : root.graphics.active ? 'Disable graphics daemon' : 'Enable graphics daemon'
+                enabled: !appController.busy && !!root.graphics.has_unit && root.graphicsStateKnown && ['cardwire', 'supergfxctl'].indexOf(root.readings.backend) >= 0
+                onClicked: systemController.setGraphics(!root.graphics.active)
+            }
         }
     }
     MetricCard {

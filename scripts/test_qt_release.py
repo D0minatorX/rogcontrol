@@ -29,6 +29,7 @@ MAINTAINED_MODULES = (
     'test_feature_report',
     'test_fnlock',
     'test_gamescope',
+    'test_graphics_services',
     'test_gpu_power',
     'test_gpu_power_capability',
     'test_hotkeys',

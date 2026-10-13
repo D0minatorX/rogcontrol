@@ -195,6 +195,14 @@ desktop interfaces are explained in the app. Hardware behavior still depends
 on the model, firmware, and compositor.
 
 ### ⚙️ System
+
+Under **Services**, the graphics-daemon button shows **Disable** when the
+selected Supergfx/Cardwire service is running and **Enable** when it is stopped.
+Disable stops it, disables boot startup, and masks automatic activation; Enable
+unmasks it and starts it with boot startup enabled. GPU mode switching is
+unavailable while the daemon is disabled. Missing or unknown service states
+leave the button unavailable, and failed operations are reported.
+
 Shows whether `asusd` (asusctl's daemon) is installed and running, since it drives the same hardware and the two will fight over fans and lighting if both run. Buttons to stop/disable it and put it back — no uninstall button, since removing a package is shown to you as the exact command to run yourself.
 
 A switch for the boot chime, remembered so a boot-apply service can restore it after a BIOS update resets the firmware.

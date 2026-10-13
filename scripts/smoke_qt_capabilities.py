@@ -81,6 +81,21 @@ def verify(page):
         else:
             root = card.parentItem()
             root.setProperty('section', 'Services')
+            graphics_button = next((obj for obj in visual_items(root)
+                                    if obj.objectName() == 'graphicsDaemonButton'), None)
+            if graphics_button is None:
+                failures.append('system: missing graphics service action')
+            else:
+                for before, after in [('Disable graphics daemon', 'Enable graphics daemon'),
+                                      ('Enable graphics daemon', 'Disable graphics daemon')]:
+                    if graphics_button.property('text') != before or not graphics_button.property('enabled'):
+                        failures.append(f'system: expected enabled {before} button')
+                    QMetaObject.invokeMethod(graphics_button, 'clicked', Qt.DirectConnection)
+                    if graphics_button.property('text') != after:
+                        failures.append(f'system: graphics click did not switch to {after}')
+                root.setProperty('graphics', {'has_unit': False})
+                if graphics_button.property('enabled') or graphics_button.property('text') != 'Graphics daemon unavailable':
+                    failures.append('system: missing graphics service must not offer an action')
             if not card.property('visible'):
                 failures.append('system: PPD card not visible in Services')
             buttons = {obj.property('text'): obj for obj in visual_items(card)

@@ -2535,19 +2535,12 @@ def read_supergfxd_state(timeout=5):
         service=SUPERGFXD_SERVICE)
 
 
-def set_supergfxd_running(timeout=30):
-    """Enable and start supergfxd, returning ``(ok, message)``.
+def set_supergfxd_running(timeout=30, *, running=True):
+    """Start/enable or stop/disable supergfxd through fixed helper actions.
 
-    Through the privileged helper, which takes no argument and names the
-    unit itself -- there is no route from here to systemctl with a unit name
-    of anyone's choosing.
-
-    There is deliberately no "stop supergfxd" counterpart. This app wants
-    that daemon running: without it the graphics-mode picker cannot read or
-    switch anything. Turning it off is not something the window should offer
-    a button for, and a disable primitive in a passwordless helper is worth
-    not having."""
-    return run_helper("supergfxd_enable", timeout=timeout)
+    The default preserves the GPU page's enable-only recovery action.
+    """
+    return run_helper("supergfxd_enable" if running else "supergfxd_disable", timeout=timeout)
 
 
 # The three modes this app offers, always, in the order a user thinks about
@@ -2819,19 +2812,12 @@ def read_cardwired_state(timeout=5):
         service=CARDWIRED_SERVICE)
 
 
-def set_cardwired_running(timeout=30):
-    """Enable and start cardwired, returning ``(ok, message)``.
+def set_cardwired_running(timeout=30, *, running=True):
+    """Start/enable or stop/disable cardwired through fixed helper actions.
 
-    Through the privileged helper, which takes no argument and names the
-    unit itself -- there is no route from here to systemctl with a unit name
-    of anyone's choosing.
-
-    There is deliberately no "stop cardwired" counterpart. This app wants
-    that daemon running: without it the GPU access picker cannot read or
-    switch anything. Turning it off is not something the window should offer
-    a button for, and a disable primitive in a passwordless helper is worth
-    not having."""
-    return run_helper("cardwired_enable", timeout=timeout)
+    The default preserves the GPU page's enable-only recovery action.
+    """
+    return run_helper("cardwired_enable" if running else "cardwired_disable", timeout=timeout)
 
 
 # Cardwire's useful laptop modes: lowest power, unrestricted offload, and
