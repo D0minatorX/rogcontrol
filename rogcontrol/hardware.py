@@ -278,14 +278,20 @@ def helper_action_unchanged(args, root=None):
     value = str(args[1])
     if action not in ("cpuboost", "cpuepp", "cpuclock", "cpuminclock"):
         return False
-    policies = sorted(glob.glob(_under(root, CPUFREQ_GLOB)))
     if action == "cpuboost" and value in ("0", "1"):
         global_path = _under(root, "/sys/devices/system/cpu/cpufreq/boost")
         global_exists = os.path.exists(global_path)
-        if global_exists and read_int(global_path) != int(value):
+        global_matches = global_exists and read_int(global_path) == int(value)
+        # Match the helper's active amd-pstate path: only the master counts.
+        # A missing/unreadable master must not be hidden by matching policies.
+        if read_file(_under(root, "/sys/devices/system/cpu/amd_pstate/status")) == "active":
+            return global_matches
+        if global_exists and not global_matches:
             return False
-        # amd-pstate can leave the global switch enabled while a power
-        # profile disables boost on individual policies. Check both layers.
+    policies = sorted(glob.glob(_under(root, CPUFREQ_GLOB)))
+    if action == "cpuboost" and value in ("0", "1"):
+        # Other drivers can fail on a policy after the master write succeeds.
+        # Check every policy so the next attempt can repair a partial failure.
         if any(os.path.exists(os.path.join(p, "boost")) for p in policies):
             return bool(policies) and all(
                 read_int(os.path.join(p, "boost")) == int(value) for p in policies)

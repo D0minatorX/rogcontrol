@@ -33,11 +33,115 @@ class ApplyEfficiencyTests(unittest.TestCase):
         self.node('/sys/devices/system/cpu/cpufreq/policy1/scaling_max_freq', 3000000)
         self.assertFalse(hardware.helper_action_unchanged(('cpuboost', 1), root=self.root))
 
-    def test_global_boost_does_not_hide_disabled_policy(self):
+    def test_active_amd_global_boost_matches_without_reading_policy_switches(self):
+        self.node('/sys/devices/system/cpu/amd_pstate/status', 'active')
+        for target in (0, 1):
+            with self.subTest(target=target):
+                master = self.node('/sys/devices/system/cpu/cpufreq/boost', target)
+                self.node('/sys/devices/system/cpu/cpufreq/policy0/boost', 1 - target)
+                with patch.object(hardware, 'read_int', wraps=hardware.read_int) as read:
+                    self.assertTrue(hardware.helper_action_unchanged(('cpuboost', target), root=self.root))
+                self.assertEqual([str(c.args[0]) for c in read.call_args_list], [str(master)])
+
+    def run_boost_helper(self, value):
+        source = Path('rogcontrol/rogcontrol-helper').read_text().replace('/sys/', str(self.root) + '/sys/')
+        helper = self.root / 'helper'
+        helper.write_text(source)
+        return subprocess.run(['bash', str(helper), 'cpuboost', str(value)], capture_output=True, text=True, timeout=5)
+
+    def test_active_amd_global_write_leaves_all_policy_switches_untouched(self):
+        self.node('/sys/devices/system/cpu/amd_pstate/status', 'active')
+        for target in (0, 1):
+            with self.subTest(target=target):
+                master = self.node('/sys/devices/system/cpu/cpufreq/boost', 1 - target)
+                policies = [self.node(f'/sys/devices/system/cpu/cpufreq/policy{i}/boost', 1 - target)
+                            for i in range(32)]
+                result = self.run_boost_helper(target)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, '')
+                self.assertEqual(master.read_text().strip(), str(target))
+                self.assertEqual([p.read_text().strip() for p in policies], [str(1 - target)] * 32)
+
+    def test_active_amd_skips_unwritable_policy_nodes(self):
+        self.node('/sys/devices/system/cpu/amd_pstate/status', 'active')
         self.node('/sys/devices/system/cpu/cpufreq/boost', 1)
-        self.node('/sys/devices/system/cpu/cpufreq/policy0/boost', 0)
-        self.node('/sys/devices/system/cpu/cpufreq/policy1/boost', 1)
+        # A directory rejects writes even when tests run as root.
+        locked = self.root / 'sys/devices/system/cpu/cpufreq/policy0/boost'
+        locked.mkdir(parents=True)
+        result = self.run_boost_helper(0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+
+    def test_active_amd_missing_master_does_not_touch_policy_fallback(self):
+        self.node('/sys/devices/system/cpu/amd_pstate/status', 'active')
+        policy = self.node('/sys/devices/system/cpu/cpufreq/policy0/boost', 1)
+        result = self.run_boost_helper(0)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(policy.read_text(), '1')
+
+    def test_failed_master_write_is_never_hidden_by_matching_policy(self):
+        self.node('/sys/devices/system/cpu/amd_pstate/status', 'active')
+        self.node('/sys/devices/system/cpu/cpufreq/policy0/boost', 1)
+        (self.root / 'sys/devices/system/cpu/cpufreq/boost').mkdir()
+        result = self.run_boost_helper(1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('failed to write global boost', result.stderr)
+
+    def test_legacy_policy_failure_stays_failure_even_after_other_writes_succeed(self):
+        self.node('/sys/devices/system/cpu/cpufreq/boost', 0)
+        locked = self.root / 'sys/devices/system/cpu/cpufreq/policy0/boost'
+        locked.mkdir(parents=True)
+        policy = self.node('/sys/devices/system/cpu/cpufreq/policy1/boost', 0)
+        result = self.run_boost_helper(1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('failed to write boost on:', result.stderr)
+        self.assertEqual(policy.read_text().strip(), '1')
         self.assertFalse(hardware.helper_action_unchanged(('cpuboost', 1), root=self.root))
+        locked.rmdir()
+        locked.write_text('0')
+        self.assertFalse(hardware.helper_action_unchanged(('cpuboost', 1), root=self.root))
+        retry = self.run_boost_helper(1)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(locked.read_text().strip(), '1')
+        self.assertTrue(hardware.helper_action_unchanged(('cpuboost', 1), root=self.root))
+
+    def test_non_active_amd_modes_still_require_matching_policies(self):
+        for mode in ('passive', 'guided', 'disable', ''):
+            for target in (0, 1):
+                with self.subTest(mode=mode, target=target):
+                    self.node('/sys/devices/system/cpu/amd_pstate/status', mode)
+                    self.node('/sys/devices/system/cpu/cpufreq/boost', target)
+                    policy = self.node('/sys/devices/system/cpu/cpufreq/policy0/boost', 1 - target)
+                    self.assertFalse(hardware.helper_action_unchanged(('cpuboost', target), root=self.root))
+                    policy.write_text(str(target))
+                    self.assertTrue(hardware.helper_action_unchanged(('cpuboost', target), root=self.root))
+
+    def test_legacy_global_only_driver_can_skip_matching_state(self):
+        for target in (0, 1):
+            self.node('/sys/devices/system/cpu/cpufreq/boost', target)
+            self.assertTrue(hardware.helper_action_unchanged(('cpuboost', target), root=self.root))
+            self.assertFalse(hardware.helper_action_unchanged(('cpuboost', 1 - target), root=self.root))
+
+    def test_active_amd_missing_master_cannot_skip_based_on_policy(self):
+        self.node('/sys/devices/system/cpu/amd_pstate/status', 'active')
+        self.node('/sys/devices/system/cpu/cpufreq/policy0/boost', 1)
+        self.assertFalse(hardware.helper_action_unchanged(('cpuboost', 1), root=self.root))
+
+    def test_intel_fallback_preserves_inverted_no_turbo(self):
+        no_turbo = self.node(hardware.INTEL_NO_TURBO_PATH, 0)
+        for target in (0, 1):
+            with self.subTest(target=target):
+                result = self.run_boost_helper(target)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(no_turbo.read_text().strip(), str(1 - target))
+                self.assertTrue(hardware.helper_action_unchanged(('cpuboost', target), root=self.root))
+
+    def test_unreadable_or_mismatching_master_never_skips_write(self):
+        for current in ('garbage', '', 0):
+            with self.subTest(current=current):
+                self.node('/sys/devices/system/cpu/cpufreq/boost', current)
+                self.node('/sys/devices/system/cpu/cpufreq/policy0/boost', 1)
+                self.assertFalse(hardware.helper_action_unchanged(('cpuboost', 1), root=self.root))
 
     def test_helper_repairs_policy_boost_even_when_global_is_enabled(self):
         self.node('/sys/devices/system/cpu/cpufreq/boost', 1)

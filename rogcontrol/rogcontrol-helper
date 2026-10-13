@@ -309,11 +309,23 @@ case "$1" in
         GLOBAL=/sys/devices/system/cpu/cpufreq/boost
         WROTE=0
         if [ -e "$GLOBAL" ]; then
-            echo "$VAL" > "$GLOBAL"
+            if ! echo "$VAL" 2>/dev/null > "$GLOBAL"; then
+                echo "failed to write global boost: $GLOBAL" >&2
+                exit 1
+            fi
             WROTE=1
         fi
-        # Drivers can expose both switches. A matching global value does
-        # not repair policies disabled separately by the OS power profile.
+        # Active amd-pstate uses the global write for the whole processor.
+        # Do not follow it with per-policy writes: cpufreq rejects those
+        # while global boost is disabled. Never turn a failed/missing master
+        # write into success or fall through to unrelated Intel controls.
+        if [ "$(cat /sys/devices/system/cpu/amd_pstate/status 2>/dev/null)" = "active" ]; then
+            [ "$WROTE" = 1 ] && exit 0
+            echo "no global boost control for active amd-pstate" >&2
+            exit 1
+        fi
+        # Other drivers retain the per-policy fallback and report every
+        # failure, even when another policy or the global write succeeded.
         FAILED=""
         for p in /sys/devices/system/cpu/cpufreq/policy*/boost; do
             [ -e "$p" ] || continue
@@ -333,10 +345,10 @@ case "$1" in
         done
         if [ -n "$FAILED" ]; then
             echo "failed to write boost on:$FAILED" >&2
+            exit 1
         fi
         if [ "$WROTE" = 1 ]; then
-            [ -z "$FAILED" ] && exit 0
-            exit 1
+            exit 0
         fi
         # intel_pstate in active mode has neither of the above -- it
         # publishes no_turbo instead, meaning the opposite: 1 turns turbo
