@@ -9,8 +9,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ.setdefault('QT_QUICK_BACKEND', 'software')
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QObject, QTimer, QMetaObject, Qt
 from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlEngine
 from rogcontrol.qt.controllers.app import AppController
 from rogcontrol.qt.controllers.cpu import CpuController
 from rogcontrol.qt.controllers.gpu import GpuController
@@ -39,7 +40,8 @@ if args.unsupported:
 original_navigate = AppController.navigate
 
 def verify(page):
-    names = {'quick_access': ['turboBoostSetting', 'gpuModeSetting', 'powerMizerSetting', 'psrSetting', 'gamescopeSetting', 'chargingCard']}.get(page, [])
+    names = {'quick_access': ['turboBoostSetting', 'gpuModeSetting', 'powerMizerSetting', 'psrSetting', 'gamescopeSetting', 'chargingCard'],
+             'gpu': ['nvidiaDisplayPowerCard']}.get(page, [])
     if not names and page != 'system':
         return
     windows = [w for w in QGuiApplication.topLevelWindows() if hasattr(w, 'contentItem')]
@@ -47,6 +49,30 @@ def verify(page):
         yield item
         for child in item.childItems():
             yield from visual_items(child)
+    if page == 'gpu' and not args.unsupported:
+        setting = next((obj for w in windows for obj in visual_items(w.contentItem())
+                        if obj.objectName() == 'nvidiaDisplayPowerSwitch'), None)
+        if setting is None:
+            failures.append('gpu: missing NVIDIA power switch')
+        else:
+            control = next(obj for obj in visual_items(setting) if obj.metaObject().indexOfProperty('checked') >= 0)
+            controller = QQmlEngine.contextForObject(setting).contextProperty('gpuController')
+            for accepted in (False, True):
+                QMetaObject.invokeMethod(control, 'toggle', Qt.DirectConnection)
+                QMetaObject.invokeMethod(control, 'clicked', Qt.DirectConnection)
+                if control.property('checked'):
+                    failures.append('gpu: boot setting changed visually before confirmation')
+                dialog = next((obj for w in windows for obj in w.findChildren(QObject)
+                               if obj.metaObject().indexOfProperty('action') >= 0
+                               and obj.metaObject().property(obj.metaObject().indexOfProperty('action')).typeName() == 'QString'
+                               and obj.property('action') == 'display-power'), None)
+                if dialog is None:
+                    failures.append('gpu: missing boot-change confirmation')
+                    controller.confirm('display-power', accepted)
+                else:
+                    QMetaObject.invokeMethod(dialog, 'accept' if accepted else 'reject', Qt.DirectConnection)
+                if bool(control.property('checked')) != accepted:
+                    failures.append(f'gpu: boot toggle did not reflect accepted={accepted}')
     if page == 'system':
         card = next((obj for w in windows for obj in visual_items(w.contentItem())
                      if obj.objectName() == 'ppdServiceCard'), None)
@@ -83,8 +109,8 @@ def navigate(self, page):
 AppController.navigate = navigate
 from rogcontrol.qt.application import main
 result = main(['--self-test', '--demo-width', str(args.width)])
-if len(checks) != 7:
-    failures.append(f'Expected 7 visibility checks, executed {len(checks)}')
+if len(checks) != 8:
+    failures.append(f'Expected 8 visibility checks, executed {len(checks)}')
 for failure in failures:
     print(failure, file=sys.stderr)
 print(f'Qt capability smoke: width={args.width}, unsupported={args.unsupported}, checks={len(checks)}, failures={len(failures)}')

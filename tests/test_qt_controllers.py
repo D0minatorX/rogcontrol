@@ -45,6 +45,35 @@ class QtControllerTests(unittest.TestCase):
     def setUp(self):
         self.app = App()
 
+    def test_nvidia_boot_toggle_requires_confirmation_and_routes_to_helper(self):
+        gpu = self.controller(GpuController, {})
+        gpu._live['display_power'] = {'supported': True, 'enabled': False}
+        gpu.setDisplayPower(True)
+        self.app.submitWrite.assert_not_called()
+        gpu.confirm('display-power', False)
+        self.app.submitWrite.assert_not_called()
+        gpu.setDisplayPower(True)
+        gpu.confirm('display-power', True)
+        worker, done = self.app.submitWrite.call_args.args[1:]
+        state = {'supported': True, 'enabled': True, 'live': False, 'pending': True}
+        with patch('rogcontrol.profile_requests.hardware_apply_lock', side_effect=nullcontext), patch('rogcontrol.hardware.run_helper', return_value=(True, 'Reboot required')) as helper, patch('rogcontrol.nvidia_boot.read_state', return_value=state):
+            result = worker()
+        helper.assert_called_once_with('nvidia-display-power', 1, timeout=1400)
+        done(result, None)
+        self.assertEqual(gpu.displayPower, state)
+        self.assertEqual(gpu.status, 'Reboot required')
+
+    def test_nvidia_boot_toggle_demo_is_isolated_and_unsupported_is_blocked(self):
+        gpu = self.controller(GpuController, {})
+        gpu.setDisplayPower(True)
+        self.assertIsNone(gpu._display_confirmation)
+        self.app.demo = True
+        gpu._live = gpu.demo_live()
+        gpu.setDisplayPower(True)
+        gpu.confirm('display-power', True)
+        self.assertTrue(gpu.displayPower['enabled'])
+        self.app.submitWrite.assert_not_called()
+
     def test_ppd_actions_launch_through_worker_and_surface_errors(self):
         from rogcontrol.qt.controllers.system import SystemController
         controller = self.controller(SystemController)

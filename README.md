@@ -76,6 +76,21 @@ STAPM, fast and slow power limits, temperature target, Curve Optimizer undervolt
 *Requires: `ryzenadj` (AMD only) — and on some kernels, the `ryzen_smu` module.*
 
 ### 🎮 GPU
+
+**NVIDIA display power saving:** “Allow lower display memory clocks” toggles
+`NVreg_RegistryDwords="RmDisableDisplayGlitchPerfLimit=1"` (off writes `0`).
+NVIDIA 615.71.09 or newer is required. This can reduce multi-monitor idle power,
+but may cause brief display glitches. The setting is system-wide, not part of
+a performance profile. It preserves other NVIDIA options, backs up the existing
+configuration, rebuilds boot images, and requires a reboot. The page shows the
+running driver state separately from the saved setting.
+
+Supported rebuild paths are Limine (including configuration enrollment),
+mkinitcpio presets, Debian/Ubuntu update-initramfs, and dracut. Atomic systems
+and ambiguous/externally managed RegistryDwords overrides are refused with an
+explanation. If rebuilding fails, the app restores the original configuration
+and attempts to rebuild it; recovery errors are reported explicitly.
+
 Core/memory clock offsets, a clock ceiling, NVIDIA Dynamic Boost, and temperature target. The GPU power-limit slider appears only when this GPU and driver accept a verified limit change; a reported min/max range alone is not enough. Clock ceiling, core offset, and memory offset are detected independently using temporary writes; unsupported controls stay hidden. Offset probes read back the changed value and restore the original. The clock-ceiling probe resets the lock afterward because NVIDIA does not provide a reliable readback of a pre-existing lock, so installing or opening the app may clear a clock lock set by another tool. The GPU tab can also offer an experimental per-profile **Voltage Boost** slider (0–100%): it is shown only when a live same-value write confirms that the active NVIDIA GPU and driver expose the required voltage-rail control. It defaults to 0% (stock); a non-zero interactive apply always asks for confirmation because it can raise heat/power use and cause instability. Quick Access also offers the NVIDIA PowerMizer mode per profile; it is shown only when the active GPU and driver advertise the attribute, and defaults to driver-controlled Auto. Live temperature and fan speed for both CPU and GPU are also shown.
 
 Clock offsets prefer a privileged NVML backend, on both Wayland and X11, with verified `nvidia-settings` fallback where available. Each GPU/domain must pass a temporary write, readback and restoration check. The global NVML offset APIs preserve all-performance-level behavior; a P0-only API is not silently substituted. Both Cardwire and Supergfx use this backend, including background profile application. Blocked/offline GPUs defer writes; NVML retries do not require a graphical session. Slider ranges stay within the driver's range and the existing ±1000 MHz UI limits. Avoid concurrent clock management by other tools while probing or applying offsets.
@@ -197,7 +212,7 @@ A switch for the boot chime, remembered so a boot-apply service can restore it a
 - A Qt tray icon that shows and switches the active profile (requires a desktop tray host)
 - Optional ASUS button assignments and software Fn Lock, plus commands for custom desktop shortcuts (see [Keyboard shortcuts](#keyboard-shortcuts))
 - Desktop notifications for background events (needs `libnotify`)
-- Everything you configure lives in one file: `~/.config/rogcontrol.json`
+- Profiles and app preferences live in `~/.config/rogcontrol.json`; system-wide NVIDIA boot options live in `/etc/modprobe.d/`.
 
 ## 📋 What you need
 

@@ -9,6 +9,7 @@ ColumnLayout {
     property string title
     property string description: ''
     property bool value: false
+    property bool deferChanges: false
     property bool trailing: true
     signal edited(bool value)
     RowLayout {
@@ -20,7 +21,12 @@ ColumnLayout {
             implicitWidth: root.trailing ? 44 : contentItem.implicitWidth + 66
             text: root.trailing ? '' : root.title; checked: root.value
             Accessible.name: root.title
-            onClicked: root.edited(checked)
+            onClicked: {
+                const requested = checked
+                if (root.deferChanges)
+                    checked = Qt.binding(function() { return root.value })
+                root.edited(requested)
+            }
         }
         HelpInfo { colors: root.colors; helpText: root.helpText }
     }

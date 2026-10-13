@@ -21,10 +21,13 @@ class GpuController(TuningController):
         self._mode_epoch = 0
         self._last_mode = None
         self._demo_mode = 'Hybrid'
+        self._display_confirmation = None
+        self._demo_display_power = False
         super().__init__(app, parent)
         self.stateChanged.connect(self.detailsChanged.emit)
 
     rebootPending = Property(bool, lambda s: s._reboot_pending, notify=detailsChanged)
+    displayPower = Property('QVariantMap', lambda s: deepcopy(s._live.get('display_power', {})), notify=detailsChanged)
 
     def demo_caps(self):
         return dict({v: True for v in CAPS.values()}, gpu_limits={'min_w': 35, 'max_w': 140, 'clock_limit_max': 3090},
@@ -33,10 +36,13 @@ class GpuController(TuningController):
     def demo_live(self):
         return {'temperature': '51 °C', 'clock': '1620 MHz', 'power': '36 W', 'fan': '2200 RPM',
                 'mode': self._demo_mode, 'modes': ['Integrated', 'Hybrid', 'Smart', 'Manual'],
-                'backend': 'cardwire', 'access': '', 'mode_gate': '', 'daemon': True}
+                'backend': 'cardwire', 'access': '', 'mode_gate': '', 'daemon': True,
+                'display_power': {'available': True, 'supported': True, 'enabled': self._demo_display_power,
+                                  'live': False, 'pending': self._demo_display_power,
+                                  'message': 'Demo: boot images and driver settings are unchanged.'}}
 
     def sample(self, caps):
-        from ... import hardware as h, graphics_backend
+        from ... import hardware as h, graphics_backend, nvidia_boot
         cardwire = graphics_backend.using_cardwire()
         mode, modes = h.read_cardwire_status() if cardwire else (h.read_gpu_mode(), h.read_supported_gpu_modes())
         suspended = not caps.get('nvidia') or h.dgpu_is_suspended()
@@ -56,7 +62,48 @@ class GpuController(TuningController):
                 'access': access or ('GPU is asleep' if suspended else ''), 'mode_gate': gate,
                 'daemon': daemon, 'pending_action': h.PENDING_NONE if cardwire else h.read_gpu_pending_action(),
                 'firmware_boost': h.read_nv_dynamic_boost(),
-                'firmware_temp': h.read_nv_temp_target()}
+                'firmware_temp': h.read_nv_temp_target(),
+                'display_power': nvidia_boot.read_state() if caps.get('nvidia') else {'available': False}}
+
+    @Slot(bool)
+    def setDisplayPower(self, enabled):
+        if self._closed or self.app.busy or not self.displayPower.get('supported'):
+            return
+        self._display_confirmation = enabled
+        self.confirmationRequested.emit('display-power',
+            ('Enable' if enabled else 'Disable') + ' the NVIDIA display-clock power-saving option? '
+            'Enabling may reduce multi-monitor idle power but can cause brief display glitches. '
+            'This changes system-wide driver configuration and rebuilds boot images. '
+            'A reboot is required; your current session will not be restarted.')
+
+    def _set_display_power(self, enabled):
+        if self.app.demo:
+            self._demo_display_power = enabled
+            self._live['display_power'] = self.demo_live()['display_power']
+            self._status = 'Demo setting changed; no boot files were modified.'
+            self.stateChanged.emit()
+            return
+        def worker():
+            from ... import hardware, nvidia_boot
+            from ...profile_requests import hardware_apply_lock
+            with hardware_apply_lock():
+                if self._closed:
+                    raise RuntimeError('Controller closed before operation')
+                ok, message = hardware.run_helper('nvidia-display-power', int(enabled), timeout=1400)
+                if not ok:
+                    raise RuntimeError(message)
+                return message, nvidia_boot.read_state()
+        def done(result, error):
+            if self._closed:
+                return
+            if error:
+                self._status = str(error)
+            else:
+                self._status, self._live['display_power'] = result
+            self.stateChanged.emit()
+        self._status = 'Updating NVIDIA configuration and rebuilding boot images…'
+        self.stateChanged.emit()
+        self.submit('gpu-display-power', worker, done)
 
     @Slot()
     def refresh(self):
@@ -175,7 +222,13 @@ class GpuController(TuningController):
 
     @Slot(str, bool)
     def confirm(self, action, accepted):
-        if action == 'voltage':
+        if action == 'display-power':
+            pending, self._display_confirmation = self._display_confirmation, None
+            if accepted and pending is not None:
+                self._set_display_power(pending)
+            else:
+                self.stateChanged.emit()
+        elif action == 'voltage':
             pending, self._pending_confirmation = self._pending_confirmation, None
             if accepted and pending and pending[0] == self._target and pending[1] == self._values:
                 self.start_apply(pending[1], pending[0])

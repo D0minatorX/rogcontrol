@@ -141,6 +141,7 @@ say "Launchers, autostart and icon removed"
 step "Removing the privileged helper"
 sudo rm -f /usr/local/lib/rogcontrol/nvidia_clocks.py
 sudo rm -f /usr/local/lib/rogcontrol/aura_power.py
+sudo rm -f /usr/local/lib/rogcontrol/nvidia_boot.py
 sudo rm -f /etc/udev/rules.d/70-rogcontrol-input.rules /etc/modules-load.d/rogcontrol-uinput.conf
 sudo udevadm control --reload-rules
 sudo udevadm trigger --action=change --subsystem-match=input

@@ -1164,6 +1164,12 @@ case "$1" in
         echo "$VAL" > "$PANEL_OD"
         ;;
 
+    nvidia-display-power)
+        # Isolated, root-owned module; accepts only this one boolean setting.
+        shift
+        exec /usr/bin/python3 -I /usr/local/lib/rogcontrol/nvidia_boot.py "$@"
+        ;;
+
     psr)
         # AMD panel self-refresh, turned off by a kernel boot parameter.
         #

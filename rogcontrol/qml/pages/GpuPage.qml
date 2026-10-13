@@ -30,5 +30,22 @@ ColumnLayout {
         }
     }
     Text { visible: gpuController.ready && !controls0.hasControls && !controls1.hasControls && !controls2.hasControls; text: 'No supported tuning controls detected.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+    MetricCard {
+        objectName: 'nvidiaDisplayPowerCard'
+        Layout.fillWidth: true; colors: root.colors; title: 'NVIDIA display power saving'
+        visible: !!gpuController.displayPower.available
+        SettingsSwitch {
+            objectName: 'nvidiaDisplayPowerSwitch'
+            colors: root.colors; title: 'Allow lower display memory clocks'
+            value: !!gpuController.displayPower.enabled
+            deferChanges: true
+            enabled: !!gpuController.displayPower.supported && !appController.busy
+            description: 'May lower idle power with multiple monitors, but can cause brief display glitches. Applies system-wide after rebuilding boot images and rebooting.'
+            helpText: 'Sets NVreg_RegistryDwords="RmDisableDisplayGlitchPerfLimit=1" when on, or 0 when off. Other NVIDIA options are preserved. Requires NVIDIA 615.71.09 or newer.'
+            onEdited: value => gpuController.setDisplayPower(value)
+        }
+        StatusRow { colors: root.colors; label: 'Running driver'; value: gpuController.displayPower.live === true ? 'On' : gpuController.displayPower.live === false ? 'Off' : 'Unknown' }
+        Text { text: gpuController.displayPower.message || ''; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+    }
     Text { Layout.fillWidth: true; text: gpuController.status; visible: text.length > 0; color: root.colors.mutedText; wrapMode: Text.WordWrap; font.pixelSize: 12 }
 }
