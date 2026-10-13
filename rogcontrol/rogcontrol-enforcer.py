@@ -254,6 +254,14 @@ def set_ppd_active_profile(service_name, mode):
     """Return whether the shared writer accepted the OS mode change."""
     if not service_name:
         return False
+    return set_profile_power_mode(mode, service_name=service_name)
+
+
+def set_profile_power_mode(mode, service_name=None):
+    """Profile transitions rediscover PPD; reconciliation supplies its service.
+
+    Rediscovery matters after PPD is stopped or installed while we are running.
+    """
     try:
         ok, message = hardware.set_power_mode(mode, service_name=service_name)
         if not ok:
@@ -941,8 +949,8 @@ def check_gamescope_profile(config, service_name):
     config.update(fresh)
     log(f"Gamescope session transition -- switched to '{target}'")
     mode = PROFILE_TO_PPD_MODE.get(target)
-    if mode and service_name:
-        set_ppd_active_profile(service_name, mode)
+    if mode:
+        set_profile_power_mode(mode)
     apply_full_profile(config, config["profiles"][target],
                        force_fan_reapply=True, full=True)
     gamescope.complete_transition()
@@ -1075,8 +1083,8 @@ def _check_ac_auto_switch(config, service_name, trigger, suppress_switch=False):
     # The sync watcher also reads the newly saved app selection, so it knows
     # the mode change that follows is ours.
     mode = PROFILE_TO_PPD_MODE.get(target)
-    if mode and service_name:
-        set_ppd_active_profile(service_name, mode)
+    if mode:
+        set_profile_power_mode(mode)
 
     # Full apply, forcing the fans: a power-mode change is exactly when the
     # EC silently drops the custom curve, so the curve has to be pushed after

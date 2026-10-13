@@ -230,7 +230,9 @@ def apply_once(config, profile_only=False, force_stock_undervolt=False):
     # written first is handed to a controller about to throw it away.
     #
     # A profile that maps to no OS mode returns None and changes nothing.
-    hardware.set_power_mode_for_profile(profile_name)
+    result = hardware.set_power_mode_for_profile(profile_name)
+    if result is not None and not result[0]:
+        hardware.log(f"Power mode failed: {result[1]}", "ERROR", source="apply")
 
     # And the keyboard colour, if the user has put the keyboard on the
     # profile. Unlike kbd_brightness below this is NOT skipped for

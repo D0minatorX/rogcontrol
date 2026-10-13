@@ -249,8 +249,81 @@ case "$1" in
                 exec busctl --system --timeout=4 set-property "$SERVICE" "$OBJECT" "$SERVICE" ActiveProfile s "$2"
             fi
         done
-        echo "power-profiles-daemon is not answering" >&2
-        exit 1
+        # No answering PPD: control the firmware directly. Never take this
+        # path after a reachable daemon rejects a write (the exec above).
+        PLATFORM=/sys/firmware/acpi/platform_profile
+        CHOICES=$(cat /sys/firmware/acpi/platform_profile_choices 2>/dev/null) || {
+            echo "PPD is unavailable and platform profile choices cannot be read" >&2; exit 1;
+        }
+        case "$2" in
+            power-saver) CANDIDATES="quiet low-power" ;;
+            balanced) CANDIDATES="balanced" ;;
+            performance) CANDIDATES="performance" ;;
+        esac
+        TARGET=""
+        for candidate in $CANDIDATES; do
+            for choice in $CHOICES; do
+                [ "$candidate" = "$choice" ] && TARGET="$candidate"
+            done
+            [ -z "$TARGET" ] || break
+        done
+        [ -n "$TARGET" ] || {
+            echo "unsupported platform profile for '$2'; available: $CHOICES" >&2; exit 1;
+        }
+        [ -f "$PLATFORM" ] && [ -w "$PLATFORM" ] || {
+            echo "platform profile is unavailable or not writable" >&2; exit 1;
+        }
+        if [ "$(cat "$PLATFORM" 2>/dev/null)" != "$TARGET" ]; then
+            if ! echo "$TARGET" > "$PLATFORM"; then
+                echo "failed to write platform profile '$TARGET'" >&2; exit 1
+            fi
+        fi
+        [ "$(cat "$PLATFORM" 2>/dev/null)" = "$TARGET" ] || {
+            echo "platform profile verification failed for '$TARGET'" >&2; exit 1;
+        }
+
+        # Active P-State needs powersave for the profile's later EPP write
+        # to work, even in Performance mode. Legacy powersave can pin the
+        # CPU low, so use a dynamic governor there instead. Unknown drivers
+        # are left alone. All candidates must be advertised by the kernel.
+        FAILED=""
+        for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+            [ -d "$policy" ] || continue
+            DRIVER=$(cat "$policy/scaling_driver" 2>/dev/null) || continue
+            case "$DRIVER" in
+                amd-pstate-epp|intel_pstate) CANDIDATES="powersave" ;;
+                amd-pstate|intel_cpufreq|acpi-cpufreq) CANDIDATES="schedutil ondemand" ;;
+                *) continue ;;
+            esac
+            AVAILABLE=$(cat "$policy/scaling_available_governors" 2>/dev/null) || AVAILABLE=""
+            GOVERNOR=""
+            for candidate in $CANDIDATES; do
+                for choice in $AVAILABLE; do
+                    [ "$candidate" = "$choice" ] && GOVERNOR="$candidate"
+                done
+                [ -z "$GOVERNOR" ] || break
+            done
+            if [ -z "$GOVERNOR" ]; then
+                FAILED="$FAILED $policy (no supported dynamic governor)"
+                continue
+            fi
+            NODE="$policy/scaling_governor"
+            if [ ! -f "$NODE" ] || [ ! -w "$NODE" ]; then
+                FAILED="$FAILED $NODE"
+                continue
+            fi
+            if [ "$(cat "$NODE" 2>/dev/null)" != "$GOVERNOR" ]; then
+                if ! echo "$GOVERNOR" > "$NODE"; then
+                    FAILED="$FAILED $NODE"
+                    continue
+                fi
+            fi
+            [ "$(cat "$NODE" 2>/dev/null)" = "$GOVERNOR" ] || FAILED="$FAILED $NODE"
+        done
+        [ -z "$FAILED" ] || {
+            echo "platform profile set, but governor update failed:$FAILED" >&2; exit 1;
+        }
+        echo "platform profile: $TARGET"
         ;;
     cpu)
         shift

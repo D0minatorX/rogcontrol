@@ -3170,7 +3170,11 @@ def read_power_mode(timeout=5):
 
 
 def set_power_mode(mode, timeout=5, service_name=None):
-    """Set the OS power mode (PPD's ActiveProfile). Returns ``(ok, message)``.
+    """Set PPD's mode, or the firmware profile if PPD is unavailable.
+
+    Returns ``(ok, message)``. The privileged helper validates firmware
+    choices and prepares a governor for the profile's subsequent EPP write.
+    A reachable PPD rejecting a change is never bypassed with a sysfs write.
 
     This is not cosmetic and it is not optional. Selecting a profile without
     it leaves the OS on the old mode, and the enforcer -- which treats an
@@ -3189,7 +3193,7 @@ def set_power_mode(mode, timeout=5, service_name=None):
     if service and service not in PPD_BUS_NAMES:
         return False, 'Unsupported power profiles service'
     if not service:
-        return False, "power-profiles-daemon is not answering"
+        return run_helper('powerprofile', mode, timeout=max(timeout, 15))
     path = "/" + service.replace(".", "/")
     try:
         result = subprocess.run(

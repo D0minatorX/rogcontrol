@@ -190,11 +190,11 @@ class GamescopeTests(unittest.TestCase):
                 patch.object(enforcer, "notify"), \
                 patch.object(enforcer, "log"), \
                 patch.object(enforcer, "apply_full_profile") as apply, \
-                patch.object(enforcer, "set_ppd_active_profile") as ppd:
+                patch.object(enforcer, "set_profile_power_mode") as ppd:
             self.assertTrue(enforcer.check_ac_auto_switch(self.cfg, "ppd"))
             self.assertEqual(self.saved()["current_profile"], "Performance")
             apply.assert_called_once_with(self.cfg, {}, force_fan_reapply=True, full=True)
-            ppd.assert_called_once_with("ppd", "performance")
+            ppd.assert_called_once_with("performance")
             self.cfg["current_profile"] = "Balanced Power"  # Read before another thread switched.
             power.return_value = (True, "mains")
             self.assertFalse(enforcer.check_ac_auto_switch(self.cfg, "ppd"))
