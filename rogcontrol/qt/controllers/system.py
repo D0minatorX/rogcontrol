@@ -19,11 +19,13 @@ class SystemController(SettingsController):
         return dict(version=APP_VERSION, caps={'boot_sound': True, 'panel_od': True, 'psr_toggle': True},
                     boot_sound=True, panel_od=True, power_mode='balanced', expected_mode='balanced',
                     asusd={'installed': True, 'state': 'stopped'}, uninstall='sudo pacman -Rns asusctl',
+                    ppd={'installed': True, 'has_unit': True, 'state': 'running', 'active': True,
+                         'enabled': True, 'masked': False, 'tuned_ppd': False, 'manager': 'pacman'},
                     graphics={'state': 'running'}, backend='supergfxctl', psr_pending=False,
                     psr_live=False, psr_foreign=None, log='Demo log: no hardware or services accessed.', report=self._report)
 
     def sample(self):
-        from ... import hardware, graphics_backend, APP_VERSION
+        from ... import hardware, graphics_backend, ppd_service, APP_VERSION
         backend = graphics_backend.selected_backend()
         text = hardware.read_log_tail()
         from ...profiles import expected_ppd_mode
@@ -31,6 +33,7 @@ class SystemController(SettingsController):
                     boot_sound=hardware.read_boot_sound(), panel_od=hardware.read_panel_od(),
                     power_mode=hardware.read_power_mode(), expected_mode=expected_ppd_mode(self.app.activeProfile),
                     asusd=hardware.read_asusd_state(), uninstall=hardware.asusd_uninstall_command(),
+                    ppd=ppd_service.read_state(),
                     graphics=hardware.read_cardwired_state() if backend == 'cardwire' else hardware.read_supergfxd_state(),
                     backend=backend, psr_pending=hardware.read_psr_disabled_pending(), psr_live=hardware.read_psr_disabled_live(),
                     psr_foreign=hardware.psr_foreign_dcdebugmask(),
@@ -66,6 +69,32 @@ class SystemController(SettingsController):
             from ... import hardware
             return hardware.set_cardwired_running() if backend == 'cardwire' else hardware.set_supergfxd_running()
         self.physical(apply)
+
+    @Slot(str)
+    def managePpd(self, action):
+        if action not in ('enable', 'disable', 'install', 'uninstall'):
+            return
+        state = self._data.get('ppd', {})
+        if not state or state.get('tuned_ppd'):
+            return
+        if action in ('enable', 'disable') and not state.get('has_unit'):
+            return
+        if action in ('install', 'uninstall') and not state.get('manager'):
+            return
+        if self.app.demo:
+            self._status = 'Demo: no service or package changes made.'
+            self.stateChanged.emit()
+            return
+        def launch():
+            from ... import ppd_service
+            ok, message = ppd_service.launch_action(action)
+            if not ok:
+                raise RuntimeError(message)
+            return message
+        def done(result, error):
+            if not error:
+                self._status = result
+        self.write(launch, done)
 
     @Slot(bool)
     def setPsrDisabled(self, disabled):

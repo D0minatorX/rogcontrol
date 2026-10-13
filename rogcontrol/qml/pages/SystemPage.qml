@@ -6,6 +6,7 @@ ColumnLayout {
     id: root
     property var colors
     property var readings: systemController.data
+    property var ppd: readings.ppd || ({})
     property string section: 'General'
     spacing: 14
     StatusRow { Layout.fillWidth: true; colors: root.colors; label: 'Installed ROG Control version'; value: root.readings.version || 'Loading…' }
@@ -37,6 +38,24 @@ ColumnLayout {
         RowLayout {
             RogButton { colors: root.colors; text: 'Enable graphics daemon'; enabled: !appController.busy && !!root.readings.caps && !!root.readings.caps[root.readings.backend === 'cardwire' ? 'cardwire' : 'supergfxctl']; onClicked: systemController.enableGraphics() }
         }
+    }
+    MetricCard {
+        visible: root.section === 'Services'
+        objectName: 'ppdServiceCard'
+        title: 'Power Profiles Daemon'; colors: root.colors; Layout.fillWidth: true
+        StatusRow { colors: root.colors; label: 'PPD'; value: root.ppd.tuned_ppd ? 'Provided by tuned-ppd' : root.ppd.installed === false ? 'Not installed' : root.ppd.masked ? 'Disabled (masked)' : root.ppd.state || 'Checking…' }
+        Text {
+            text: root.ppd.tuned_ppd ? 'tuned-ppd already provides OS power modes. These controls leave it unchanged.' : 'Optional OS power-mode synchronization. Disable stops PPD and blocks automatic D-Bus startup; Enable restores startup. Actions open a terminal for authentication and package prompts. After installing, use Enable if needed.'
+            color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap
+        }
+        Flow {
+            Layout.fillWidth: true; spacing: 8
+            RogButton { colors: root.colors; text: 'Enable PPD'; enabled: !appController.busy && !!root.ppd.has_unit && !root.ppd.tuned_ppd; onClicked: systemController.managePpd('enable') }
+            RogButton { colors: root.colors; text: 'Disable PPD'; enabled: !appController.busy && !!root.ppd.has_unit && !root.ppd.tuned_ppd; onClicked: systemController.managePpd('disable') }
+            RogButton { colors: root.colors; text: 'Install PPD…'; enabled: !appController.busy && !!root.ppd.manager && !root.ppd.installed && !root.ppd.tuned_ppd; onClicked: systemController.managePpd('install') }
+            RogButton { colors: root.colors; text: 'Uninstall PPD…'; enabled: !appController.busy && !!root.ppd.manager && !!root.ppd.installed && !root.ppd.tuned_ppd; onClicked: systemController.managePpd('uninstall') }
+        }
+        Text { visible: root.ppd.manager === 'rpm-ostree'; text: 'Package changes require a reboot. If PPD is part of the base image, use Disable instead of Uninstall.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
     }
     MetricCard {
         visible: root.section === 'Services'

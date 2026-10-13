@@ -40,13 +40,37 @@ original_navigate = AppController.navigate
 
 def verify(page):
     names = {'quick_access': ['turboBoostSetting', 'gpuModeSetting', 'powerMizerSetting', 'psrSetting', 'gamescopeSetting', 'chargingCard']}.get(page, [])
-    if not names:
+    if not names and page != 'system':
         return
     windows = [w for w in QGuiApplication.topLevelWindows() if hasattr(w, 'contentItem')]
     def visual_items(item):
         yield item
         for child in item.childItems():
             yield from visual_items(child)
+    if page == 'system':
+        card = next((obj for w in windows for obj in visual_items(w.contentItem())
+                     if obj.objectName() == 'ppdServiceCard'), None)
+        if card is None:
+            failures.append('system: missing PPD service card')
+        else:
+            root = card.parentItem()
+            root.setProperty('section', 'Services')
+            if not card.property('visible'):
+                failures.append('system: PPD card not visible in Services')
+            buttons = {obj.property('text'): obj for obj in visual_items(card)
+                       if obj.property('text') in ('Enable PPD', 'Disable PPD', 'Install PPD…', 'Uninstall PPD…')}
+            cases = (
+                ({'installed': True, 'has_unit': True, 'manager': 'pacman'}, [True, True, False, True]),
+                ({'installed': False, 'has_unit': False, 'manager': 'apt-get'}, [False, False, True, False]),
+                ({'installed': True, 'has_unit': True, 'manager': 'dnf', 'tuned_ppd': True}, [False] * 4),
+            )
+            for state, expected in cases:
+                root.setProperty('ppd', state)
+                actual = [bool(buttons[label].property('enabled')) if label in buttons else None
+                          for label in ('Enable PPD', 'Disable PPD', 'Install PPD…', 'Uninstall PPD…')]
+                if actual != expected:
+                    failures.append(f'system: PPD button states {actual}, expected {expected}')
+        checks.append('ppdServiceCard')
     for name in names:
         item = next((obj for w in windows for obj in visual_items(w.contentItem()) if obj.objectName() == name), None)
         if item is None or bool(item.property('visible')) != (not args.unsupported):
@@ -59,8 +83,8 @@ def navigate(self, page):
 AppController.navigate = navigate
 from rogcontrol.qt.application import main
 result = main(['--self-test', '--demo-width', str(args.width)])
-if len(checks) != 6:
-    failures.append(f'Expected 6 visibility checks, executed {len(checks)}')
+if len(checks) != 7:
+    failures.append(f'Expected 7 visibility checks, executed {len(checks)}')
 for failure in failures:
     print(failure, file=sys.stderr)
 print(f'Qt capability smoke: width={args.width}, unsupported={args.unsupported}, checks={len(checks)}, failures={len(failures)}')

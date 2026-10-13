@@ -128,6 +128,8 @@ _last_applied_fans = None
 
 # Lightweight mode checks run independently of the slower hardware upkeep.
 POWER_MODE_POLL_SECONDS = 2
+POWER_MODE_RETRY_SECONDS = 30
+POWER_MODE_MAX_RETRY_SECONDS = 300
 
 # The keyboard colour this service last wrote, so a full apply that changes
 # nothing about the profile does not cost a ~270 ms USB round trip through
@@ -249,17 +251,19 @@ def get_ppd_active_profile(service_name):
 
 
 def set_ppd_active_profile(service_name, mode):
-    """Use the shared writer, including its restricted permission fallback."""
+    """Return whether the shared writer accepted the OS mode change."""
     if not service_name:
-        return
+        return False
     try:
         ok, message = hardware.set_power_mode(mode, service_name=service_name)
         if not ok:
             log(f"could not set the OS power mode to '{mode}': {message}", "WARN",
                 dedupe_key="ppdset")
+        return bool(ok)
     except Exception as e:
         log(f"could not set the OS power mode to '{mode}': {e}", "WARN",
             dedupe_key="ppdset")
+        return False
 
 
 def boost_control_available():
@@ -490,7 +494,8 @@ def sync_active_profile_power_mode(config, actual_mode, service_name):
 
     log(f"power mode changed externally to '{actual_mode}' -- "
         f"restoring '{expected_mode}' for '{current_profile_name}'")
-    set_ppd_active_profile(service_name, expected_mode)
+    if not set_ppd_active_profile(service_name, expected_mode):
+        return False
     apply_full_profile(config, profile, force_fan_reapply=True, full=True)
     return True
 
@@ -1236,10 +1241,14 @@ def ppd_watcher_thread():
 
     Unprivileged busctl monitor can exit immediately, leaving only the
     minute-long upkeep loop. A two-second read also works in that case;
-    hardware settings are written only when the mode actually mismatches.
+    hardware settings are written only after PPD accepts a correction.
+    Unavailable services retry after 30 seconds, doubling up to five minutes.
+    Event waits keep shutdown prompt even during backoff.
     """
-    service_name = get_ppd_service_name()
+    service_name = None
+    retry_seconds = POWER_MODE_RETRY_SECONDS
     while not _automation_stop.is_set():
+        delay = POWER_MODE_POLL_SECONDS
         try:
             if not service_name:
                 service_name = get_ppd_service_name()
@@ -1249,11 +1258,19 @@ def ppd_watcher_thread():
                 expected_mode = PROFILE_TO_PPD_MODE.get(config.get("current_profile"))
                 if expected_mode:
                     actual_mode = get_ppd_active_profile(service_name)
+                    if not actual_mode:
+                        service_name = None
                     if actual_mode and actual_mode != expected_mode:
                         sync_active_profile_power_mode(config, actual_mode, service_name)
         except Exception as e:
             log(f"PPD watcher error: {e}", "WARN", dedupe_key="ppdwatch")
-        if _automation_stop.wait(POWER_MODE_POLL_SECONDS):
+            service_name = None
+        if not service_name:
+            delay = retry_seconds
+            retry_seconds = min(retry_seconds * 2, POWER_MODE_MAX_RETRY_SECONDS)
+        else:
+            retry_seconds = POWER_MODE_RETRY_SECONDS
+        if _automation_stop.wait(delay):
             return
 
 

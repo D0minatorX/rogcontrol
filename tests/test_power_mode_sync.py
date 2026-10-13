@@ -44,6 +44,7 @@ class PowerModeSyncTests(unittest.TestCase):
         self.patch('time.monotonic', return_value=100)
         self.mode = self.patch('get_ppd_active_profile', return_value='power-saver')
         self.write = self.patch('subprocess.run')
+        self.write.return_value.returncode = 0
         self.apply = self.patch('apply_full_profile')
 
     def patch(self, name, *args, **kwargs):
@@ -108,6 +109,48 @@ class PowerModeSyncTests(unittest.TestCase):
         self.assertFalse(self.sync())
         self.write.assert_not_called()
         self.apply.assert_not_called()
+
+    def test_failed_ppd_write_never_reapplies_hardware(self):
+        self.write.return_value.returncode = 1
+        self.write.return_value.stderr = 'D-Bus service failed'
+        for _ in range(3):
+            self.assertFalse(self.sync())
+        self.apply.assert_not_called()
+
+    def test_ppd_writer_reports_missing_service_and_exceptions(self):
+        self.assertIs(self.enforcer.set_ppd_active_profile(None, 'balanced'), False)
+        with patch.object(self.enforcer.hardware, 'set_power_mode', side_effect=RuntimeError('bus failed')):
+            self.assertIs(self.enforcer.set_ppd_active_profile('net.hadess.PowerProfiles', 'balanced'), False)
+
+    def test_absent_watcher_backs_off_then_recovers(self):
+        lookup = self.patch('get_ppd_service_name', side_effect=[None, None, 'net.hadess.PowerProfiles'])
+        stop = self.patch('_automation_stop')
+        stop.is_set.return_value = False
+        stop.wait.side_effect = [False, False, True]
+        self.enforcer.ppd_watcher_thread()
+        self.assertEqual([c.args[0] for c in stop.wait.call_args_list], [30, 60, 2])
+        self.assertEqual(lookup.call_count, 3)
+        self.apply.assert_called_once()
+
+    def test_running_service_disappearing_enters_backoff(self):
+        self.patch('get_ppd_service_name', return_value='net.hadess.PowerProfiles')
+        self.mode.return_value = None
+        stop = self.patch('_automation_stop')
+        stop.is_set.return_value = False
+        stop.wait.return_value = True
+        self.enforcer.ppd_watcher_thread()
+        self.assertEqual(stop.wait.call_args.args, (30,))
+        self.apply.assert_not_called()
+
+    def test_absent_backoff_is_capped_and_resets_after_recovery(self):
+        self.patch('get_ppd_service_name', side_effect=[None] * 6 + ['net.hadess.PowerProfiles'])
+        self.mode.side_effect = ['performance', None]
+        stop = self.patch('_automation_stop')
+        stop.is_set.return_value = False
+        stop.wait.side_effect = [False] * 7 + [True]
+        self.enforcer.ppd_watcher_thread()
+        self.assertEqual([c.args[0] for c in stop.wait.call_args_list],
+                         [30, 60, 120, 240, 300, 300, 2, 30])
 
     def test_watcher_checks_again_after_two_seconds_without_dbus_monitor(self):
         self.patch('get_ppd_service_name', return_value='net.hadess.PowerProfiles')

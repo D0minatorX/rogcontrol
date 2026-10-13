@@ -38,6 +38,7 @@ MAINTAINED_MODULES = (
     'test_keyboard_qt',
     'test_nvidia_clocks',
     'test_power_mode_sync',
+    'test_ppd_service',
     'test_profile_requests',
     'test_qt_controllers',
     'test_startup',

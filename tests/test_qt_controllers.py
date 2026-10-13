@@ -45,6 +45,33 @@ class QtControllerTests(unittest.TestCase):
     def setUp(self):
         self.app = App()
 
+    def test_ppd_actions_launch_through_worker_and_surface_errors(self):
+        from rogcontrol.qt.controllers.system import SystemController
+        controller = self.controller(SystemController)
+        controller._data = controller.fixture()
+        controller.managePpd('disable')
+        worker, done = self.app.submitWrite.call_args.args[1:]
+        with patch('rogcontrol.ppd_service.launch_action', return_value=(True, 'Terminal opened')) as launch:
+            result = worker()
+            done(result, None)
+            launch.assert_called_once_with('disable')
+            self.assertEqual(controller.status, 'Terminal opened')
+        with patch('rogcontrol.ppd_service.launch_action', return_value=(False, 'No terminal')):
+            with self.assertRaisesRegex(RuntimeError, 'No terminal'):
+                worker()
+
+    def test_ppd_demo_and_tuned_provider_do_not_write(self):
+        from rogcontrol.qt.controllers.system import SystemController
+        controller = self.controller(SystemController)
+        controller._data = controller.fixture()
+        self.app.demo = True
+        controller.managePpd('disable')
+        self.app.demo = False
+        controller._data['ppd']['tuned_ppd'] = True
+        for action in ('enable', 'disable', 'install', 'uninstall', 'invalid'):
+            controller.managePpd(action)
+        self.app.submitWrite.assert_not_called()
+
     def controller(self, kind, caps=None):
         controller = kind(self.app)
         self.addCleanup(controller.close)
