@@ -5,8 +5,8 @@ import unittest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PySide6.QtCore import QObject, QUrl
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QMetaObject, QObject, QUrl
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtQml import QQmlEngine, QQmlExpression
 from PySide6.QtQuick import QQuickView
 from PySide6.QtTest import QSignalSpy
@@ -76,6 +76,21 @@ class ColorPickerUiTests(unittest.TestCase):
             names.append(item.objectName())
         self.assertIn('presetLightblue', names)
         self.assertIn('presetDeepblue', names)
+
+    def test_custom_editor_has_direct_colour_controls(self):
+        dialog = self.picker.findChild(QObject, 'customColorDialog')
+        self.assertIsNotNone(dialog.findChild(QObject, 'saturationValueArea'))
+        self.assertIsNotNone(dialog.findChild(QObject, 'hueStrip'))
+        self.assertIsNotNone(dialog.findChild(QObject, 'customHexField'))
+
+    def test_custom_editor_applies_only_when_accepted(self):
+        spy = QSignalSpy(self.picker, self.picker.metaObject().method(self.picker.metaObject().indexOfSignal('edited(QColor)')))
+        dialog = self.picker.findChild(QObject, 'customColorDialog')
+        dialog.setProperty('draftColor', QColor('#1266cc'))
+        self.assertEqual(spy.count(), 0)
+        self.assertTrue(QMetaObject.invokeMethod(dialog, 'accept'))
+        self.assertEqual(spy.count(), 1)
+        self.assertEqual(spy.at(0)[0].name().lower(), '#1266cc')
 
 
 if __name__ == '__main__':

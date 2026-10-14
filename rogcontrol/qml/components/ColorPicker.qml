@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Dialogs
 import QtQuick.Layouts
 
 RowLayout {
@@ -160,17 +159,17 @@ RowLayout {
                 }
                 onClicked: {
                     palette.close()
-                    customDialog.selectedColor = root.value
+                    customDialog.initialColor = root.value
                     customDialog.open()
                 }
             }
         }
     }
 
-    ColorDialog {
+    CustomColorDialog {
         id: customDialog
         objectName: 'customColorDialog'
-        title: 'Custom keyboard colour'
-        onAccepted: root.edited(selectedColor)
+        colors: root.colors
+        onColorChosen: value => root.edited(value)
     }
 }
