@@ -1,4 +1,4 @@
-"""The keyboard colour control offers presets and a custom picker."""
+"""The keyboard colour dialog keeps a full palette and custom editor."""
 import os
 from pathlib import Path
 import unittest
@@ -42,40 +42,35 @@ class ColorPickerUiTests(unittest.TestCase):
         self.view.close()
         self.view.deleteLater()
 
-    def test_preset_choice_emits_selected_color(self):
+    def test_swatch_opens_full_palette(self):
         spy = QSignalSpy(self.picker, self.picker.metaObject().method(self.picker.metaObject().indexOfSignal('edited(QColor)')))
         swatch = self.picker.findChild(QObject, 'colorSwatch')
         self.assertIsNotNone(swatch)
         swatch.clicked.emit()
-        repeater = next(x for x in self.picker.findChildren(QObject) if 'Repeater' in x.metaObject().className())
-        preset, _ = QQmlExpression(QQmlEngine.contextForObject(repeater), repeater, 'itemAt(5)').evaluate()
-        self.assertIsNotNone(preset)
-        preset.clicked.emit()
-        self.assertEqual(spy.count(), 1)
-        self.assertEqual(spy.at(0)[0].name().lower(), '#3478f6')
-
-    def test_custom_choice_opens_dialog_without_emitting(self):
-        spy = QSignalSpy(self.picker, self.picker.metaObject().method(self.picker.metaObject().indexOfSignal('edited(QColor)')))
-        swatch = self.picker.findChild(QObject, 'colorSwatch')
-        self.assertIsNotNone(swatch)
-        swatch.clicked.emit()
-        custom = self.picker.findChild(QObject, 'customColorButton')
-        self.assertIsNotNone(custom)
-        custom.clicked.emit()
         dialog = self.picker.findChild(QObject, 'customColorDialog')
-        self.assertIsNotNone(dialog)
         self.assertTrue(dialog.property('visible'))
+        repeater = dialog.findChild(QObject, 'paletteRepeater')
+        self.assertEqual(repeater.property('count'), 45)
+        self.assertFalse(dialog.findChild(QObject, 'colorEditor').property('visible'))
         self.assertEqual(spy.count(), 0)
 
-    def test_palette_has_light_and_deep_shades(self):
-        repeater = next(x for x in self.picker.findChildren(QObject) if 'Repeater' in x.metaObject().className())
-        self.assertGreaterEqual(repeater.property('count'), 36)
-        names = []
-        for index in range(repeater.property('count')):
-            item, _ = QQmlExpression(QQmlEngine.contextForObject(repeater), repeater, f'itemAt({index})').evaluate()
-            names.append(item.objectName())
-        self.assertIn('presetLightblue', names)
-        self.assertIn('presetDeepblue', names)
+    def test_palette_selection_waits_for_select(self):
+        spy = QSignalSpy(self.picker, self.picker.metaObject().method(self.picker.metaObject().indexOfSignal('edited(QColor)')))
+        dialog = self.picker.findChild(QObject, 'customColorDialog')
+        self.picker.findChild(QObject, 'colorSwatch').clicked.emit()
+        repeater = dialog.findChild(QObject, 'paletteRepeater')
+        preset, _ = QQmlExpression(QQmlEngine.contextForObject(repeater), repeater, 'itemAt(0)').evaluate()
+        preset.clicked.emit()
+        self.assertEqual(spy.count(), 0)
+        self.assertTrue(QMetaObject.invokeMethod(dialog, 'accept'))
+        self.assertEqual(spy.count(), 1)
+        self.assertEqual(spy.at(0)[0].name().lower(), '#9bc8f4')
+
+    def test_custom_button_opens_editor(self):
+        self.picker.findChild(QObject, 'colorSwatch').clicked.emit()
+        dialog = self.picker.findChild(QObject, 'customColorDialog')
+        dialog.findChild(QObject, 'customEditorButton').clicked.emit()
+        self.assertTrue(dialog.findChild(QObject, 'colorEditor').property('visible'))
 
     def test_custom_editor_has_direct_colour_controls(self):
         dialog = self.picker.findChild(QObject, 'customColorDialog')
@@ -86,6 +81,8 @@ class ColorPickerUiTests(unittest.TestCase):
     def test_custom_editor_applies_only_when_accepted(self):
         spy = QSignalSpy(self.picker, self.picker.metaObject().method(self.picker.metaObject().indexOfSignal('edited(QColor)')))
         dialog = self.picker.findChild(QObject, 'customColorDialog')
+        self.picker.findChild(QObject, 'colorSwatch').clicked.emit()
+        dialog.findChild(QObject, 'customEditorButton').clicked.emit()
         dialog.setProperty('draftColor', QColor('#1266cc'))
         self.assertEqual(spy.count(), 0)
         self.assertTrue(QMetaObject.invokeMethod(dialog, 'accept'))
