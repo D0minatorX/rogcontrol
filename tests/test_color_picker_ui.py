@@ -54,6 +54,14 @@ class ColorPickerUiTests(unittest.TestCase):
         self.assertFalse(dialog.findChild(QObject, 'colorEditor').property('visible'))
         self.assertEqual(spy.count(), 0)
 
+    def test_palette_stays_compact_on_wide_windows(self):
+        self.view.resize(760, 620)
+        self.app.processEvents()
+        self.picker.findChild(QObject, 'colorSwatch').clicked.emit()
+        self.app.processEvents()
+        dialog = self.picker.findChild(QObject, 'customColorDialog')
+        self.assertLessEqual(dialog.property('width'), 480)
+
     def test_palette_selection_waits_for_select(self):
         spy = QSignalSpy(self.picker, self.picker.metaObject().method(self.picker.metaObject().indexOfSignal('edited(QColor)')))
         dialog = self.picker.findChild(QObject, 'customColorDialog')

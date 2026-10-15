@@ -39,10 +39,10 @@ Dialog {
 
     parent: Overlay.overlay
     anchors.centerIn: parent
-    width: Math.min(690, parent.width - 24)
+    width: Math.min(editorVisible ? 460 : 480, parent.width - 24)
     modal: true
     focus: true
-    padding: 20
+    padding: 14
     closePolicy: Popup.CloseOnEscape
     onAboutToShow: {
         setColor(initialColor)
@@ -70,14 +70,14 @@ Dialog {
             font.pixelSize: 18
             font.weight: Font.DemiBold
             Layout.fillWidth: true
-            Layout.leftMargin: 20
-            Layout.topMargin: 20
+            Layout.leftMargin: 16
+            Layout.topMargin: 16
         }
         Button {
             id: closeButton
             implicitWidth: 30; implicitHeight: 30
-            Layout.rightMargin: 20
-            Layout.topMargin: 18
+            Layout.rightMargin: 16
+            Layout.topMargin: 14
             Accessible.name: 'Close colour picker'
             contentItem: Text {
                 text: '×'; color: dialog.colors.mutedText
@@ -95,13 +95,13 @@ Dialog {
     }
 
     contentItem: ColumnLayout {
-        spacing: 14
+        spacing: 10
         ColumnLayout {
             id: palettePage
             objectName: 'palettePage'
             visible: !dialog.editorVisible
             Layout.fillWidth: true
-            spacing: 12
+            spacing: 8
             Text {
                 text: 'PRESETS'
                 color: dialog.colors.mutedText
@@ -111,7 +111,7 @@ Dialog {
             GridLayout {
                 Layout.fillWidth: true
                 columns: 9
-                columnSpacing: 5; rowSpacing: 5
+                columnSpacing: 5; rowSpacing: 4
                 Repeater {
                     id: paletteRepeater
                     objectName: 'paletteRepeater'
@@ -121,7 +121,7 @@ Dialog {
                         required property int index
                         readonly property string swatchColor: dialog.paletteColors[index]
                         Layout.preferredWidth: Math.max(26, (dialog.width - 40 - 8 * 5) / 9)
-                        Layout.preferredHeight: Math.max(31, Math.min(48, (dialog.width - 40) / 12))
+                        Layout.preferredHeight: Math.max(28, Math.min(35, (dialog.width - 40) / 12))
                         hoverEnabled: true
                         Accessible.name: 'Palette colour ' + (index + 1)
                         contentItem: Text {
@@ -155,7 +155,7 @@ Dialog {
                     id: customEditorButton
                     objectName: 'customEditorButton'
                     Layout.preferredWidth: Math.min(58, (dialog.width - 40 - 6 * 5) / 7)
-                    Layout.preferredHeight: 42
+                    Layout.preferredHeight: 32
                     hoverEnabled: true
                     Accessible.name: 'Create custom colour'
                     contentItem: Text {
@@ -177,7 +177,7 @@ Dialog {
                         required property int index
                         readonly property string swatchColor: dialog.customColors[index]
                         Layout.preferredWidth: Math.min(58, (dialog.width - 40 - 6 * 5) / 7)
-                        Layout.preferredHeight: 42
+                        Layout.preferredHeight: 32
                         hoverEnabled: true
                         Accessible.name: 'Custom colour ' + (index + 1)
                         background: Rectangle {
@@ -327,7 +327,7 @@ Dialog {
         Button {
             id: cancelButton
             implicitWidth: 90; implicitHeight: 38
-            Layout.bottomMargin: 20
+            Layout.bottomMargin: 16
             Accessible.name: 'Cancel colour selection'
             contentItem: Text {
                 text: 'Cancel'; color: dialog.colors.text
@@ -345,7 +345,7 @@ Dialog {
         Button {
             id: selectButton
             implicitWidth: 90; implicitHeight: 38
-            Layout.rightMargin: 20; Layout.bottomMargin: 20
+            Layout.rightMargin: 16; Layout.bottomMargin: 16
             Accessible.name: 'Select colour'
             contentItem: Text {
                 text: 'Select'; color: '#ffffff'
