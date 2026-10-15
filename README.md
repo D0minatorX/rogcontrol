@@ -82,9 +82,15 @@ An eight-point curve per fan, dragged on a graph showing real RPM. "Calibrate fa
 *Requires: nothing extra — reads/writes the embedded controller directly.*
 
 ### ⚡ CPU
-STAPM, fast and slow power limits, temperature target, Curve Optimizer undervolt, turbo boost, and a maximum core clock. On supported ASUS systems, the CPU tab also exposes `throttle_thermal_policy` as a per-profile dropdown; the selected policy is saved with the profile and restored when it is applied.
+STAPM, fast and slow power limits, temperature target, Curve Optimizer undervolt, turbo boost, and a maximum core clock.
+On ASUS models exposing `throttle_thermal_policy`, the CPU page also saves a
+firmware power mode per profile: Default, Overboost, Silent, or Follow OS power
+mode. An explicit choice sets the matching OS power mode and restores custom
+fan curves after the firmware change.
 
-*Requires: `ryzenadj` (AMD only) — and on some kernels, the `ryzen_smu` module.*
+*CPU limits and undervolting require `ryzenadj` (AMD only), and on some kernels
+the `ryzen_smu` module. Firmware power mode requires ASUS's
+`throttle_thermal_policy` control.*
 
 ### 🎮 GPU
 
