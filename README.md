@@ -13,6 +13,7 @@ A control panel for ASUS ROG laptops on Linux — without needing `asusctl`. One
 | ![CPU page](docs/screenshots/cpu.png) | ![GPU page](docs/screenshots/gpu.png) |
 | ![Fans page](docs/screenshots/fans.png) | ![Quick Access page](docs/screenshots/v1.0.2.0/quick-access.png) |
 | ![Keyboard lighting](docs/screenshots/v1.0.2.0/keyboard-lighting.png) | ![Keyboard power states and key bindings](docs/screenshots/v1.0.2.0/keyboard-bindings.png) |
+| ![System page](docs/screenshots/system.png) | |
 
 ## Table of contents
 
@@ -83,8 +84,14 @@ An eight-point curve per fan, dragged on a graph showing real RPM. "Calibrate fa
 
 ### ⚡ CPU
 STAPM, fast and slow power limits, temperature target, Curve Optimizer undervolt, turbo boost, and a maximum core clock.
+On ASUS models exposing `throttle_thermal_policy`, the CPU page also saves a
+firmware power mode per profile: Default, Overboost, Silent, or Follow OS power
+mode. An explicit choice sets the matching OS power mode and restores custom
+fan curves after the firmware change.
 
-*Requires: `ryzenadj` (AMD only) — and on some kernels, the `ryzen_smu` module.*
+*CPU limits and undervolting require `ryzenadj` (AMD only), and on some kernels
+the `ryzen_smu` module. Firmware power mode requires ASUS's
+`throttle_thermal_policy` control.*
 
 ### 🎮 GPU
 

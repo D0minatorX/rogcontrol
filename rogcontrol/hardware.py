@@ -27,7 +27,7 @@ from contextlib import contextmanager
 
 from . import kbdcolor, graphics_backend
 from .nvidia_clocks import CLOCK_OFFSET_STEPS
-from .profiles import PROFILE_TO_PPD_MODE
+from .profiles import expected_ppd_mode
 
 HELPER = "/usr/local/bin/rogcontrol-helper"
 ASUS_WMI_DIR = "/sys/devices/platform/asus-nb-wmi"
@@ -276,6 +276,8 @@ def helper_action_unchanged(args, root=None):
     if len(args) != 2:
         return False
     value = str(args[1])
+    if action == "cpupolicy":
+        return value in ("0", "1", "2") and read_int(_under(root, THROTTLE_POLICY_PATH)) == int(value)
     if action not in ("cpuboost", "cpuepp", "cpuclock", "cpuminclock"):
         return False
     if action == "cpuboost" and value in ("0", "1"):
@@ -960,7 +962,7 @@ def read_current_epp(root=None):
 # the hardware with no save entry is written on every Apply and never stored,
 # and the profile comes back without it each time the page reloads. That is
 # what this tuple is checked against.
-CPU_APPLY_STEPS = ("fwreset", "limits", "boost", "epp", "clock", "minclock")
+CPU_APPLY_STEPS = ("thermal_policy", "fwreset", "limits", "boost", "epp", "clock", "minclock")
 
 
 def cpu_apply_plan(values, caps=None):
@@ -974,7 +976,8 @@ def cpu_apply_plan(values, caps=None):
     ``values`` uses the config's own units and names: ``stapm``/``fast``/
     ``slow`` in milliwatts, ``temp`` in degrees, ``coall``, ``boost`` as a
     bool, ``epp`` as a name, ``max_freq`` in kHz with 0 meaning "no ceiling",
-    and ``min_freq`` in kHz with 0 meaning "no floor". ``pl1``/``pl2`` are in
+    ``min_freq`` in kHz with 0 meaning "no floor", and an optional ASUS
+    ``thermal_policy`` integer 0, 1, or 2. ``pl1``/``pl2`` are in
     watts, Intel's equivalent of stapm/fast, sent only when
     ``caps["cpu_power_limits"]`` is "ppt" or "rapl" rather than "ryzenadj".
 
@@ -990,13 +993,16 @@ def cpu_apply_plan(values, caps=None):
     ``limits_enabled`` is the exception to that: it is the CPU page's
     checkbox, false drops the whole ryzenadj step, and missing means true so
     that profiles predating it keep their limits. ``reset_to_firmware`` is
-    the other: true adds a first step that makes the firmware reselect its
+    the other: true adds a step before power limits that makes the firmware reselect its
     own power table, and it is one-shot -- only a caller that has just
     watched the checkbox go off sets it.
     """
     caps = caps or {}
     plan = []
-    # First, and only when the caller asks for it: hand the limits back to
+    policy = values.get("thermal_policy")
+    if caps.get("throttle_policy") and type(policy) is int and policy in (0, 1, 2):
+        plan.append(("thermal_policy", ("cpupolicy", policy)))
+    # Only when the caller asks for it: hand the limits back to
     # the firmware. See THROTTLE_POLICY_PATH -- ryzenadj has no reset, so
     # unticking the checkbox has to make the firmware reselect its own power
     # table or the last limits this app wrote keep running until a reboot.
@@ -2466,13 +2472,11 @@ def read_boot_sound(root=None):
 PANEL_OD_PATH = f"{ASUS_WMI_DIR}/panel_od"
 
 # The firmware's own power-table selector, and the generic ACPI control that
-# stands in for it on a machine without asus-wmi. Nothing here reads or
-# writes them -- the write is the helper's ``cpufwlimits`` action, which
-# re-states whichever value is already in one of these to make the firmware
-# reselect its power table. These two paths exist here only so
-# detect_capabilities can answer whether that action has anything to write
-# to, and so the two copies of the path (helper, capability probe) sit next
-# to a single explanation of what they are for.
+# stands in for it on a machine without asus-wmi. The helper's
+# ``cpufwlimits`` action re-states the current value to restore firmware
+# limits. An explicit profile policy uses the ASUS path through ``cpupolicy``.
+# The capability probe and enforcer also read that path to detect support and
+# drift.
 #
 # Why the app needs this at all: ryzenadj has no reset. A power limit it has
 # written stays in the SMU until the machine reboots, so a profile that just
@@ -3210,17 +3214,14 @@ def set_power_mode(mode, timeout=5, service_name=None):
     return True, str(mode)
 
 
-def set_power_mode_for_profile(profile_name, timeout=5):
+def set_power_mode_for_profile(profile_name, timeout=5, profile=None):
     """Take the OS power mode along with a profile switch.
 
     Returns ``(ok, message)``, or None when this profile maps to no OS mode.
 
-    None is the whole point of the split: PPD has exactly three modes, and a
-    profile the user invented maps to none of them. Forcing one anyway would
-    park every custom profile on some arbitrary mode and -- because the mode
-    is what the enforcer compares against -- hand the EC a power-mode change
-    (and a wiped fan curve) on every switch to it."""
-    mode = PROFILE_TO_PPD_MODE.get(profile_name)
+    A custom profile without an explicit ASUS policy maps to no OS mode.
+    A saved policy maps to the matching mode even for a custom profile."""
+    mode = expected_ppd_mode(profile_name, profile)
     if mode is None:
         return None
     return set_power_mode(mode, timeout=timeout)
@@ -3934,6 +3935,7 @@ def detect_capabilities(root=None, probe_gpu=True):
     caps["fw_power_reset"] = (
         os.path.exists(_under(root, THROTTLE_POLICY_PATH))
         or os.path.exists(_under(root, PLATFORM_PROFILE_PATH)))
+    caps["throttle_policy"] = os.path.exists(_under(root, THROTTLE_POLICY_PATH))
     # Four separate questions, all of which have to answer yes: there has to
     # be an AMD display driver for the parameter to mean anything, a Limine
     # config to put it in, and both Limine tools to regenerate and re-enroll

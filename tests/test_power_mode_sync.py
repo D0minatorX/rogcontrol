@@ -70,6 +70,14 @@ class PowerModeSyncTests(unittest.TestCase):
             self.config, self.config['profiles']['Performance'],
             force_fan_reapply=True, full=True)
 
+    def test_saved_thermal_policy_overrides_stock_profile_os_mode(self):
+        self.config['profiles']['Performance']['cpu']['thermal_policy'] = 2
+        self.path.write_text(json.dumps(self.config))
+        self.mode.return_value = 'balanced'
+        self.assertTrue(self.sync(actual='balanced'))
+        self.assertEqual(self.write.call_args.args[0][-1], 'power-saver')
+        self.apply.assert_called_once()
+
     def test_latest_app_selection_wins_over_stale_snapshot(self):
         fresh = dict(self.config, current_profile='Balanced Power')
         self.path.write_text(json.dumps(fresh))

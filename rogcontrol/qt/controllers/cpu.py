@@ -10,7 +10,8 @@ class CpuController(TuningController):
     def demo_caps(self):
         return {'ryzenadj': True, 'cpu_power_limits': 'ryzenadj', 'cpu_boost': True,
                 'cpu_epp': ['performance', 'balance_performance', 'balance_power', 'power'],
-                'cpu_clock': [400000, 5400000], 'cpu_clock_floor': 400000, 'fw_power_reset': True}
+                'cpu_clock': [400000, 5400000], 'cpu_clock_floor': 400000,
+                'fw_power_reset': True, 'throttle_policy': True}
 
     def demo_live(self):
         return {'temperature': '58 °C', 'clock': '3650 MHz', 'power': '42 W', 'fan': '2400 RPM', 'governor': 'powersave'}
@@ -25,6 +26,11 @@ class CpuController(TuningController):
 
     def build_rows(self, caps):
         rows = []
+        if caps.get('throttle_policy'):
+            rows.append(dict(key='thermal_policy', title='ASUS thermal policy', kind='choice',
+                             choices=['follow', 0, 1, 2],
+                             choiceLabels=['Follow OS power mode', 'Default', 'Overboost', 'Silent'],
+                             default='follow'))
         backend = caps.get('cpu_power_limits') or ('ryzenadj' if caps.get('ryzenadj') else None)
         if backend:
             rows.append(toggle('limits_enabled', 'Apply power limits'))
@@ -93,7 +99,8 @@ class CpuController(TuningController):
             values['reset_to_firmware'] = True
         plan = h.cpu_apply_plan(values, caps)
         mapping = {'limits': ('stapm', 'fast', 'slow', 'temp', 'coall') if caps.get('ryzenadj') else ('pl1', 'pl2'),
-                   'boost': ('boost',), 'epp': ('epp',), 'clock': ('max_freq',), 'minclock': ('min_freq',), 'fwreset': ()}
+                   'boost': ('boost',), 'epp': ('epp',), 'clock': ('max_freq',),
+                   'minclock': ('min_freq',), 'fwreset': (), 'thermal_policy': ('thermal_policy',)}
         saved, failed = {}, []
         for step, args in plan:
             try:
@@ -106,13 +113,18 @@ class CpuController(TuningController):
                 failed.append(step + ': ' + str(message))
         if 'limits_enabled' in values and values['limits_enabled'] != baseline.get('limits_enabled', True):
             saved['limits_enabled'] = values['limits_enabled']
+        if values.get('thermal_policy') == 'follow' and baseline.get('thermal_policy', 'follow') != 'follow':
+            saved['thermal_policy'] = 'follow'
         self._reset_took = any(step == 'fwreset' for step, _ in plan) and not any(s.startswith('fwreset:') for s in failed)
+        self._policy_changed = ('thermal_policy' in saved
+                                and saved['thermal_policy'] != baseline.get('thermal_policy', 'follow'))
         return saved, failed
 
     def after_write(self, snapshot, successful, caps, fresh):
-        if getattr(self, '_reset_took', False):
+        if getattr(self, '_reset_took', False) or getattr(self, '_policy_changed', False):
             from .tuning import apply_saved_profile
-            return apply_saved_profile(fresh, caps, self.progressChanged.emit)
+            return apply_saved_profile(fresh, caps, self.progressChanged.emit,
+                                       force_fan_reapply=self._policy_changed or self._reset_took)
         return []
 
     @Slot()

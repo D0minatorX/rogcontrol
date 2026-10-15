@@ -271,7 +271,7 @@ def toggle(key, title, default=True):
     return dict(key=key, title=title, default=default, kind='bool')
 
 
-def apply_saved_profile(cfg, caps, progress=None, gpu_only=False):
+def apply_saved_profile(cfg, caps, progress=None, gpu_only=False, force_fan_reapply=False):
     """Apply saved active settings while caller holds hardware_apply_lock.
 
     UI-neutral equivalent of MainWindow's order; no nested hardware lock and
@@ -293,7 +293,7 @@ def apply_saved_profile(cfg, caps, progress=None, gpu_only=False):
     if progress:
         progress('Applying saved profile ' + str(name) + '…')
     if not gpu_only:
-        perform('OS power mode', lambda: h.set_power_mode_for_profile(name))
+        perform('OS power mode', lambda: h.set_power_mode_for_profile(name, profile=profile))
         perform('Keyboard colour', lambda: h.set_profile_kbd_color(cfg, name, caps))
     cpu = {} if gpu_only else profile.get('cpu', {})
     if not gpu_only and cfg.get('safety_tripped'):
@@ -336,7 +336,9 @@ def apply_saved_profile(cfg, caps, progress=None, gpu_only=False):
     if not gpu_only and caps.get('fan_curve') and not h.fan_boost_active(h.read_fan_boost()):
         held = {ch: h.read_fan_curve_points(ch) for ch in h.FAN_CHANNELS}
         enabled = h.read_fan_curve_enabled()
-        channels = [ch for ch in h.FAN_CHANNELS if ch in fans and not (enabled.get(ch) is not False and held.get(ch) is not None and fancurve.curve_matches_hardware(fans[ch], held[ch]))]
+        policy = cpu.get('thermal_policy')
+        policy_selected = type(policy) is int and policy in (0, 1, 2)
+        channels = [ch for ch in h.FAN_CHANNELS if ch in fans and (force_fan_reapply or policy_selected or not (enabled.get(ch) is not False and held.get(ch) is not None and fancurve.curve_matches_hardware(fans[ch], held[ch])))]
         for index, ch in enumerate(channels):
             if index:
                 time.sleep(fancurve.CHANNEL_GAP_S)

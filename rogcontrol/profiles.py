@@ -24,6 +24,7 @@ PROFILE_TO_PPD_MODE = {
     "Balanced Power": "balanced",
     "Quiet": "power-saver",
 }
+THERMAL_POLICY_TO_PPD_MODE = {0: 'balanced', 1: 'performance', 2: 'power-saver'}
 
 # Reverse lookup for callers that need a stock name for an OS mode.
 # Synchronization never uses this to override the active app profile.
@@ -39,23 +40,24 @@ for _name, _mode in PROFILE_TO_PPD_MODE.items():
 del _name, _mode
 
 
-def expected_ppd_mode(profile_name):
+def expected_ppd_mode(profile_name, profile=None):
     """The OS power mode this profile is supposed to sit on, or None.
 
-    None is not a failure: the mapping only covers the four stock names, so
-    a profile the user invented has no expected mode and cannot be in or out
-    of sync with the OS. Reporting it as out of sync -- which comparing
-    against a default would do -- would put a permanent warning on the page
-    for a profile that is behaving perfectly."""
+    An explicit ASUS policy maps to the matching OS mode, including for a
+    custom profile. Without one, only the four stock names have an expected
+    mode; a custom profile with no policy leaves the OS mode alone."""
+    policy = ((profile or {}).get('cpu') or {}).get('thermal_policy')
+    if type(policy) is int and policy in THERMAL_POLICY_TO_PPD_MODE:
+        return THERMAL_POLICY_TO_PPD_MODE[policy]
     return PROFILE_TO_PPD_MODE.get(profile_name)
 
 
-def ppd_modes_agree(profile_name, actual_mode):
+def ppd_modes_agree(profile_name, actual_mode, profile=None):
     """True/False if the two can be compared, None if they cannot.
 
     Three states rather than two, for the same reason as above: "no opinion"
     and "disagrees" are different things to put on screen."""
-    expected = expected_ppd_mode(profile_name)
+    expected = expected_ppd_mode(profile_name, profile)
     if expected is None or actual_mode is None:
         return None
     return expected == actual_mode

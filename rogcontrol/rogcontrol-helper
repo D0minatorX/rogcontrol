@@ -81,7 +81,7 @@ find_hwmon_by_name() {
 }
 
 usage() {
-    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|cpuminclock|cpuppt|cpufwlimits|gpu|nvboost|nvtemp|nvvoltage|gpuclocklimit|fan|kbd|kbdpower|kbdrgb|kbdrgb_brightness|charge|bootsound|panelod|psr|asusd_status|asusd_disable|asusd_enable|cardwired_enable|cardwired_disable|supergfxd_enable|supergfxd_disable> ..." >&2
+    echo "Usage: rogcontrol-helper <cpu|cpuboost|cpuepp|cpuclock|cpuminclock|cpuppt|cpufwlimits|cpupolicy|gpu|nvboost|nvtemp|nvvoltage|gpuclocklimit|fan|kbd|kbdpower|kbdrgb|kbdrgb_brightness|charge|bootsound|panelod|psr|asusd_status|asusd_disable|asusd_enable|cardwired_enable|cardwired_disable|supergfxd_enable|supergfxd_disable> ..." >&2
     exit 1
 }
 
@@ -637,6 +637,20 @@ case "$1" in
             echo "RAPL power limit write did not take: wrote ${PL1_UW}/${PL2_UW} uW, read back ${READ_PL1}/${READ_PL2} uW -- the firmware likely locks this control" >&2
             exit 1
         fi
+        ;;
+
+    cpupolicy)
+        [ "$#" -eq 2 ] || usage
+        case "$2" in
+            0|1|2) ;;
+            *) echo "Invalid ASUS thermal policy" >&2; exit 1 ;;
+        esac
+        THROTTLE=/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy
+        [ -e "$THROTTLE" ] && [ -w "$THROTTLE" ] || {
+            echo "ASUS thermal policy is unavailable or not writable" >&2; exit 1; }
+        echo "$2" > "$THROTTLE"
+        [ "$(cat "$THROTTLE")" = "$2" ] || {
+            echo "ASUS thermal policy write did not take" >&2; exit 1; }
         ;;
 
     cpufwlimits)

@@ -230,7 +230,7 @@ def apply_once(config, profile_only=False, force_stock_undervolt=False):
     # written first is handed to a controller about to throw it away.
     #
     # A profile that maps to no OS mode returns None and changes nothing.
-    result = hardware.set_power_mode_for_profile(profile_name)
+    result = hardware.set_power_mode_for_profile(profile_name, profile=profile)
     if result is not None and not result[0]:
         hardware.log(f"Power mode failed: {result[1]}", "ERROR", source="apply")
 
@@ -261,7 +261,10 @@ def apply_once(config, profile_only=False, force_stock_undervolt=False):
             # machine.
             cpu_to_apply = (config_mod.stock_cpu_values(cpu)
                            if force_stock_undervolt else cpu)
-            for _step, args in hardware.cpu_apply_plan(cpu_to_apply, ALL_CPU_CAPS):
+            # asus-wmi may appear after this script was imported at login.
+            caps = dict(ALL_CPU_CAPS,
+                        throttle_policy=os.path.exists(hardware.THROTTLE_POLICY_PATH))
+            for _step, args in hardware.cpu_apply_plan(cpu_to_apply, caps):
                 run_helper(*args)
         gpu = profile.get("gpu")
         if gpu and hardware.dgpu_available():
@@ -296,8 +299,9 @@ def apply_once(config, profile_only=False, force_stock_undervolt=False):
             wanted = {}
         held = {ch: hardware.read_fan_curve_points(ch) for ch in wanted}
         enabled = hardware.read_fan_curve_enabled()
+        policy_selected = type((cpu or {}).get('thermal_policy')) is int and cpu['thermal_policy'] in (0, 1, 2)
         todo = [(ch, pts) for ch, pts in wanted.items()
-                if not (enabled.get(ch) is not False
+                if policy_selected or not (enabled.get(ch) is not False
                         and held.get(ch) is not None
                         and fancurve.curve_matches_hardware(pts, held[ch]))]
         for i, (channel, points) in enumerate(todo):

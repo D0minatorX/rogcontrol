@@ -11,6 +11,7 @@ failures propagate as a nonzero exit; no test failures are converted to skips.
 import argparse
 import os
 from pathlib import Path
+import subprocess
 import sys
 import unittest
 
@@ -22,6 +23,7 @@ MAINTAINED_MODULES = (
     'test_cardwire_gpu_limits',
     'test_cardwire_nvidia_guard',
     'test_charge_once',
+    'test_cpu_thermal_policy',
     'test_daily_automation',
     'test_display_refresh',
     'test_enforcer_efficiency',
@@ -49,6 +51,7 @@ MAINTAINED_MODULES = (
     'test_updates',
     'test_wayland_idle',
 )
+ISOLATED_QT_MODULES = ('test_color_picker_ui',)
 # This mixed module has three backend classes plus an obsolete GTK class.
 MAINTAINED_CLASSES = (
     'test_gpu_offset_capability.OffsetCapabilityTests',
@@ -79,7 +82,7 @@ def main():
     os.chdir(ROOT)
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / 'tests'))
-    known_modules = set(MAINTAINED_MODULES)
+    known_modules = set(MAINTAINED_MODULES + ISOLATED_QT_MODULES)
     known_modules.update(name.split('.')[0] for name in MAINTAINED_CLASSES)
     known_modules.update(name.split('.')[0] for name, _ in LEGACY_GTK_SELECTIONS)
     unclassified = sorted(p.stem for p in (ROOT / 'tests').glob('test_*.py') if p.stem not in known_modules)
@@ -88,6 +91,7 @@ def main():
     print('Selected maintained backend/Qt modules and classes:')
     for name in (*MAINTAINED_MODULES, *MAINTAINED_CLASSES):
         print('  ' + name)
+    print('Isolated Qt UI modules: ' + ', '.join(ISOLATED_QT_MODULES))
     print('\nExcluded obsolete GTK selections (not migrated, not passing):')
     for name, count in LEGACY_GTK_SELECTIONS:
         print(f'  {name}: {count} test methods')
@@ -95,7 +99,11 @@ def main():
           f'{sum(count for _, count in LEGACY_GTK_SELECTIONS)} legacy test methods.', flush=True)
     suite = unittest.defaultTestLoader.loadTestsFromNames((*MAINTAINED_MODULES, *MAINTAINED_CLASSES))
     result = unittest.TextTestRunner(verbosity=2 if args.verbose else 1).run(suite)
-    return 0 if result.wasSuccessful() else 1
+    if not result.wasSuccessful():
+        return 1
+    env = dict(os.environ, QT_QPA_PLATFORM='offscreen')
+    return subprocess.run([sys.executable, '-m', 'unittest', *('tests.' + name for name in ISOLATED_QT_MODULES)],
+                          cwd=ROOT, env=env, check=False).returncode
 
 
 if __name__ == '__main__':

@@ -33,7 +33,8 @@ class SystemController(SettingsController):
         from ...profiles import expected_ppd_mode
         return dict(version=APP_VERSION, caps=hardware.detect_capabilities(probe_gpu=False),
                     boot_sound=hardware.read_boot_sound(), panel_od=hardware.read_panel_od(),
-                    power_mode=hardware.read_power_mode(), expected_mode=expected_ppd_mode(self.app.activeProfile),
+                    power_mode=hardware.read_power_mode(),
+                    expected_mode=expected_ppd_mode(self.app.activeProfile, self.app.config.get('profiles', {}).get(self.app.activeProfile)),
                     asusd=hardware.read_asusd_state(), uninstall=hardware.asusd_uninstall_command(),
                     ppd=ppd_service.read_state(),
                     graphics=hardware.read_cardwired_state() if backend == 'cardwire' else hardware.read_supergfxd_state(),

@@ -149,10 +149,6 @@ _last_kbd_color_args = None
 _pending_gpu_limits = {}
 _pending_gpu_limits_lock = threading.RLock()
 
-# Share the app's mapping so the enforcer restores the same expected mode.
-PROFILE_TO_PPD_MODE = profiles_mod.PROFILE_TO_PPD_MODE
-
-
 def log(message, level="INFO", dedupe_key=None, dedupe_seconds=300):
     """Append one line to the shared app log, tagged as the enforcer's.
 
@@ -170,7 +166,7 @@ def log(message, level="INFO", dedupe_key=None, dedupe_seconds=300):
                  dedupe_key=dedupe_key, dedupe_seconds=dedupe_seconds)
 
 
-# The package's, for the same reason PROFILE_TO_PPD_MODE is: the AC/battery
+# The package's, for the same reason the profile mode mapping is: the AC/battery
 # switch is the only thing this service does that the user did not ask for at
 # that moment, so it is the one that most needs to say so -- and there is no
 # version of that argument that wants a second implementation of it.
@@ -360,6 +356,18 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
         # would otherwise never assert any of this.
         cpu = profile.get("cpu")
         if cpu:
+            # Compare the saved ASUS policy against live firmware even on the
+            # periodic pass. A service restart has no previous thermal-state
+            # sample, so a policy changed while it was down would otherwise
+            # remain wrong until some other mode transition occurred.
+            # A boot failure safeguard keeps an unsafe undervolt at stock.
+            cpu_to_apply = (config_mod.stock_cpu_values(cpu)
+                           if config.get("safety_tripped") else cpu)
+            policy = cpu_to_apply.get("thermal_policy")
+            throttle_available = os.path.exists(hardware.THROTTLE_POLICY_PATH)
+            policy_drift = (throttle_available and type(policy) is int
+                            and policy in (0, 1, 2)
+                            and hardware.read_int(hardware.THROTTLE_POLICY_PATH) != policy)
             caps = {
                 # Vendor, not the binary: ryzenadj installed on an Intel
                 # machine still cannot reach a Ryzen SMU, and this pass
@@ -375,14 +383,10 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
                 # already wins whenever it applies, so this never fires on
                 # an AMD machine.
                 "cpu_power_limits": hardware.cpu_power_limits_backend(),
+                "throttle_policy": throttle_available and (full or policy_drift),
             }
-            # safety_tripped is the crash-loop breaker (see
-            # config.record_boot_attempt): once set, this periodic pass must
-            # keep re-asserting stock instead of the profile's own coall, or
-            # a login apply that correctly forced stock at boot gets
-            # overwritten by this same pass a minute later.
-            cpu_to_apply = (config_mod.stock_cpu_values(cpu)
-                           if config.get("safety_tripped") else cpu)
+            if policy_drift:
+                force_fan_reapply = True
             for _step, args in hardware.cpu_apply_plan(cpu_to_apply, caps):
                 run_helper(*args)
 
@@ -418,7 +422,9 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
             fans_signature = (config.get("current_profile"),
                               json.dumps(fans, sort_keys=True))
         stale = (time.monotonic() - _last_fan_apply_time) >= FAN_REVERIFY_SECONDS
-        if force_fan_reapply or stale or fans_signature != _last_applied_fans:
+        policy = (profile.get("cpu") or {}).get("thermal_policy")
+        policy_selected = full and type(policy) is int and policy in (0, 1, 2)
+        if force_fan_reapply or policy_selected or stale or fans_signature != _last_applied_fans:
             pending_fans = list(fans.items())
         else:
             # Fresh driver reads detect visible drift, not physical fan
@@ -490,8 +496,8 @@ def sync_active_profile_power_mode(config, actual_mode, service_name):
         pass
 
     current_profile_name = config.get("current_profile")
-    expected_mode = PROFILE_TO_PPD_MODE.get(current_profile_name)
     profile = config.get("profiles", {}).get(current_profile_name)
+    expected_mode = profiles_mod.expected_ppd_mode(current_profile_name, profile)
     if not expected_mode or profile is None or not service_name:
         return False
     if actual_mode == expected_mode:
@@ -948,7 +954,7 @@ def check_gamescope_profile(config, service_name):
     config.clear()
     config.update(fresh)
     log(f"Gamescope session transition -- switched to '{target}'")
-    mode = PROFILE_TO_PPD_MODE.get(target)
+    mode = profiles_mod.expected_ppd_mode(target, config["profiles"].get(target))
     if mode:
         set_profile_power_mode(mode)
     apply_full_profile(config, config["profiles"][target],
@@ -1082,7 +1088,7 @@ def _check_ac_auto_switch(config, service_name, trigger, suppress_switch=False):
     # leave the OS mode stale until the next reconciliation pass.
     # The sync watcher also reads the newly saved app selection, so it knows
     # the mode change that follows is ours.
-    mode = PROFILE_TO_PPD_MODE.get(target)
+    mode = profiles_mod.expected_ppd_mode(target, (config.get("profiles") or {}).get(target))
     if mode:
         set_profile_power_mode(mode)
 
@@ -1263,7 +1269,8 @@ def ppd_watcher_thread():
             if service_name and os.path.exists(CONFIG_PATH):
                 with open(CONFIG_PATH) as f:
                     config = json.load(f)
-                expected_mode = PROFILE_TO_PPD_MODE.get(config.get("current_profile"))
+                name = config.get("current_profile")
+                expected_mode = profiles_mod.expected_ppd_mode(name, config.get("profiles", {}).get(name))
                 if expected_mode:
                     actual_mode = get_ppd_active_profile(service_name)
                     if not actual_mode:
@@ -1717,7 +1724,8 @@ def main():
                 # last value was the same fight in a different place.
 
                 # Same app-authoritative reconciliation as the fast watcher.
-                expected_mode = PROFILE_TO_PPD_MODE.get(current_profile_name)
+                expected_mode = profiles_mod.expected_ppd_mode(
+                    current_profile_name, (config.get("profiles") or {}).get(current_profile_name))
                 if expected_mode and ppd_service_name:
                     actual_mode = get_ppd_active_profile(ppd_service_name)
                     if actual_mode and actual_mode != expected_mode:

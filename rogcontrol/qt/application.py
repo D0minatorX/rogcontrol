@@ -55,6 +55,11 @@ def main(argv=None):
     application.setQuitOnLastWindowClosed(False)
     application.setApplicationName('ROG Control')
     application.setOrganizationName('ROG Control')
+    # Keep the desktop/compositor identity aligned with the installed
+    # org.rogcontrol.RogControl.desktop entry. Without this, launching the
+    # module through the generated Python wrapper makes some desktops label
+    # the window as "python3" and fail to group it with its app icon.
+    application.setDesktopFileName('org.rogcontrol.RogControl')
     icon_path = Path(__file__).resolve().parents[1] / 'rogcontrol.png'
     if icon_path.is_file():
         application.setWindowIcon(QIcon(str(icon_path)))

@@ -92,6 +92,20 @@ class EnforcerEfficiencyTests(unittest.TestCase):
         self.apply(force_fan_reapply=True)
         self.assertEqual(self.write.call_count, 3)
 
+    def test_periodic_pass_restores_saved_thermal_policy_after_restart(self):
+        self.profile['cpu'] = {'thermal_policy': 1}
+        self.mock('os.path.exists', return_value=True)
+        self.mock('hardware.read_int', return_value=0)
+        self.mock('hardware.cpu_is_amd', return_value=False)
+        self.mock('boost_control_available', return_value=False)
+        self.mock('epp_control_available', return_value=False)
+        self.mock('clock_limit_available', return_value=False)
+        self.mock('hardware.cpu_power_limits_backend', return_value=None)
+        helper = self.mock('run_helper', return_value=True)
+        self.apply()
+        helper.assert_called_once_with('cpupolicy', 1)
+        self.assertEqual(self.write.call_count, 3)
+
     def test_failure_invalidates_signature_and_retries_next_pass(self):
         self.enabled['2'] = False
         self.write.return_value = (False, 'timed out')

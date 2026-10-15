@@ -1,6 +1,7 @@
 """Qt state and backend routing regressions; no real hardware or disk writes."""
 from contextlib import nullcontext
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch, call
 
 from PySide6.QtCore import QCoreApplication, QObject, Signal
@@ -38,6 +39,10 @@ class App(QObject):
 
 
 class QtControllerTests(unittest.TestCase):
+    def test_qt_window_uses_desktop_entry_identity(self):
+        source = (Path(__file__).parents[1] / 'rogcontrol' / 'qt' / 'application.py').read_text()
+        self.assertIn("application.setDesktopFileName('org.rogcontrol.RogControl')", source)
+
     @classmethod
     def setUpClass(cls):
         cls.qt = QCoreApplication.instance() or QCoreApplication([])

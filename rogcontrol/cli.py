@@ -41,7 +41,8 @@ def apply_profile(profile):
 
     cpu_caps = {"ryzenadj": hardware.cpu_is_amd(), "cpu_boost": True,
                     "cpu_epp": True, "cpu_clock": True,
-                    "cpu_power_limits": hardware.cpu_power_limits_backend()}
+                    "cpu_power_limits": hardware.cpu_power_limits_backend(),
+                    "throttle_policy": os.path.exists(hardware.THROTTLE_POLICY_PATH)}
     cpu = profile.get("cpu")
     if cpu:
         for _step, args in hardware.cpu_apply_plan(cpu, cpu_caps):
@@ -80,8 +81,9 @@ def apply_profile(profile):
         fans = {}
     held = {ch: hardware.read_fan_curve_points(ch) for ch in fans}
     enabled = hardware.read_fan_curve_enabled()
+    policy_selected = type((cpu or {}).get('thermal_policy')) is int and cpu['thermal_policy'] in (0, 1, 2)
     todo = [(ch, pts) for ch, pts in fans.items()
-            if not (enabled.get(ch) is not False
+            if policy_selected or not (enabled.get(ch) is not False
                     and held.get(ch) is not None
                     and fancurve.curve_matches_hardware(pts, held[ch]))]
     for i, (channel, points) in enumerate(todo):
@@ -108,7 +110,7 @@ def cycle_profile(origin='shortcut'):
 def apply_selected_profile(config, next_name):
     failures = []
     # Set OS mode before fan curves: changing the mode resets the EC curves.
-    result = hardware.set_power_mode_for_profile(next_name)
+    result = hardware.set_power_mode_for_profile(next_name, profile=config.get('profiles', {}).get(next_name))
     if result is not None and not result[0]:
         failures.append(f'OS power mode: {result[1]}')
 
