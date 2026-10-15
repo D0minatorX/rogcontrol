@@ -109,6 +109,45 @@ class QtControllerTests(unittest.TestCase):
         self.assertEqual(gpu.displayPower, state)
         self.assertEqual(gpu.status, 'Reboot required')
 
+    def test_nvidia_boot_toggle_prompts_for_reboot_only_after_success(self):
+        gpu = self.controller(GpuController, {})
+        gpu._live['display_power'] = {'supported': True, 'enabled': False}
+        requested = []
+        gpu.confirmationRequested.connect(lambda action, message: requested.append((action, message)))
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                requested.clear()
+                gpu.setDisplayPower(enabled)
+                gpu.confirm('display-power', True)
+                _, done = self.app.submitWrite.call_args.args[1:]
+                self.assertEqual(len(requested), 1)
+                done(('Boot images rebuilt', {'supported': True, 'enabled': enabled}), None)
+                self.assertEqual(len(requested), 2)
+                self.assertEqual(requested[-1][0], 'display-power-reboot')
+                self.assertIn('Restart', requested[-1][1])
+                gpu.confirm('display-power-reboot', False)
+        requested.clear()
+        gpu.setDisplayPower(True)
+        gpu.confirm('display-power', True)
+        _, done = self.app.submitWrite.call_args.args[1:]
+        done(None, RuntimeError('Rebuild failed'))
+        self.assertEqual([action for action, _ in requested], ['display-power'])
+
+    def test_nvidia_boot_reboot_choice_only_schedules_after_success(self):
+        gpu = self.controller(GpuController, {})
+        gpu._live['display_power'] = {'supported': True, 'enabled': False}
+        with patch('rogcontrol.qt.controllers.gpu.QTimer.singleShot') as schedule:
+            gpu.confirm('display-power-reboot', True)
+            schedule.assert_not_called()
+            gpu.setDisplayPower(True)
+            gpu.confirm('display-power', True)
+            _, done = self.app.submitWrite.call_args.args[1:]
+            done(('Boot images rebuilt', {'supported': True, 'enabled': True}), None)
+            gpu.confirm('display-power-reboot', True)
+            schedule.assert_called_once_with(5000, gpu._reboot)
+            gpu.confirm('display-power-reboot', True)
+            schedule.assert_called_once()
+
     def test_nvidia_boot_toggle_demo_is_isolated_and_unsupported_is_blocked(self):
         gpu = self.controller(GpuController, {})
         gpu.setDisplayPower(True)

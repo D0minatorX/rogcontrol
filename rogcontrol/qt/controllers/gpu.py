@@ -22,6 +22,7 @@ class GpuController(TuningController):
         self._last_mode = None
         self._demo_mode = 'Hybrid'
         self._display_confirmation = None
+        self._display_reboot_pending = False
         self._demo_display_power = False
         super().__init__(app, parent)
         self.stateChanged.connect(self.detailsChanged.emit)
@@ -74,7 +75,7 @@ class GpuController(TuningController):
             ('Enable' if enabled else 'Disable') + ' the NVIDIA display-clock power-saving option? '
             'Enabling may reduce multi-monitor idle power but can cause brief display glitches. '
             'This changes system-wide driver configuration and rebuilds boot images. '
-            'A reboot is required; your current session will not be restarted.')
+            'A reboot is required; you can choose whether to restart after it finishes.')
 
     def _set_display_power(self, enabled):
         if self.app.demo:
@@ -101,6 +102,10 @@ class GpuController(TuningController):
             else:
                 self._status, self._live['display_power'] = result
             self.stateChanged.emit()
+            if not error:
+                self._display_reboot_pending = True
+                self.confirmationRequested.emit('display-power-reboot',
+                    'The NVIDIA display power saving setting was saved and boot images were rebuilt. Restart in 5 seconds to apply it? Save your work before continuing.')
         self._status = 'Updating NVIDIA configuration and rebuilding boot images…'
         self.stateChanged.emit()
         self.submit('gpu-display-power', worker, done)
@@ -228,6 +233,12 @@ class GpuController(TuningController):
                 self._set_display_power(pending)
             else:
                 self.stateChanged.emit()
+        elif action == 'display-power-reboot':
+            pending, self._display_reboot_pending = self._display_reboot_pending, False
+            if accepted and pending:
+                self._status = 'Rebooting in 5 seconds…'
+                self.stateChanged.emit()
+                QTimer.singleShot(5000, self._reboot)
         elif action == 'voltage':
             pending, self._pending_confirmation = self._pending_confirmation, None
             if accepted and pending and pending[0] == self._target and pending[1] == self._values:
