@@ -339,7 +339,10 @@ def tick(cfg, power_source, state_path=None):
                 return f'Previous display refresh restored to {requested:g} Hz.'
             return f'Battery display refresh applied at {requested:g} Hz.'
     except Exception as error:
-        if 'org.freedesktop.DBus.Error.NameHasNoOwner' in str(error):
+        error_text = str(error)
+        if ('org.freedesktop.DBus.Error.NameHasNoOwner' in error_text
+                or ('org.freedesktop.DBus.Error.NoReply' in error_text
+                    and 'Remote peer disconnected' in error_text)):
             # Login/logout can leave the session bus alive before/after Mutter.
             # Keep any restore state; the automation loop retries in five seconds.
             return 'Waiting for the desktop display service; refresh unchanged.'

@@ -49,6 +49,13 @@ def apply_profile(profile):
             write(*args)
     gpu = profile.get("gpu")
     if gpu:
+        # Integrated mode intentionally powers the NVIDIA card down.  Keep
+        # the profile's NVIDIA values for the next Hybrid pass instead of
+        # reporting expected driver-unavailable errors on every cycle.
+        nvidia_unavailable = hardware.nvidia_access_error()
+        if nvidia_unavailable:
+            gpu = None
+    if gpu:
         # Optional GPU fields are only applied when present.
         if "watts" in gpu and hardware.gpu_power_limit_supported():
             write("gpu", gpu["watts"])
@@ -96,6 +103,10 @@ def apply_profile(profile):
             flat += [t, pct_to_pwm255(pct)]
         ok, message = hardware.run_fan_helper_logged(channel, *flat, source="cycle")
         if not ok:
+            if 'another rogcontrol fan-curve write is in progress' in str(message):
+                # The enforcer owns the retry path; do not turn a harmless
+                # overlap with its write into a failed profile switch.
+                continue
             failures.append(f'Fan {channel}: {message}')
     if failures:
         raise RuntimeError('; '.join(failures))
