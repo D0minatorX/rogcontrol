@@ -44,12 +44,6 @@ ColumnLayout {
                 Text { visible: fansController.status.length > 0; text: fansController.status; color: root.colors.mutedText; wrapMode: Text.WordWrap; Layout.fillWidth: true; font.pixelSize: 11 }
                 }
             }
-            MetricCard {
-                title: 'Gamescope'; colors: root.colors; Layout.fillWidth: true
-                Text { text: quickAccessController.data.gamescope ? 'Installed · ready for gaming sessions' : 'Gamescope is not installed'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 11 }
-                SettingsChoice { colors: root.colors; objectName: 'gamescopeSetting'; title: 'Gamescope profile'; visible: !!quickAccessController.data.gamescope; choices: [''].concat(appController.profileNames); labels: ['No automatic switch'].concat(appController.profileNames); value: quickAccessController.settings.gamescope_profile || ''; Layout.fillWidth: true; enabled: !appController.busy && !!quickAccessController.data.gamescope; onEdited: value => quickAccessController.setAutomaticProfile('gamescope_profile', value) }
-                RogButton { colors: root.colors; text: 'Recheck for Gamescope'; enabled: !appController.busy; onClicked: quickAccessController.refresh() }
-            }
         }
         ColumnLayout {
             Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 14
@@ -60,7 +54,12 @@ ColumnLayout {
                 AutomaticProfiles { colors: root.colors; Layout.fillWidth: true }
                 Text { text: quickAccessController.status; visible: text.length > 0; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 11 }
             }
-
+            MetricCard {
+                title: 'Gamescope'; colors: root.colors; Layout.fillWidth: true
+                Text { text: quickAccessController.data.gamescope ? 'Installed · ready for gaming sessions' : 'Gamescope is not installed'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 11 }
+                SettingsChoice { colors: root.colors; objectName: 'gamescopeSetting'; title: 'Gamescope profile'; visible: !!quickAccessController.data.gamescope; choices: [''].concat(appController.profileNames); labels: ['No automatic switch'].concat(appController.profileNames); value: quickAccessController.settings.gamescope_profile || ''; Layout.fillWidth: true; enabled: !appController.busy && !!quickAccessController.data.gamescope; onEdited: value => quickAccessController.setAutomaticProfile('gamescope_profile', value) }
+                RogButton { colors: root.colors; text: 'Recheck for Gamescope'; enabled: !appController.busy; onClicked: quickAccessController.refresh() }
+            }
         }
     }
 }

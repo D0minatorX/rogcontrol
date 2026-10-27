@@ -5,46 +5,82 @@ MetricCard {
     property string device: 'cpu'
     property var readings: ({})
     title: device.toUpperCase()
-    function format(value, unit) { return value === null || value === undefined ? '—' : Math.round(Number(value)).toLocaleString(Qt.locale('en_US'), 'f', 0) + (unit ? ' ' + unit : '') }
+    contentSpacing: 8
+
+    function format(value, unit, decimals) {
+        if (value === null || value === undefined || value === '') return '—'
+        var number = Number(value)
+        if (!isFinite(number)) return '—'
+        return number.toLocaleString(Qt.locale('en_US'), 'f', decimals === undefined ? 0 : decimals) + (unit ? ' ' + unit : '')
+    }
+    function fraction(value, maxValue) {
+        var number = Number(value)
+        return value === null || value === undefined || !isFinite(number) ? 0.38 : Math.max(0.04, Math.min(number / maxValue, 1))
+    }
+
     Text {
         text: root.readings[root.device + '_name'] || 'Detecting device…'
         color: root.colors.mutedText; font.pixelSize: 11
         elide: Text.ElideRight; Layout.fillWidth: true
     }
-    Item {
-        Layout.fillWidth: true; Layout.preferredHeight: 150
-        Canvas {
-            id: gauge
-            anchors.centerIn: parent; width: 210; height: 164
-            property real frequency: Number(root.readings[root.device + '_clock'] || 0)
-            onFrequencyChanged: requestPaint()
-            onPaint: {
-                var ctx = getContext('2d'); ctx.reset()
-                var start = Math.PI * .8, end = Math.PI * 2.2
-                ctx.lineWidth = 6; ctx.lineCap = 'round'; ctx.strokeStyle = root.colors.border
-                ctx.beginPath(); ctx.arc(105, 91, 75, start, end); ctx.stroke()
-                ctx.strokeStyle = root.colors.accent
-                ctx.beginPath(); ctx.arc(105, 91, 75, start, start + (end-start) * Math.min(frequency / (root.device === 'gpu' ? 3000 : 6000), 1)); ctx.stroke()
-            }
-            Connections { target: root.colors; function onAccentChanged() { gauge.requestPaint() } function onBorderChanged() { gauge.requestPaint() } }
-        }
-        Column {
-            anchors.centerIn: parent; anchors.verticalCenterOffset: 8; spacing: 3
-            Text { anchors.horizontalCenter: parent.horizontalCenter; text: root.format(root.readings[root.device + '_clock'], ''); color: root.colors.text; font.pixelSize: 38; font.weight: Font.Medium }
-            Text { anchors.horizontalCenter: parent.horizontalCenter; text: 'MHz'; color: root.colors.mutedText; font.pixelSize: 11 }
-        }
-    }
-    RowLayout {
-        Layout.fillWidth: true; spacing: 12
+
+    ColumnLayout {
+        Layout.fillWidth: true
+        spacing: 4
         Repeater {
-            model: [{label: 'TEMPERATURE', value: root.readings[root.device + '_temp'], unit: '°C'}, {label: 'POWER', value: root.readings[root.device + '_power'], unit: 'W'}, {label: 'FAN', value: (root.readings.fan_rpm || {})[root.device === 'cpu' ? '1' : '2'], unit: 'RPM'}]
-            ColumnLayout {
+            model: [
+                { label: 'Frequency', key: root.device + '_clock', unit: 'MHz', max: root.device === 'gpu' ? 3000 : 6000, accent: true },
+                { label: 'Power', key: root.device + '_power', unit: 'W', max: root.device === 'gpu' ? 150 : 100, accent: true },
+                { label: 'Temperature', key: root.device + '_temp', unit: '°C', max: 110 },
+                { label: 'Fan speed', key: 'fan', unit: 'RPM', max: 6000 },
+                { label: 'Memory', key: 'memory', unit: '' }
+            ]
+            delegate: ColumnLayout {
                 required property var modelData
-                Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 6
-                Text { Layout.fillWidth: true; text: modelData.label; color: root.colors.mutedText; font.pixelSize: 9; font.letterSpacing: .6 }
-                Text { Layout.fillWidth: true; text: root.format(modelData.value, modelData.unit); color: root.colors.text; font.pixelSize: 17; font.weight: Font.Medium }
+                Layout.fillWidth: true
+                spacing: modelData.accent === true ? 3 : 0
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text {
+                        text: modelData.key === 'memory' ? (root.device === 'gpu' ? 'VRAM' : 'RAM') : modelData.label
+                        color: root.colors.mutedText
+                        font.pixelSize: 12
+                        Layout.fillWidth: true
+                    }
+                    Text {
+                        text: {
+                            if (modelData.key === 'fan')
+                                return root.format((root.readings.fan_rpm || {})[root.device === 'cpu' ? '1' : '2'], modelData.unit)
+                            if (modelData.key === 'memory') {
+                                var memory = root.readings[root.device === 'gpu' ? 'vram' : 'ram']
+                                if (!memory || memory.length < 2) return '—'
+                                var used = Number(memory[0]), total = Number(memory[1])
+                                if (!isFinite(used) || !isFinite(total) || used < 0 || total <= 0) return '—'
+                                return (used / 1024).toFixed(1) + ' / ' + (total / 1024).toFixed(1) + ' GiB'
+                            }
+                            return root.format(root.readings[modelData.key], modelData.unit, modelData.decimals)
+                        }
+                        color: root.colors.text
+                        font.pixelSize: 12
+                        horizontalAlignment: Text.AlignRight
+                    }
+                }
+                Rectangle {
+                    visible: modelData.accent === true
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 2
+                    radius: 2
+                    color: root.colors.border
+                    Rectangle {
+                        width: parent.width * root.fraction(root.readings[modelData.key], modelData.max)
+                        height: parent.height
+                        radius: parent.radius
+                        color: root.colors.accent
+                    }
+                }
             }
         }
     }
+
     Text { visible: root.device === 'gpu' && root.readings.dgpu_suspended === true; text: 'GPU sleeping'; color: root.colors.mutedText; font.pixelSize: 11 }
 }

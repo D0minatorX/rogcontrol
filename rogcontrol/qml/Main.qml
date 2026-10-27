@@ -10,7 +10,7 @@ ApplicationWindow {
     minimumWidth: 360; minimumHeight: 480
     flags: Qt.Window | Qt.FramelessWindowHint
     visible: false
-    onClosing: close => { close.accepted = false; appController.command('quit') }
+    onClosing: close => { close.accepted = false; appController.command('hide') }
     title: 'ROG Control' + (appController.demoMode ? ' · Demo' : '')
     color: "transparent"
     readonly property int cornerRadius: visibility === Window.Maximized || visibility === Window.FullScreen ? 0 : 14
@@ -55,9 +55,16 @@ ApplicationWindow {
                     Action { text: 'Export backup…'; enabled: !appController.busy; onTriggered: profileController.chooseExport() }
                 }
             }
+            WindowControl {
+                colors: theme; glyph: 'theme'; appearance: appController.appearance
+                text: 'Theme: ' + (appearance === 'system' ? 'System' : appearance === 'light' ? 'Light' : 'Dark') + ' · click to change'
+                Accessible.name: text
+                onClicked: systemController.setAppearance(appearance === 'system' ? 'light' : appearance === 'light' ? 'dark' : 'system')
+            }
+            BatteryIndicator { colors: theme }
             WindowControl { colors: theme; glyph: 'minimize'; text: 'Minimize'; Accessible.name: 'Minimize window'; onClicked: window.showMinimized() }
             WindowControl { colors: theme; glyph: window.visibility === Window.Maximized ? 'restore' : 'maximize'; text: window.visibility === Window.Maximized ? 'Restore' : 'Maximize'; Accessible.name: 'Maximize or restore window'; onClicked: window.visibility === Window.Maximized ? window.showNormal() : window.showMaximized() }
-            WindowControl { colors: theme; glyph: 'close'; text: 'Close'; Accessible.name: 'Close window'; onClicked: window.close() }
+            WindowControl { colors: theme; glyph: 'close'; text: 'Hide'; Accessible.name: 'Hide window'; onClicked: window.close() }
         }
     }
     Repeater {

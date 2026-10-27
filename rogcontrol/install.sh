@@ -21,7 +21,7 @@ BACKEND_FILE="$HOME/.config/rogcontrol-graphics-backend"
 # Reads one key back out of the state file written by a previous install.
 prev_get() {
     [ -f "$STATE_FILE" ] || return 0
-    grep -E "^$1=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2-
+    grep -E "^$1=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
 echo "== ROG Control installer =="

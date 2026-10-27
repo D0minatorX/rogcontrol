@@ -26,7 +26,6 @@ ColumnLayout {
     MetricCard {
         visible: root.section === 'General'
         title: 'Appearance and OS power'; colors: root.colors; Layout.fillWidth: true
-        SettingsChoice { colors: root.colors; title: 'Color scheme'; choices: ['system','dark','light']; labels: ['System','Dark','Light']; value: appController.appearance; Layout.fillWidth: true; enabled: !appController.busy; onEdited: value => systemController.setAppearance(value) }
         StatusRow { colors: root.colors; label: 'Active profile'; value: appController.activeProfile }
         StatusRow { colors: root.colors; label: 'OS power mode'; value: root.readings.power_mode || 'Unavailable' }
         StatusRow { colors: root.colors; label: 'Profile agreement'; value: !root.readings.power_mode || !root.readings.expected_mode ? 'Not comparable' : root.readings.power_mode === root.readings.expected_mode ? 'In sync' : 'Profile expects ' + root.readings.expected_mode }

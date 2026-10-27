@@ -1,8 +1,8 @@
 # ROG Control
 
-A control panel for ASUS ROG laptops on Linux — without needing `asusctl`. One window, a tray icon, and background services that keep your settings in force across suspend, reboot, and firmware resets.
+ROG Control is a Linux control panel for ASUS ROG laptops and an Armoury Crate alternative. It manages fans, CPU settings, NVIDIA GPU controls, battery charging, keyboard lighting, and performance profiles through a Qt desktop app, tray icon, and background services.
 
-> **Tested only on an ASUS ROG Strix G16 (G614PR)** — Ryzen 9 8940HX, RTX 5070 Ti — on Arch/CachyOS with GNOME on Wayland. It may well work on other ROG models with the same embedded-controller family, but nothing beyond the G614PR has been verified. If you try it on different hardware, please open an issue with what worked and what didn't.
+> **Tested only on an ASUS ROG Strix G16 (G614PR) on Arch/CachyOS with GNOME on Wayland.** Installation paths for CachyOS and Bazzite are documented below, but hardware behavior has not been verified on other ROG models or on Bazzite.
 >
 > **NVIDIA GPU only.** GPU controls go through `nvidia-smi`/`nvidia-settings`, so Intel and AMD GPUs are not supported. CPU support depends on the vendor: on AMD, power limits and the Curve Optimizer go through `ryzenadj`; on Intel, PL1/PL2, turbo boost, the energy preference and the clock ceiling and floor work where the model's firmware exposes them (no undervolt, no temperature target — neither has an Intel equivalent). A CPU with none of those firmware nodes gets a notice on the CPU page instead of a control that would only fail.
 
@@ -241,6 +241,8 @@ A switch for the boot chime, remembered so a boot-apply service can restore it a
 
 ## 📋 What you need
 
+ROG Control uses Python and Qt Quick (PySide6/QML); it is designed for Linux desktops, including GNOME and KDE Plasma.
+
 The desktop and tray use **Python + PySide6 / Qt Quick (QML)**. They do not
 require GTK, libadwaita, HTML, or a browser engine. PyGObject remains for
 Gio/GLib desktop integrations such as screen capture and power management.
@@ -297,16 +299,16 @@ python3 -m rogcontrol.qt.runtime
 
 ## 📦 Installing
 
-For the 1.0.2.3 release archive, extract `Rog-Control-V1.0.2.3.zip`, then run:
+For the 1.0.2.5 release archive, extract `Rog-Control-V1.0.2.5.zip`, then run:
 
 ```sh
-cd Rog-Control-V1.0.2.3/rogcontrol
+cd Rog-Control-V1.0.2.5/rogcontrol
 bash install.sh
 ```
 
 The archive includes the Qt controllers, QML pages, JavaScript helpers, and
 icons. To preview the extracted application before installing, run
-`python3 -m rogcontrol --demo` from `Rog-Control-V1.0.2.3`.
+`python3 -m rogcontrol --demo` from `Rog-Control-V1.0.2.5`.
 
 To install from a Git checkout:
 
