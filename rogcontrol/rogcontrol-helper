@@ -337,6 +337,10 @@ case "$1" in
         [ "$SLOW" -ge 15000 ] && [ "$SLOW" -le 150000 ] || { echo "slow-limit out of safe range (15000-150000)" >&2; exit 1; }
         [ "$TEMP" -ge 60 ] && [ "$TEMP" -le 100 ] || { echo "tctl-temp out of safe range (60-100)" >&2; exit 1; }
         [ "$COALL" -ge -30 ] && [ "$COALL" -le 0 ] || { echo "coall out of safe range (-30 to 0)" >&2; exit 1; }
+        # RyzenAdj expects negative CO offsets encoded as a 20-bit value.
+        if [ "$COALL" -lt 0 ]; then
+            COALL=$((0x100000 + COALL))
+        fi
         # One retry, then give up. On a machine with no ryzen_smu module --
         # this one -- ryzenadj reaches the SMU mailbox through /dev/mem, and
         # that path occasionally loses a race with whatever else is touching
