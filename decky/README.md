@@ -11,6 +11,19 @@ are shown only when the kernel exposes them. The profile chooser submits a
 profile request through ROG Control's background worker. CPU edits are saved
 to the active profile and applied immediately.
 
+## Install from the ZIP
+
+Install Decky Loader and ROG Control for your Linux user first. Extract the
+plugin ZIP, open a terminal in the extracted `ROG-Control` folder, and run:
+
+```sh
+./install.sh
+```
+
+Run the installer as your normal user. It installs the plugin and asks for
+sudo to restart Decky Loader. You can also install or update the plugin from
+ROG Control under System → Updates.
+
 The **Check for plugin updates** section reads the latest release from
 [ROG Control Releases](https://github.com/D0minatorX/rogcontrol/releases).
 An update is installed only when that release includes the versioned

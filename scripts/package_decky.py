@@ -36,7 +36,7 @@ def build_package(output_dir, build=True):
     with tempfile.TemporaryDirectory(prefix="rogcontrol-decky-package-") as temp:
         stage = Path(temp) / "ROG-Control"
         stage.mkdir()
-        for relative in ("main.py", "plugin.json", "package.json", "README.md"):
+        for relative in ("main.py", "plugin.json", "package.json", "README.md", "install.sh"):
             shutil.copy2(PLUGIN / relative, stage / relative)
         shutil.copy2(ROOT / "LICENSE", stage / "LICENSE")
         shutil.copytree(PLUGIN / "dist", stage / "dist")
@@ -46,7 +46,8 @@ def build_package(output_dir, build=True):
                 relative = source.relative_to(stage.parent).as_posix()
                 info = zipfile.ZipInfo(relative, date_time=(2020, 1, 1, 0, 0, 0))
                 info.compress_type = zipfile.ZIP_DEFLATED
-                info.external_attr = 0o100644 << 16
+                info.external_attr = (0o100755 if relative == "ROG-Control/install.sh"
+                                      else 0o100644) << 16
                 archive.writestr(info, source.read_bytes(), compress_type=zipfile.ZIP_DEFLATED,
                                  compresslevel=9)
     digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
