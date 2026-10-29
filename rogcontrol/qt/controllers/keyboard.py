@@ -1,6 +1,7 @@
 """Lighting, background input preferences and portal capture lifecycle."""
 from copy import deepcopy
 import threading
+import datetime
 from PySide6.QtCore import Property, Signal, Slot, QTimer, Qt
 from PySide6.QtGui import QColor
 from .settings import SettingsController
@@ -110,7 +111,8 @@ class KeyboardController(SettingsController):
 
     def fixture(self):
         return dict(modes=['Static', 'Breathing', 'Pulse', 'Color Cycle', 'Rainbow', 'Gradient Static',
-                           'GPU Temp Color', 'CPU Temp Color', 'Battery Level', 'Ambient', 'Profile Color'],
+                           'GPU Temp Color', 'CPU Temp Color', 'Battery Level', 'Ambient', 'Profile Color',
+                           'Time of Day'],
                     hint='Demo lighting fixture', idle='Idle detection available', idle_supported=True, dimmed=False,
                     power_supported=True, bindings_supported=True, fn_supported=True,
                     input_status='Background service owns keyboard input', runtime='',
@@ -235,6 +237,10 @@ class KeyboardController(SettingsController):
                         if not ambient_available():
                             raise RuntimeError('Ambient requires ScreenCast portal and GStreamer PipeWire elements.')
                         ok, message = True, ''
+                    elif mode == kbdcolor.TIME_OF_DAY_MODE:
+                        now = datetime.datetime.now()
+                        color = kbdcolor.time_of_day_color(now.hour + now.minute / 60)
+                        ok, message = hardware.run_helper(*kbdcolor.static_args(color))
                     elif mode == 'Profile Color':
                         args = kbdcolor.profile_color_args(dict(cfg, kbd_rgb={'mode': mode}), caps=caps)
                         ok, message = hardware.run_helper(*args) if args else (False, 'Profile color is unsupported.')
@@ -511,9 +517,10 @@ class KeyboardController(SettingsController):
                 mode = config.load_config().get('kbd_rgb', {}).get('mode')
                 if mode != expected_mode:
                     return None
+                from ... import kbdcolor
                 if mode == 'Ambient':
                     args = ('kbdrgb', 'multi_static', *[channel for zone in colors for channel in zone]) if zonal else ('kbdrgb', 'single_static', *[round(sum(z[i] for z in colors) / len(colors)) for i in range(3)])
-                elif mode in ('CPU Temp Color', 'GPU Temp Color', 'Battery Level'):
+                elif mode in ('CPU Temp Color', 'GPU Temp Color', 'Battery Level', kbdcolor.TIME_OF_DAY_MODE):
                     args = ('kbdrgb', 'single_static', *colors[0])
                 else:
                     return None
@@ -534,6 +541,12 @@ class KeyboardController(SettingsController):
             self._paint()
             return
         mode = self.app.config.get('kbd_rgb', {}).get('mode')
+        from ... import kbdcolor
+        if mode == kbdcolor.TIME_OF_DAY_MODE:
+            now = datetime.datetime.now()
+            self._colors = [kbdcolor.time_of_day_color(now.hour + now.minute / 60)]
+            self._paint()
+            return
         if mode not in ('CPU Temp Color', 'GPU Temp Color', 'Battery Level') or self.app.runner.active('keyboard-live'):
             return
         def read():

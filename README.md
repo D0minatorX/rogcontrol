@@ -141,7 +141,7 @@ that reproduce the difference. Pull requests should preserve the automatic
 detection behavior and keep unsupported hardware unaffected.
 
 ### ⌨️ Keyboard
-Brightness and ten lighting modes: Static, Breathing, Pulse, Colour Cycle, Rainbow, Gradient Static, GPU Temp Colour, CPU Temp Colour, Battery Level, and Ambient (follows what's on screen, via the desktop's screen-sharing portal).
+Brightness and twelve lighting modes: Static, Breathing, Pulse, Colour Cycle, Rainbow, Gradient Static, GPU Temp Colour, CPU Temp Colour, Battery Level, Ambient, Profile Colour, and Time of Day. Ambient follows the screen via the desktop screen-sharing portal. Time of Day gradually changes from warm evening colours to cool midday colours while the desktop app is running, including when its window is hidden.
 
 On the **G614PR with the ASUS 19b6 controller**, **Lighting power states**
 adds separate Keyboard and Lightbar controls for Boot, Sleep, Shutdown,

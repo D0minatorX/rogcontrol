@@ -18,6 +18,8 @@ that conversion happens, so a colour cannot drift a point every time the
 page is loaded and saved.
 """
 
+import math
+
 from .profiles import default_kbd_color
 
 # The backlight brightness the LED class accepts, and rogauracore's speed
@@ -37,6 +39,8 @@ KBD_ZONES = 4
 # command names, not guessed raw mode numbers like the old sysfs approach.
 #
 # Insertion order is the order the picker offers them in.
+TIME_OF_DAY_MODE = "Time of Day"
+
 KBD_RGB_MODES = {
     "Static": "single_static",
     "Breathing": "single_breathing",
@@ -52,6 +56,8 @@ KBD_RGB_MODES = {
     "Ambient": "ambient",           # follows what is on the primary monitor
     "Profile Color": "profile_color",  # follows the active power profile
 }
+
+KBD_RGB_MODES[TIME_OF_DAY_MODE] = "time_of_day"
 
 # Needs a controller with four addressable zones.
 MULTI_ZONE_MODES = ("Gradient Static",)
@@ -77,7 +83,7 @@ LIVE_COLOUR_MODES = ("GPU Temp Color", "CPU Temp Color", "Battery Level")
 # below asks whether the saved mode is *its* mode before it writes anything.
 PROFILE_COLOR_MODE = "Profile Color"
 AMBIENT_MODE = "Ambient"
-EXCLUSIVE_MODES = (AMBIENT_MODE, PROFILE_COLOR_MODE)
+EXCLUSIVE_MODES = (AMBIENT_MODE, PROFILE_COLOR_MODE, TIME_OF_DAY_MODE)
 
 # Where a profile keeps the colour Profile Color paints it in. Beside the
 # profile's cpu/gpu/fans rather than in the global kbd_rgb block, because it
@@ -224,6 +230,13 @@ def merge_kbd_rgb(saved, mode, color1, color2, speed):
         if key in saved:
             block[key] = saved[key]
     return block
+
+
+def time_of_day_color(hour):
+    """Blend warm evening light with a cool midday colour using local time."""
+    daylight = max(0.0, math.cos((float(hour) - 12) * math.pi / 12))
+    return tuple(round(a + (b - a) * daylight)
+                 for a, b in zip((255, 75, 25), (180, 215, 255)))
 
 
 # -- profile colour ----------------------------------------------------------
@@ -437,7 +450,7 @@ def helper_args(mode, color1=DEFAULT_COLOR, color2=DEFAULT_COLOR2,
     color2 = tuple(clamp_byte(c) for c in color2)
     speed = clamp_speed(speed)
     command = KBD_RGB_MODES.get(mode, "single_static")
-    if command in ("ambient", "profile_color", "gpu_temp_color",
+    if command in ("time_of_day", "ambient", "profile_color", "gpu_temp_color",
                    "cpu_temp_color", "battery_color"):
         return None
     if command == "rainbow":
@@ -529,7 +542,7 @@ FLASH_DEBOUNCE_SECONDS = 5.0
 # modes are defined to show. "Frozen on whatever was last written" was
 # already true of them before any flash existed, once the window closes;
 # the flash does not make that truer.
-FLASH_UNRESTORABLE_MODES = (AMBIENT_MODE,)
+FLASH_UNRESTORABLE_MODES = (AMBIENT_MODE, TIME_OF_DAY_MODE)
 
 
 def charger_flash_enabled(cfg):
