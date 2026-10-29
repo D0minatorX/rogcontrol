@@ -299,16 +299,16 @@ python3 -m rogcontrol.qt.runtime
 
 ## 📦 Installing
 
-For the 1.0.2.5 release archive, extract `Rog-Control-V1.0.2.5.zip`, then run:
+For the 1.0.2.6 release archive, extract `Rog-Control-V1.0.2.6.zip`, then run:
 
 ```sh
-cd Rog-Control-V1.0.2.5/rogcontrol
+cd Rog-Control-V1.0.2.6/rogcontrol
 bash install.sh
 ```
 
 The archive includes the Qt controllers, QML pages, JavaScript helpers, and
 icons. To preview the extracted application before installing, run
-`python3 -m rogcontrol --demo` from `Rog-Control-V1.0.2.5`.
+`python3 -m rogcontrol --demo` from `Rog-Control-V1.0.2.6`.
 
 To install from a Git checkout:
 
