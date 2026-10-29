@@ -24,6 +24,52 @@ prev_get() {
     grep -E "^$1=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
+# The window may be hidden in the tray while its Python process keeps the old
+# modules in memory. Quit the existing GUI before replacing its library.
+APP_WAS_RUNNING=0
+stop_running_app() {
+    local pid attempt alive
+    local -a app_pids=()
+    mapfile -t app_pids < <(pgrep -u "$(id -u)" -f \
+        '^([^ ]*/)?python(3(\.[0-9]+)?)? -m rogcontrol( (--qt|--show|--hide|--toggle|--minimized))*$' || true)
+    [ "${#app_pids[@]}" -gt 0 ] || return 0
+    [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] || die "ROG Control is running; quit it from its graphical session before installing."
+    [ -x "$HOME/.local/bin/rogcontrol" ] || die "ROG Control is running but its launcher is unavailable; quit it before installing."
+    "$HOME/.local/bin/rogcontrol" --quit || die "Could not ask ROG Control to quit."
+    for ((attempt=0; attempt<100; attempt++)); do
+        alive=0
+        for pid in "${app_pids[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then alive=1; fi
+        done
+        if [ "$alive" = 0 ]; then
+            APP_WAS_RUNNING=1
+            say "Closed the running ROG Control app"
+            return 0
+        fi
+        sleep 0.1
+    done
+    die "ROG Control did not quit; installation stopped before replacing its files."
+}
+
+restart_running_app() {
+    [ "$APP_WAS_RUNNING" = 1 ] || return 0
+    if [ "$PENDING_REBOOT" = 1 ]; then
+        warn "ROG Control will be ready to reopen after the required reboot."
+        return 0
+    fi
+    local -a session_env=()
+    [ -z "${DISPLAY:-}" ] || session_env+=("--setenv=DISPLAY=$DISPLAY")
+    [ -z "${WAYLAND_DISPLAY:-}" ] || session_env+=("--setenv=WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
+    if command -v systemd-run >/dev/null 2>&1 && \
+       systemd-run --user --collect --unit="rogcontrol-reopen-$$" "${session_env[@]}" \
+           "$HOME/.local/bin/rogcontrol" --show >/dev/null 2>&1; then
+        say "Restarted ROG Control with the updated files"
+    else
+        nohup "$HOME/.local/bin/rogcontrol" --show </dev/null >/dev/null 2>&1 &
+        say "Starting ROG Control with the updated files"
+    fi
+}
+
 echo "== ROG Control installer =="
 echo "For ASUS ROG laptops on Linux. Installs dependencies, the app, the"
 echo "privileged helper, and the background services."
@@ -860,6 +906,7 @@ mkdir -p "$HOME/.local/bin"
 # it crash-looping for as long as the machine is up. Stopped, the worst case
 # is a service that is not running until the next install or login, which is
 # visible and harmless. It is started again at the end of the services step.
+stop_running_app
 ENFORCER_WAS_RUNNING=0
 if systemctl --user is-active --quiet rogcontrol-enforcer.service 2>/dev/null; then
     ENFORCER_WAS_RUNNING=1
@@ -1136,6 +1183,8 @@ mkdir -p "$STATE_DIR"
     printf '%s' "$CAP_STATE"
 } > "$STATE_FILE"
 say "Install state recorded (next run will detect this as an update)"
+
+restart_running_app
 
 # Ship the uninstaller next to everything else so it is findable later.
 install -m 755 "$SCRIPT_DIR/uninstall.sh" "$HOME/.local/bin/rogcontrol-uninstall.sh" 2>/dev/null \
