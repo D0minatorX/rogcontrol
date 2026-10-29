@@ -34,6 +34,7 @@ MAINTAINED_MODULES = (
     'test_graphics_services',
     'test_gpu_power',
     'test_gpu_power_capability',
+    'test_gpu_profile_recovery',
     'test_hotkeys',
     'test_installer',
     'test_keyboard_idle',

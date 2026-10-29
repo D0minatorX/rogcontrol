@@ -75,6 +75,7 @@ from rogcontrol import hardware  # noqa: E402
 from rogcontrol import kbdcolor  # noqa: E402
 from rogcontrol import profiles as profiles_mod  # noqa: E402
 from rogcontrol import gamescope  # noqa: E402
+from rogcontrol import profile_requests  # noqa: E402
 from rogcontrol import daily_automation, keyboard_idle, hotkeys  # noqa: E402
 
 # One copy of the curve maths, in the package. See rogcontrol-apply.py.
@@ -148,6 +149,7 @@ _last_kbd_color_args = None
 # after Hybrid access returns, including when the window is closed.
 _pending_gpu_limits = {}
 _pending_gpu_limits_lock = threading.RLock()
+_gpu_profile_signature = None
 
 def log(message, level="INFO", dedupe_key=None, dedupe_seconds=300):
     """Append one line to the shared app log, tagged as the enforcer's.
@@ -298,8 +300,8 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
     full=True applies everything, and is what a profile switch, a detected
     external power-mode change, or startup needs.
 
-    full=False is the periodic upkeep pass, and deliberately applies only
-    the settings that were measured to actually drift. With the enforcer
+    full=False is the periodic upkeep pass. It restores changed/deferred GPU
+    settings and otherwise applies only settings measured to drift. With the enforcer
     stopped for 90 seconds, the GPU power limit, clock limit, temperature
     target, dynamic boost, charge threshold and keyboard brightness all
     held their values exactly -- they are firmware-backed and stay put.
@@ -390,12 +392,9 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
             for _step, args in hardware.cpu_apply_plan(cpu_to_apply, caps):
                 run_helper(*args)
 
-        if full:
-            gpu = profile.get("gpu")
-            if gpu:
-                retry_pending_gpu_limits(gpu, force=True)
-                if hardware.dgpu_available():
-                    apply_gpu_clock_offsets(gpu)
+        # Manual switches can keep the same OS thermal mode. Detect saved
+        # GPU changes independently, and recover skipped writes after wake.
+        reconcile_gpu_profile(config, force=full)
 
         # The fan boost, if one is in force, replaces the profile's curves
         # for as long as it lasts. This service is what makes the boost
@@ -669,7 +668,18 @@ def store_last_ac_state(on_ac):
         log(f"could not remember power source: {e}", "WARN", dedupe_key="acstate")
 
 
-def ac_switch_target(previous_ac, current_ac, config, current_kind=None):
+def power_source_changed(previous_ac, current_ac, previous_kind=None, current_kind=None):
+    """A known plug or charger-kind transition, excluding first/unknown reads."""
+    if previous_ac is None or current_ac is None:
+        return False
+    return (previous_ac != current_ac
+            or (current_ac and previous_kind in ("mains", "usb")
+                and current_kind in ("mains", "usb")
+                and previous_kind != current_kind))
+
+
+def ac_switch_target(previous_ac, current_ac, config, current_kind=None,
+                     previous_kind=None):
     """The profile the power source change calls for, or None for "do
     nothing".
 
@@ -683,8 +693,8 @@ def ac_switch_target(previous_ac, current_ac, config, current_kind=None):
       Remember it, act on the next one; see _last_ac_state. Note this is now
       rare rather than once-per-restart, because the previous state is loaded
       back from disk at startup.
-    * Unchanged state is the overwhelmingly common case -- this runs every
-      60 seconds and the plug moves maybe twice a day. Acting on it would
+    * Unchanged source (including charger kind) is the common case -- this
+      runs every 60 seconds and the plug moves maybe twice a day. Acting on it would
       re-apply the auto-switch profile over anything the user chose in
       between, once a minute, forever.
     * ``current_kind`` is only consulted while landing on AC: "usb" picks
@@ -700,9 +710,7 @@ def ac_switch_target(previous_ac, current_ac, config, current_kind=None):
     * A target that is already current needs no switch. Applying it anyway
       would push all three fan curves for no reason.
     """
-    if current_ac is None or previous_ac is None:
-        return None
-    if current_ac == previous_ac:
+    if not power_source_changed(previous_ac, current_ac, previous_kind, current_kind):
         return None
     if not current_ac:
         key = "battery_profile"
@@ -998,7 +1006,7 @@ def check_ac_auto_switch(config, service_name, trigger="poll"):
 
 
 def _check_ac_auto_switch(config, service_name, trigger, suppress_switch=False):
-    global _last_ac_state, _last_charger_kind
+    global _last_ac_state, _last_charger_kind, _gpu_profile_signature
     current_ac, current_kind = hardware.read_power_source()
 
     previous_kind = _last_charger_kind
@@ -1015,6 +1023,13 @@ def _check_ac_auto_switch(config, service_name, trigger, suppress_switch=False):
         # Only on a change: this runs every cycle and on every udev event,
         # and the answer is the same almost every time.
         store_last_ac_state(current_ac)
+
+    if power_source_changed(previous_ac, current_ac, previous_kind, current_kind):
+        # A charger transition may reset GPU settings even when both sources
+        # select the same profile, or automatic selection is disabled.
+        with _pending_gpu_limits_lock:
+            _gpu_profile_signature = None
+        _cycle_wakeup.set()
 
     # Before the switch decision, so the acknowledgement is not stuck behind
     # the apply a switch triggers. It is also independent of it:
@@ -1033,7 +1048,8 @@ def _check_ac_auto_switch(config, service_name, trigger, suppress_switch=False):
     # cannot replay an old charger event over the restored desktop profile.
     if suppress_switch:
         return False
-    target = ac_switch_target(previous_ac, current_ac, config, current_kind)
+    target = ac_switch_target(previous_ac, current_ac, config, current_kind,
+                              previous_kind)
     if target is None:
         return False
 
@@ -1410,6 +1426,65 @@ def retry_pending_gpu_limits(gpu, force=False):
         _retry_pending_gpu_limits(gpu, force)
 
 
+def reconcile_gpu_profile(config, force=False):
+    """Recover the latest saved GPU settings without rewriting stable ones.
+
+    The UI/shortcut may skip a sleeping card or fail a write in another
+    process. A changed saved profile is therefore a retry trigger itself;
+    it must not depend on a thermal-mode change or this process seeing the
+    original failure. Share the UI's hardware lock and read again after
+    acquiring it so a stale upkeep snapshot cannot undo a newer selection.
+    """
+    global _gpu_profile_signature, _pending_powermizer_mode
+    global _pending_voltage_boost, _pending_offsets_since
+    profile = (config.get("profiles") or {}).get(config.get("current_profile")) or {}
+    if (not profile.get("gpu") and _gpu_profile_signature is None
+            and not _pending_gpu_limits and not _pending_gpu_offsets
+            and _pending_powermizer_mode is None and _pending_voltage_boost is None):
+        return
+    with profile_requests.hardware_apply_lock(), _pending_gpu_limits_lock:
+        try:
+            with open(CONFIG_PATH) as stream:
+                fresh = json.load(stream)
+        except (OSError, ValueError) as error:
+            log(f"GPU profile reconciliation deferred: {error}", "WARN",
+                dedupe_key="gpu-config")
+            return
+        name = fresh.get("current_profile")
+        gpu = ((fresh.get("profiles") or {}).get(name) or {}).get("gpu") or {}
+        signature = (name, json.dumps(gpu, sort_keys=True))
+        changed = force or signature != _gpu_profile_signature
+
+        # Retry values always belong to the current profile, including keys
+        # removed by an import or a switch to a profile with fewer settings.
+        for kind, key in (("core", "clock_offset"), ("memory", "mem_clock_offset")):
+            if kind in _pending_gpu_offsets:
+                if key in gpu:
+                    _pending_gpu_offsets[kind] = gpu[key]
+                else:
+                    del _pending_gpu_offsets[kind]
+        if _pending_powermizer_mode is not None:
+            _pending_powermizer_mode = gpu.get("powermizer_mode")
+        if _pending_voltage_boost is not None:
+            _pending_voltage_boost = gpu.get("voltage_boost")
+
+        retry_pending_gpu_limits(gpu, force=changed)
+        if not gpu:
+            _gpu_profile_signature = signature
+            _pending_offsets_since = None
+            return
+        if hardware.nvidia_access_error() or hardware.dgpu_is_suspended() is True:
+            # Do not mark the profile handled while its session settings
+            # have not had an opportunity to run. Retry on the next pass.
+            _gpu_profile_signature = None
+            return
+        if changed:
+            apply_gpu_clock_offsets(gpu)
+            _gpu_profile_signature = signature
+        else:
+            retry_pending_gpu_offsets()
+
+
 def _retry_pending_gpu_limits(gpu, force=False):
     """Apply the current profile's NVIDIA limits when access is available.
 
@@ -1422,7 +1497,7 @@ def _retry_pending_gpu_limits(gpu, force=False):
         _pending_gpu_limits.clear()
         return
     access_error = hardware.nvidia_access_error()
-    if access_error:
+    if access_error or hardware.dgpu_is_suspended() is True:
         _pending_gpu_limits.clear()
         _pending_gpu_limits.update(desired)
         return
@@ -1692,18 +1767,6 @@ def main():
                                        force_fan_reapply=thermal_changed
                                        or boost_ended,
                                        full=thermal_changed)
-
-                # Recheck only limits that were deferred while the dGPU was
-                # inaccessible; a live Cardwire return to Hybrid must work
-                # even when no window or thermal change triggers a full apply.
-                retry_pending_gpu_limits((profile or {}).get("gpu") or {})
-
-                # After the apply, so an offset this cycle just deferred is
-                # not immediately retried against the same missing session.
-                # This is the only path that runs every cycle, which is why
-                # the deferred offsets wait here rather than in the full
-                # apply that first tried them.
-                retry_pending_gpu_offsets()
 
                 # Keyboard brightness and charge limit are NOT re-applied
                 # here. Both were measured to hold their values with the

@@ -311,7 +311,7 @@ def apply_saved_profile(cfg, caps, progress=None, gpu_only=False, force_fan_reap
             caps['gpu_power_limit'] = h.gpu_power_limit_supported()
             caps['gpu_power_limit_probed'] = True
         if any(k in gpu for k in ('clock_limit', 'clock_offset', 'mem_clock_offset')) and 'gpu_offset_limits' not in caps:
-            caps.update(h.probe_gpu_tuning_capabilities(caps))
+            caps.update(h.probe_gpu_tuning_capabilities(caps, gpu.get('clock_limit')))
             caps['gpu_limits'] = h.detect_gpu_limits()
         if 'voltage_boost' in gpu and 'nvidia_voltage_boost' not in caps:
             caps['nvidia_voltage_boost'] = h.probe_nvidia_voltage_boost() is not None

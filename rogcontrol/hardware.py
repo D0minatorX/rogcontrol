@@ -1209,8 +1209,11 @@ def gpu_power_limit_supported():
     Reapplying the current limit can falsely succeed when the driver refuses
     a change. Require a one-watt change and verified restoration instead.
     """
+    # The firmware-enforced limit can be valid even when the user-settable
+    # limit is N/A (notably on laptop/USB-C power). It is not a value we can
+    # restore, and probing one watt below it just repeats a refused write.
     current, minimum, maximum = read_nvidia_query(
-        ("enforced.power.limit", "power.min_limit", "power.max_limit"))
+        ("power.limit", "power.min_limit", "power.max_limit"))
     if (current is None or minimum is None or maximum is None
             or not current.is_integer()):
         return False
@@ -1625,24 +1628,29 @@ def gpu_clock_limit_arg(mhz, max_mhz):
     return "reset" if mhz >= int(max_mhz) else mhz
 
 
-def gpu_clock_limit_supported():
-    """Test a real graphics-clock lock and reset it afterwards.
+def gpu_clock_limit_supported(clock_limit=None):
+    """Verify the setter using the saved ceiling when one is configured.
 
-    NVIDIA does not expose a reliable readback of an existing lock, so this
-    may clear a lock installed by another application. A successful setter
-    and reset are the strongest available capability check.
+    NVIDIA does not expose reliable lock readback. Applying the desired cap
+    directly avoids clearing it or leaving a temporary higher cap when a
+    restoration fails. For an unlocked profile, test a lock then reset it.
+    Callers must serialize this probe with profile writes.
     """
     if not have_cmd("nvidia-smi") or nvidia_access_error():
         return False
     maximum = detect_gpu_max_clock()
     if maximum is None or maximum <= CLOCK_LIMIT_MIN + 15:
         return False
+    restore = ("reset" if clock_limit is None
+               else gpu_clock_limit_arg(clock_limit, maximum))
+    if restore != "reset":
+        return run_helper("gpuclocklimit", restore)[0]
     changed = False
     restored = False
     try:
         changed, _ = run_helper("gpuclocklimit", maximum - 15)
     finally:
-        restored, _ = run_helper("gpuclocklimit", "reset")
+        restored, _ = run_helper("gpuclocklimit", restore)
     return changed and restored
 
 
@@ -2181,7 +2189,7 @@ def _detect_nvidia_offset(kind, timeout=10):
     return result
 
 
-def probe_gpu_tuning_capabilities(caps):
+def probe_gpu_tuning_capabilities(caps, clock_limit=None):
     """Probe the three writable clock controls for the UI and installer.
 
     Kept out of detect_capabilities: services and headless callers must not
@@ -2190,7 +2198,7 @@ def probe_gpu_tuning_capabilities(caps):
     offsets = {kind: detect_nvidia_offset(kind) for kind in ("core", "memory")}
     return {
         "gpu_clock_limit": bool(caps.get("nvidia") and
-                                gpu_clock_limit_supported()),
+                                gpu_clock_limit_supported(clock_limit)),
         "nvidia_core_clock_offset": bool(offsets["core"].get("ok")),
         "nvidia_memory_clock_offset": bool(offsets["memory"].get("ok")),
         "gpu_offset_limits": offsets,

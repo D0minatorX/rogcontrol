@@ -4,7 +4,7 @@ The installer invokes this on every run, whether it is a fresh install,
 update, or same-version repair. Profiles are never changed by the report.
 """
 
-from . import display_refresh, graphics_backend, hardware
+from . import config, display_refresh, graphics_backend, hardware, profile_requests
 
 
 LABELS = {
@@ -79,17 +79,22 @@ def display_refresh_row():
 
 def detect_feature_rows():
     """Run the app's startup probes for an installer feature report."""
-    caps = hardware.detect_capabilities()
-    caps.update(hardware.probe_gpu_tuning_capabilities(caps))
+    # These probes briefly change hardware. Use the same lane as profile
+    # writes and restore the current profile's ceiling, including on repair.
+    with profile_requests.hardware_apply_lock():
+        cfg = config.load_config()
+        gpu = cfg.get('profiles', {}).get(cfg.get('current_profile'), {}).get('gpu', {})
+        caps = hardware.detect_capabilities()
+        caps.update(hardware.probe_gpu_tuning_capabilities(caps, gpu.get('clock_limit')))
+        caps["nvidia_powermizer_modes"] = (
+            hardware.detect_nvidia_powermizer_modes()
+            if caps["nvidia_settings"] else ())
+        caps["nvidia_voltage_boost"] = (
+            hardware.probe_nvidia_voltage_boost() is not None
+            if caps["nvidia"] else False)
     selected = graphics_backend.selected_backend()
     caps["gpu_mode_switching"] = bool(caps.get(selected)) and (
         selected != "cardwire" or caps.get("cardwire_wayland"))
-    caps["nvidia_powermizer_modes"] = (
-        hardware.detect_nvidia_powermizer_modes()
-        if caps["nvidia_settings"] else ())
-    caps["nvidia_voltage_boost"] = (
-        hardware.probe_nvidia_voltage_boost() is not None
-        if caps["nvidia"] else False)
     try:
         from .ambient import ambient_available
         caps["kbd_ambient"] = ambient_available()

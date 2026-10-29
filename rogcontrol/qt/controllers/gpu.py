@@ -148,7 +148,7 @@ class GpuController(TuningController):
         caps = deepcopy(self.caps)
         reapply = getattr(self, '_reapply_after_probe', False)
         def worker():
-            from ... import hardware as h
+            from ... import config, hardware as h
             from ...profile_requests import hardware_apply_lock
             # Some runtime probes write back the current setting to verify
             # ownership. They belong in the hardware lane, never a read job.
@@ -157,7 +157,10 @@ class GpuController(TuningController):
                     raise RuntimeError('Controller closed before operation')
                 if h.dgpu_is_suspended() or h.nvidia_access_error():
                     raise RuntimeError('GPU is asleep or direct access is blocked; retry when available.')
-                result = h.probe_gpu_tuning_capabilities(caps)
+                fresh = config.load_config()
+                name = fresh.get('current_profile')
+                gpu = fresh.get('profiles', {}).get(name, {}).get('gpu', {})
+                result = h.probe_gpu_tuning_capabilities(caps, gpu.get('clock_limit'))
                 result['gpu_power_limit'] = h.gpu_power_limit_supported()
                 result['gpu_power_limit_probed'] = True
                 result['gpu_limits'] = h.detect_gpu_limits()
@@ -166,7 +169,6 @@ class GpuController(TuningController):
                 result['powermizer_modes'] = modes
                 restoration = []
                 if reapply:
-                    from ... import config
                     from .tuning import apply_saved_profile
                     fresh = config.load_config()
                     gpu_only = deepcopy(fresh)
