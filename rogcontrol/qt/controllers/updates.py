@@ -147,12 +147,13 @@ class UpdatesController(QObject):
                     if not ok:
                         raise RuntimeError(message)
                 else:
-                    decky_install.install_archive(stage, expected_version=release['version'])
                     fd, status = tempfile.mkstemp(prefix='rogcontrol-decky-', suffix='.status')
                     os.close(fd)
-                    launched = decky_install.launch_loader_restart(status, app_pid=os.getpid(), cleanup_archive=stage)
+                    launched = decky_install.launch_loader_restart(
+                        status, app_pid=os.getpid(), cleanup_archive=stage,
+                        install_archive_path=stage, expected_version=release['version'])
                     if not launched['ok']:
-                        raise RuntimeError('Plugin files installed; Loader restart failed: ' + str(launched['message']))
+                        raise RuntimeError('Could not start Decky installation: ' + str(launched['message']))
                 handed_off = True
                 return status
             finally:

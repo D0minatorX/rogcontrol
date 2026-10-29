@@ -41,18 +41,20 @@ PY
             exit 1
         fi
     fi
-    STAGE="$(mktemp -d "$PLUGIN_PARENT/.rogcontrol-install.XXXXXXXX")"
+    echo "Administrator access is required to install the plugin and restart Decky Loader."
+    sudo -v
+    STAGE="$(sudo mktemp -d "$PLUGIN_PARENT/.rogcontrol-install.XXXXXXXX")"
     cleanup() {
-        if [ -d "$STAGE/previous" ] && [ ! -e "$PLUGIN_DIR" ]; then
-            mv -- "$STAGE/previous" "$PLUGIN_DIR"
+        if sudo test -d "$STAGE/previous" && ! sudo test -e "$PLUGIN_DIR"; then
+            sudo mv -- "$STAGE/previous" "$PLUGIN_DIR"
         fi
-        rm -rf -- "$STAGE"
+        sudo rm -rf -- "$STAGE"
     }
     trap cleanup EXIT
-    mkdir "$STAGE/ROG-Control"
-    cp -a -- "$SOURCE_DIR/." "$STAGE/ROG-Control/"
-    if [ -e "$PLUGIN_DIR" ]; then mv -- "$PLUGIN_DIR" "$STAGE/previous"; fi
-    mv -- "$STAGE/ROG-Control" "$PLUGIN_DIR"
+    sudo mkdir "$STAGE/ROG-Control"
+    sudo cp -a -- "$SOURCE_DIR/." "$STAGE/ROG-Control/"
+    if [ -e "$PLUGIN_DIR" ]; then sudo mv -- "$PLUGIN_DIR" "$STAGE/previous"; fi
+    sudo mv -- "$STAGE/ROG-Control" "$PLUGIN_DIR"
     echo "ROG Control Decky plugin installed at $PLUGIN_DIR."
 fi
 

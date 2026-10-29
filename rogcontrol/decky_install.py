@@ -67,8 +67,9 @@ def install_archive(archive_path, expected_version=None, plugin_root_path=None):
         shutil.rmtree(stage, ignore_errors=True)
 
 
-def launch_loader_restart(status_path, *, app_pid=None, cleanup_archive=None):
-    """Open a terminal for the sudo prompt needed to restart Decky Loader."""
+def launch_loader_restart(status_path, *, app_pid=None, cleanup_archive=None,
+                          install_archive_path=None, expected_version=None):
+    """Open a terminal to install the verified plugin and restart Decky Loader."""
     cleanup = ''
     if cleanup_archive is not None:
         archive = Path(cleanup_archive).resolve()
@@ -91,14 +92,32 @@ def launch_loader_restart(status_path, *, app_pid=None, cleanup_archive=None):
             f'rm -rf -- {shlex.quote(str(archive.parent))}; '
             f'rm -f -- {shlex.quote(str(status_file))}; fi')
         cleanup = f'nohup bash -c {shlex.quote(watcher)} </dev/null >/dev/null 2>&1 & '
+    install_command = "sudo systemctl restart plugin_loader.service"
+    if install_archive_path is not None:
+        archive = Path(install_archive_path).resolve()
+        if cleanup_archive is None or archive != Path(cleanup_archive).resolve():
+            return {"ok": False, "message": "Refusing installation outside verified staging."}
+        try:
+            decky_release.validate_archive(archive, expected_version)
+            extraction = archive.parent / "installer"
+            if extraction.exists():
+                shutil.rmtree(extraction)
+            extraction.mkdir(mode=0o700)
+            shutil.unpack_archive(str(archive), str(extraction), "zip")
+            installer = extraction / PLUGIN_DIRECTORY / "install.sh"
+            if not installer.is_file():
+                raise ValueError("Plugin package has no standalone installer")
+            install_command = "bash " + shlex.quote(str(installer))
+        except (OSError, ValueError, shutil.ReadError) as error:
+            return {"ok": False, "message": str(error)}
     status = shlex.quote(str(status_path))
     command = (
         f"printf 'running:%s\\n' \"$$\" > {status}; "
-        "sudo systemctl restart plugin_loader.service; result=$?; "
+        f"{install_command}; result=$?; "
         f"printf '%s\\n' \"$result\" > {status}; "
         + cleanup + "echo; if [ \"$result\" -eq 0 ]; then "
-        "echo 'Decky Loader restarted.'; else "
-        "echo 'Decky Loader restart failed.'; fi; "
+        "echo 'Decky plugin operation completed.'; else "
+        "echo 'Decky plugin operation failed.'; fi; "
         "read -r -p 'Press Enter to close... '")
     for name, prefix in UPDATE_TERMINALS:
         if shutil.which(name) is None:
