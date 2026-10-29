@@ -13,18 +13,23 @@ type CpuCapabilities = {
   boost: boolean;
   max_freq: boolean;
   clock_range_mhz: [number, number] | null;
+  gpu_clock_range_mhz: [number, number] | null;
 };
 
 type PluginState = {
   profiles: string[];
   current_profile: string | null;
   cpu: { boost: boolean | null; max_freq_mhz: number };
+  gpu: { clock_limit_mhz: number | null };
   capabilities: CpuCapabilities;
 };
 
+type Telemetry = { cpu_temp: number | null; gpu_temp: number | null; fans: Record<string, number | null> };
 type RpcResult = { ok: boolean; error?: string; state?: PluginState };
 
 const getState = callable<[], PluginState | RpcResult>("get_state");
+const getTelemetry = callable<[], Telemetry | RpcResult>("get_telemetry");
+const setGpuClockLimit = callable<[mhz: number], RpcResult>("set_gpu_clock_limit");
 const setProfile = callable<[name: string], RpcResult>("set_profile");
 const setCpuBoost = callable<[enabled: boolean], RpcResult>("set_cpu_boost");
 const setCpuMaxFreq = callable<[mhz: number], RpcResult>("set_cpu_max_freq");
@@ -40,6 +45,8 @@ function Content() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [clockValue, setClockValue] = useState(0);
+  const [gpuClockValue, setGpuClockValue] = useState(0);
+  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
   const [releaseStatus, setReleaseStatus] = useState("");
   const [updateAvailable, setUpdateAvailable] = useState(false);
 
@@ -51,12 +58,29 @@ function Content() {
     }
     setState(next);
     setClockValue(next.cpu.max_freq_mhz);
+    setGpuClockValue(next.gpu?.clock_limit_mhz || 0);
     setError("");
   }, []);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const result = await getTelemetry();
+        if (active) setTelemetry("ok" in result ? null : result);
+      } catch {
+        if (active) setTelemetry(null);
+      }
+      if (active) timer = setTimeout(() => void poll(), 5000);
+    };
+    void poll();
+    return () => { active = false; clearTimeout(timer); };
+  }, []);
 
   const perform = async (action: () => Promise<RpcResult>) => {
     setBusy(true);
@@ -88,8 +112,17 @@ function Content() {
   }
 
   const range = state.capabilities.clock_range_mhz;
+  const gpuRange = state.capabilities.gpu_clock_range_mhz;
+  const reading = (value: number | null | undefined, unit: string) =>
+    value == null ? "—" : `${value} ${unit}`;
   return (
     <PanelSection title="ROG Control">
+      <PanelSectionRow>
+        <div style={{ padding: "8px 0", lineHeight: 1.6 }}>
+          <div>CPU: {reading(telemetry?.cpu_temp, "°C")} · GPU: {reading(telemetry?.gpu_temp, "°C")}</div>
+          <div>Fans: CPU {reading(telemetry?.fans?.["1"], "RPM")} · GPU {reading(telemetry?.fans?.["2"], "RPM")} · Mid {reading(telemetry?.fans?.["3"], "RPM")}</div>
+        </div>
+      </PanelSectionRow>
       {state.profiles.map((profile) => (
         <PanelSectionRow key={profile}>
           <ButtonItem
@@ -147,6 +180,31 @@ function Content() {
               onClick={() => void perform(() => setCpuMaxFreq(0))}
             >
               Clear CPU clock ceiling
+            </ButtonItem>
+          </PanelSectionRow>
+        </>
+      )}
+
+      {gpuRange && (
+        <>
+          <PanelSectionRow>
+            <SliderField
+              label={`GPU clock ceiling${!gpuClockValue || gpuClockValue >= gpuRange[1] ? ": no limit" : `: ${gpuClockValue} MHz`}`}
+              min={gpuRange[0]} max={gpuRange[1]} step={15}
+              value={Math.max(gpuRange[0], Math.min(gpuRange[1], gpuClockValue || gpuRange[1]))}
+              showValue onChange={(value) => { if (!busy) setGpuClockValue(value); }}
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={busy || gpuClockValue === 0}
+              onClick={() => void perform(() => setGpuClockLimit(gpuClockValue))}>
+              Apply GPU clock ceiling
+            </ButtonItem>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={busy}
+              onClick={() => void perform(() => setGpuClockLimit(0))}>
+              Clear GPU clock ceiling
             </ButtonItem>
           </PanelSectionRow>
         </>

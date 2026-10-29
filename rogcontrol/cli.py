@@ -335,6 +335,7 @@ def main(argv=None):
     decky = commands.add_parser("decky", help="Decky plugin integration")
     decky_commands = decky.add_subparsers(dest="decky_action", required=True)
     decky_commands.add_parser("state", help="Print plugin-relevant state as JSON")
+    decky_commands.add_parser("telemetry", help="Print live temperatures and fan speeds")
     decky_commands.add_parser("update-check", help="Check for a Decky plugin release")
     decky_commands.add_parser("update-install", help="Install a verified Decky plugin release")
     select = decky_commands.add_parser("profile", help="Select a saved profile")
@@ -342,6 +343,8 @@ def main(argv=None):
     cpu = decky_commands.add_parser("cpu", help="Set a current-profile CPU value")
     cpu.add_argument("setting", choices=("boost", "max-freq"))
     cpu.add_argument("value", help="on/off for boost; MHz (0 clears) for max-freq")
+    gpu = decky_commands.add_parser("gpu", help="Set the active profile GPU ceiling")
+    gpu.add_argument("value", help="MHz (0 clears the ceiling)")
     args = parser.parse_args(argv)
     if args.command == "profile":
         if args.action == 'drain':
@@ -357,6 +360,14 @@ def main(argv=None):
         try:
             if args.decky_action == "state":
                 result = {"ok": True, "state": decky_api.get_state()}
+            elif args.decky_action == "telemetry":
+                result = {"ok": True, "telemetry": decky_api.get_telemetry()}
+            elif args.decky_action == "gpu":
+                try:
+                    mhz = int(args.value)
+                except ValueError as error:
+                    raise ValueError("GPU clock must be an integer MHz value") from error
+                result = decky_api.set_gpu_clock_limit(mhz)
             elif args.decky_action == "update-check":
                 from . import decky_install, decky_release
                 installed = decky_install.detect_installation()

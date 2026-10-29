@@ -1,7 +1,7 @@
 {
   "name": "rog-control-decky",
-  "version": "0.1.0",
-  "description": "Decky plugin for ROG Control profiles and CPU settings",
+  "version": "0.1.1",
+  "description": "Decky plugin for ROG Control profiles, CPU and GPU settings, and sensors",
   "type": "module",
   "scripts": {
     "build": "rollup -c",

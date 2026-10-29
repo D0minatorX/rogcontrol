@@ -17,11 +17,27 @@ def _cpu_capabilities(caps):
 def get_state(config_data=None, caps=None):
     """Return saved controls and detected support without importing GTK."""
     cfg = config_data if config_data is not None else config.load_config()
-    detected = caps if caps is not None else hardware.detect_capabilities()
+    detected = caps if caps is not None else hardware.detect_capabilities(probe_gpu=False)
     name = cfg.get("current_profile")
     profile = (cfg.get("profiles") or {}).get(name) or {}
     cpu = profile.get("cpu") or {}
     limits = _cpu_capabilities(detected)
+    gpu = profile.get("gpu") or {}
+    maximum = None
+    supported = False
+    if detected.get("nvidia"):
+        with profile_requests.hardware_apply_lock():
+            # Reread under the lock when inspecting the live profile: the probe
+            # reapplies its saved ceiling and must not restore a stale value.
+            if config_data is None:
+                cfg = config.load_config()
+                name = cfg.get("current_profile")
+                profile = (cfg.get("profiles") or {}).get(name) or {}
+                cpu = profile.get("cpu") or {}
+                gpu = profile.get("gpu") or {}
+            maximum = hardware.detect_gpu_max_clock()
+            supported = bool(maximum and hardware.gpu_clock_limit_supported(gpu.get("clock_limit")))
+    limits["gpu_clock_range_mhz"] = [hardware.CLOCK_LIMIT_MIN, maximum] if supported else None
     return {
         "profiles": list((cfg.get("profiles") or {}).keys()),
         "current_profile": name,
@@ -30,6 +46,7 @@ def get_state(config_data=None, caps=None):
             # Config and kernel cpufreq values are in kHz; the plugin displays MHz.
             "max_freq_mhz": (int(cpu.get("max_freq", 0) or 0) // 1000),
         },
+        "gpu": {"clock_limit_mhz": gpu.get("clock_limit")},
         "capabilities": limits,
     }
 
@@ -95,4 +112,44 @@ def set_cpu_value(key, value):
             "cpu_clock": bool(caps.get("cpu_clock")),
             "cpu_power_limits": caps.get("cpu_power_limits"),
         })
-    return {"ok": True, "state": get_state(updated, caps)}
+    # Read the current profile again before the GPU capability probe: a
+    # profile switch could occur after the CPU hardware lock was released.
+    return {"ok": True, "state": get_state(caps=caps)}
+
+
+def get_telemetry():
+    """Read live sensors without changing GPU settings."""
+    gpu_temp = None
+    if not hardware.dgpu_is_suspended():
+        gpu_temp = hardware.read_nvidia_query(("temperature.gpu",), timeout=3)[0]
+    return {"cpu_temp": hardware.read_cpu_temp(), "gpu_temp": gpu_temp,
+            "fans": hardware.read_fan_rpms()}
+
+
+def set_gpu_clock_limit(mhz):
+    """Apply and save the active profile's GPU ceiling; 0 clears it."""
+    if isinstance(mhz, bool) or not isinstance(mhz, int):
+        raise ValueError("GPU clock must be an integer MHz value")
+    with profile_requests.hardware_apply_lock():
+        caps = hardware.detect_capabilities(probe_gpu=False)
+        cfg = config.load_config()
+        name = cfg.get("current_profile")
+        if name not in (cfg.get("profiles") or {}):
+            raise ValueError("there is no active profile")
+        gpu = cfg["profiles"][name].get("gpu") or {}
+        maximum = hardware.detect_gpu_max_clock() if caps.get("nvidia") else None
+        if not maximum or not hardware.gpu_clock_limit_supported(gpu.get("clock_limit")):
+            raise ValueError("GPU clock ceiling is unavailable")
+        if mhz != 0 and not hardware.CLOCK_LIMIT_MIN <= mhz <= maximum:
+            raise ValueError(f"GPU clock must be 0 or between {hardware.CLOCK_LIMIT_MIN} and {maximum} MHz")
+        value = maximum if mhz == 0 else mhz
+        ok, message = hardware.run_helper_logged(
+            "gpuclocklimit", hardware.gpu_clock_limit_arg(value, maximum), source="decky", timeout=30)
+        if not ok:
+            raise RuntimeError(message or "Could not apply GPU clock ceiling")
+        def mutate(current):
+            if current.get("current_profile") != name or name not in (current.get("profiles") or {}):
+                raise RuntimeError("Active profile changed while applying GPU ceiling")
+            current["profiles"][name].setdefault("gpu", {})["clock_limit"] = value
+        config.update_config(mutate)
+    return {"ok": True}

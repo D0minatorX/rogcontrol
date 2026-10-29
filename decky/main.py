@@ -58,6 +58,13 @@ class Plugin:
         result = await self._call(["state"])
         return result.get("state") if result.get("ok") else result
 
+    async def get_telemetry(self):
+        result = await self._call(["telemetry"], timeout=15)
+        return result.get("telemetry") if result.get("ok") else result
+
+    async def set_gpu_clock_limit(self, mhz: int):
+        return await self._call(["gpu", str(mhz)])
+
     async def set_profile(self, name: str):
         result = await self._call(["profile", name])
         if not result.get("ok"):
