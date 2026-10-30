@@ -1,284 +1,102 @@
-import {
-  ButtonItem,
-  PanelSection,
-  PanelSectionRow,
-  SliderField,
-  staticClasses,
-  ToggleField,
-} from "@decky/ui";
+import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow, SliderField, staticClasses, ToggleField } from "@decky/ui";
 import { callable, definePlugin } from "@decky/api";
-import { useCallback, useEffect, useState } from "react";
-
-type CpuCapabilities = {
-  boost: boolean;
-  max_freq: boolean;
-  clock_range_mhz: [number, number] | null;
-  gpu_clock_range_mhz: [number, number] | null;
-};
-
-type PluginState = {
-  profiles: string[];
-  current_profile: string | null;
-  cpu: { boost: boolean | null; max_freq_mhz: number };
-  gpu: { clock_limit_mhz: number | null };
-  capabilities: CpuCapabilities;
-};
-
-type Telemetry = { cpu_temp: number | null; gpu_temp: number | null; fans: Record<string, number | null> };
-type RpcResult = { ok: boolean; error?: string; state?: PluginState };
-
-const getState = callable<[], PluginState | RpcResult>("get_state");
-const getTelemetry = callable<[], Telemetry | RpcResult>("get_telemetry");
-const setGpuClockLimit = callable<[mhz: number], RpcResult>("set_gpu_clock_limit");
-const setProfile = callable<[name: string], RpcResult>("set_profile");
-const setCpuBoost = callable<[enabled: boolean], RpcResult>("set_cpu_boost");
-const setCpuMaxFreq = callable<[mhz: number], RpcResult>("set_cpu_max_freq");
-const checkForUpdate = callable<[], RpcResult>("check_for_update");
-const installUpdate = callable<[], RpcResult>("install_update");
-
-function isError(value: PluginState | RpcResult): value is RpcResult {
-  return "ok" in value && value.ok === false;
-}
-
+import { useCallback, useEffect, useRef, useState } from "react";
+type State = { protocol_version?: number; profiles: string[]; current_profile: string | null; cpu: { boost: boolean | null; max_freq_mhz: number }; gpu?: { clock_limit_mhz: number | null }; capabilities: { boost: boolean; max_freq: boolean; clock_range_mhz: [number, number] | null; gpu_clock_range_mhz?: [number, number] | null } };
+type Telemetry = { cpu_temp: number | null; gpu_temp: number | null; gpu_status?: string; fans: Record<string, number | null>; current_profile?: string | null };
+type Result = { ok: boolean; error?: string; message?: string; available?: boolean; version?: string };
+const getState = callable<[], State | Result>("get_state");
+const getTelemetry = callable<[], Telemetry | Result>("get_telemetry");
+const setProfile = callable<[string], Result>("set_profile");
+const setCpuBoost = callable<[boolean], Result>("set_cpu_boost");
+const setCpuMaxFreq = callable<[number], Result>("set_cpu_max_freq");
+const setGpuClockLimit = callable<[number], Result>("set_gpu_clock_limit");
+const checkForUpdate = callable<[], Result>("check_for_update");
+const installUpdate = callable<[], Result>("install_update");
+const isResult = (v: State | Telemetry | Result): v is Result => "ok" in v;
+const reading = (v: number | null | undefined, unit: string) => v == null ? "Unavailable" : `${Math.round(v)} ${unit}`;
 function Content() {
-  const [state, setState] = useState<PluginState | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [clockValue, setClockValue] = useState(0);
-  const [gpuClockValue, setGpuClockValue] = useState(0);
+  const [state, setState] = useState<State | null>(null);
   const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
-  const [releaseStatus, setReleaseStatus] = useState("");
+  const [sampleAt, setSampleAt] = useState<number | null>(null);
+  const [sampleError, setSampleError] = useState("");
+  const [now, setNow] = useState(Date.now());
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [cpuClock, setCpuClock] = useState(0);
+  const [gpuClock, setGpuClock] = useState(0);
   const [updateAvailable, setUpdateAvailable] = useState(false);
-
+  const profile = useRef<string | null>(null);
+  const busyRef = useRef(false);
+  const previousGpuStatus = useRef<string | undefined>(undefined);
   const refresh = useCallback(async () => {
-    const next = await getState();
-    if (isError(next)) {
-      setError(next.error || "Could not read ROG Control settings");
-      return;
-    }
-    setState(next);
-    setClockValue(next.cpu.max_freq_mhz);
-    setGpuClockValue(next.gpu?.clock_limit_mhz || 0);
-    setError("");
+    const value = await getState();
+    if (isResult(value)) throw new Error(value.error || "Could not connect to ROG Control");
+    setState(value); profile.current = value.current_profile;
+    setCpuClock(value.cpu.max_freq_mhz); setGpuClock(value.gpu?.clock_limit_mhz || 0);
   }, []);
-
+  useEffect(() => { void refresh().catch((e) => setError(String(e))); }, [refresh]);
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  useEffect(() => {
-    let active = true;
-    let timer: ReturnType<typeof setTimeout>;
+    let active = true; let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const result = await getTelemetry();
-        if (active) setTelemetry("ok" in result ? null : result);
-      } catch {
-        if (active) setTelemetry(null);
-      }
+        const value = await getTelemetry();
+        if (isResult(value)) throw new Error(value.error || "Could not read sensors");
+        if (!active) return;
+        setTelemetry(value); setSampleAt(Date.now()); setSampleError("");
+        const woke = previousGpuStatus.current === "sleeping" && value.gpu_status === "available";
+        previousGpuStatus.current = value.gpu_status;
+        if (!busyRef.current && (woke || (value.current_profile !== undefined && value.current_profile !== profile.current))) await refresh();
+      } catch (e) { if (active) setSampleError(String(e)); }
       if (active) timer = setTimeout(() => void poll(), 5000);
     };
-    void poll();
-    return () => { active = false; clearTimeout(timer); };
-  }, []);
-
-  const perform = async (action: () => Promise<RpcResult>) => {
-    setBusy(true);
-    setError("");
-    try {
-      const result = await action();
-      if (!result.ok) {
-        setError(result.error || "ROG Control could not apply that setting");
-        return;
-      }
-      await refresh();
-    } catch (cause) {
-      setError(String(cause));
-    } finally {
-      setBusy(false);
-    }
+    void poll(); const clock = setInterval(() => setNow(Date.now()), 1000);
+    return () => { active = false; clearTimeout(timer); clearInterval(clock); };
+  }, [refresh]);
+  const perform = async (pending: string, action: () => Promise<Result>, success: string) => {
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true); setMessage(pending); setError("");
+    try { const result = await action(); if (!result.ok) throw new Error(result.error || "Setting failed"); await refresh(); setMessage(success); }
+    catch (e) { setMessage(""); setError(String(e)); try { await refresh(); } catch { /* retain action error */ } }
+    finally { busyRef.current = false; setBusy(false); }
   };
-
-  if (!state) {
-    return (
-      <PanelSection title="ROG Control">
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => void refresh()}>
-            {error || "Connect to ROG Control"}
-          </ButtonItem>
-        </PanelSectionRow>
-      </PanelSection>
-    );
-  }
-
-  const range = state.capabilities.clock_range_mhz;
-  const gpuRange = state.capabilities.gpu_clock_range_mhz;
-  const reading = (value: number | null | undefined, unit: string) =>
-    value == null ? "—" : `${value} ${unit}`;
-  return (
-    <PanelSection title="ROG Control">
-      <PanelSectionRow>
-        <div style={{ padding: "8px 0", lineHeight: 1.6 }}>
-          <div>CPU: {reading(telemetry?.cpu_temp, "°C")} · GPU: {reading(telemetry?.gpu_temp, "°C")}</div>
-          <div>Fans: CPU {reading(telemetry?.fans?.["1"], "RPM")} · GPU {reading(telemetry?.fans?.["2"], "RPM")} · Mid {reading(telemetry?.fans?.["3"], "RPM")}</div>
-        </div>
-      </PanelSectionRow>
-      {state.profiles.map((profile) => (
-        <PanelSectionRow key={profile}>
-          <ButtonItem
-            layout="below"
-            disabled={busy || profile === state.current_profile}
-            onClick={() => void perform(() => setProfile(profile))}
-          >
-            {profile === state.current_profile ? `✓ ${profile}` : profile}
-          </ButtonItem>
-        </PanelSectionRow>
-      ))}
-
-      {state.capabilities.boost && (
-        <PanelSectionRow>
-          <ToggleField
-            label="CPU Turbo Boost"
-            description="Saved to the active ROG Control profile"
-            checked={Boolean(state.cpu.boost)}
-            disabled={busy}
-            onChange={(enabled) =>
-              void perform(() => setCpuBoost(enabled))
-            }
-          />
-        </PanelSectionRow>
-      )}
-
-      {state.capabilities.max_freq && range && (
-        <>
-          <PanelSectionRow>
-            <SliderField
-              label={`CPU clock ceiling${clockValue === 0 ? ": no limit" : `: ${clockValue} MHz`}`}
-              min={range[0]}
-              max={range[1]}
-              step={100}
-              value={Math.max(range[0], Math.min(range[1], clockValue || range[1]))}
-              showValue
-              onChange={(value) => {
-                if (!busy) setClockValue(value);
-              }}
-            />
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <ButtonItem
-              layout="below"
-              disabled={busy || clockValue === 0}
-              onClick={() => void perform(() => setCpuMaxFreq(clockValue))}
-            >
-              Apply CPU clock ceiling
-            </ButtonItem>
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <ButtonItem
-              layout="below"
-              disabled={busy || clockValue === 0}
-              onClick={() => void perform(() => setCpuMaxFreq(0))}
-            >
-              Clear CPU clock ceiling
-            </ButtonItem>
-          </PanelSectionRow>
-        </>
-      )}
-
-      {gpuRange && (
-        <>
-          <PanelSectionRow>
-            <SliderField
-              label={`GPU clock ceiling${!gpuClockValue || gpuClockValue >= gpuRange[1] ? ": no limit" : `: ${gpuClockValue} MHz`}`}
-              min={gpuRange[0]} max={gpuRange[1]} step={15}
-              value={Math.max(gpuRange[0], Math.min(gpuRange[1], gpuClockValue || gpuRange[1]))}
-              showValue onChange={(value) => { if (!busy) setGpuClockValue(value); }}
-            />
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <ButtonItem layout="below" disabled={busy || gpuClockValue === 0}
-              onClick={() => void perform(() => setGpuClockLimit(gpuClockValue))}>
-              Apply GPU clock ceiling
-            </ButtonItem>
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <ButtonItem layout="below" disabled={busy}
-              onClick={() => void perform(() => setGpuClockLimit(0))}>
-              Clear GPU clock ceiling
-            </ButtonItem>
-          </PanelSectionRow>
-        </>
-      )}
-
-      <PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          disabled={busy}
-          onClick={() => {
-            setBusy(true);
-            setReleaseStatus("Checking GitHub Releases…");
-            void checkForUpdate()
-              .then((result) => {
-                if (!result.ok) {
-                  setReleaseStatus(result.error || "Update check failed");
-                  return;
-                }
-                const update = (result as RpcResult & {
-                  available?: boolean;
-                  version?: string;
-                }).available;
-                setUpdateAvailable(Boolean(update));
-                const version = (result as RpcResult & { version?: string }).version;
-                setReleaseStatus(update ? `Version ${version} available` : "No update available");
-              })
-              .catch((cause) => setReleaseStatus(String(cause)))
-              .finally(() => setBusy(false));
-          }}
-        >
-          Check for plugin updates
-        </ButtonItem>
-      </PanelSectionRow>
-      {updateAvailable && (
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            disabled={busy}
-          onClick={() => {
-            setBusy(true);
-            setReleaseStatus("Downloading and installing plugin update…");
-              void installUpdate()
-                .then((result) => {
-                  setReleaseStatus(result.ok ? (result as RpcResult & { message?: string }).message || "Update installed" : result.error || "Update failed");
-                  if (result.ok) setUpdateAvailable(false);
-                })
-                .catch((cause) => setReleaseStatus(String(cause)))
-                .finally(() => setBusy(false));
-            }}
-          >
-            Update plugin
-          </ButtonItem>
-        </PanelSectionRow>
-      )}
-      {releaseStatus && (
-        <PanelSectionRow>
-          <ButtonItem layout="below" disabled>{releaseStatus}</ButtonItem>
-        </PanelSectionRow>
-      )}
-
-      {error && (
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => void refresh()}>
-            {error}
-          </ButtonItem>
-        </PanelSectionRow>
-      )}
+  if (!state) return <PanelSection title="ROG Control"><PanelSectionRow><ButtonItem layout="below" onClick={() => void refresh().then(() => setError("")).catch((e) => setError(String(e)))}>{error || "Connecting to ROG Control…"} — retry</ButtonItem></PanelSectionRow></PanelSection>;
+  const cpu = state.capabilities.clock_range_mhz; const gpu = state.capabilities.gpu_clock_range_mhz;
+  const saved = state.gpu?.clock_limit_mhz; const age = sampleAt == null ? null : Math.max(0, Math.floor((now - sampleAt) / 1000));
+  return <>
+    <PanelSection title="Hardware"><PanelSectionRow><div style={{ lineHeight: 1.55, padding: "4px 0" }}>
+      <div>CPU {reading(telemetry?.cpu_temp, "°C")} · GPU {telemetry?.gpu_status === "sleeping" ? "Sleeping" : reading(telemetry?.gpu_temp, "°C")}</div>
+      <div>Fans: CPU {reading(telemetry?.fans?.["1"], "RPM")} · GPU {reading(telemetry?.fans?.["2"], "RPM")} · Mid {reading(telemetry?.fans?.["3"], "RPM")}</div>
+      <div style={{ opacity: 0.75 }}>{sampleError ? `Readings unavailable: ${sampleError}` : age == null ? "Waiting for readings…" : `${age > 15 ? "Stale · " : "Updated "}${age}s ago`}</div>
+    </div></PanelSectionRow></PanelSection>
+    <PanelSection title="Profile"><PanelSectionRow><DropdownItem label="Active profile" description={state.protocol_version !== 2 ? "Update ROG Control to enable profile feedback." : undefined} disabled={busy || !state.profiles.length || state.protocol_version !== 2} selectedOption={state.current_profile} rgOptions={state.profiles.map((name) => ({ label: name, data: name }))} onChange={(v) => { if (v.data !== state.current_profile) void perform(`Applying ${v.data}…`, () => setProfile(v.data), telemetry?.gpu_status === "sleeping" ? `Profile ${v.data} applied; GPU settings may wait for wake` : `Profile ${v.data} applied`); }} /></PanelSectionRow>
+      {(message || error) && <PanelSectionRow><div style={{ padding: "4px 0" }}>{error || message}</div></PanelSectionRow>}</PanelSection>
+    <PanelSection title="CPU">
+      {state.capabilities.boost && <PanelSectionRow><ToggleField label="Turbo Boost" checked={Boolean(state.cpu.boost)} disabled={busy} onChange={(value) => void perform("Applying CPU boost…", () => setCpuBoost(value), "CPU boost applied")} /></PanelSectionRow>}
+      {state.capabilities.max_freq && cpu && <>
+        <PanelSectionRow><SliderField label="Clock ceiling" description={cpuClock ? `${cpuClock} MHz` : "No limit"} min={cpu[0]} max={cpu[1]} step={100} disabled={busy} value={Math.max(cpu[0], Math.min(cpu[1], cpuClock || cpu[1]))} onChange={setCpuClock} /></PanelSectionRow>
+        <PanelSectionRow><ButtonItem layout="below" disabled={busy || !cpuClock} onClick={() => void perform("Applying CPU ceiling…", () => setCpuMaxFreq(cpuClock), "CPU ceiling applied")}>Apply CPU ceiling</ButtonItem></PanelSectionRow>
+        <PanelSectionRow><ButtonItem layout="below" disabled={busy} onClick={() => void perform("Clearing CPU ceiling…", () => setCpuMaxFreq(0), "CPU ceiling cleared")}>No CPU limit</ButtonItem></PanelSectionRow>
+      </>}
     </PanelSection>
-  );
+    <PanelSection title="GPU">
+      {(message || error) && <PanelSectionRow><div style={{ padding: "4px 0" }}>{error || message}</div></PanelSectionRow>}
+      <PanelSectionRow><div style={{ padding: "4px 0" }}>Saved ceiling: {saved == null || (gpu && saved >= gpu[1]) ? "No limit" : `${saved} MHz`}{telemetry?.gpu_status === "sleeping" ? " · GPU sleeping" : ""}</div></PanelSectionRow>
+      {gpu ? <>
+        <PanelSectionRow><SliderField label="Clock ceiling" description={gpuClock && gpuClock < gpu[1] ? `${gpuClock} MHz` : "No limit"} min={gpu[0]} max={gpu[1]} step={15} disabled={busy} value={Math.max(gpu[0], Math.min(gpu[1], gpuClock || gpu[1]))} onChange={setGpuClock} /></PanelSectionRow>
+        <PanelSectionRow><ButtonItem layout="below" disabled={busy || !gpuClock} onClick={() => void perform("Applying GPU ceiling…", () => setGpuClockLimit(gpuClock), "GPU ceiling applied and saved")}>Apply GPU ceiling</ButtonItem></PanelSectionRow>
+        <PanelSectionRow><ButtonItem layout="below" disabled={busy} onClick={() => void perform("Clearing GPU ceiling…", () => setGpuClockLimit(0), "GPU ceiling cleared")}>No GPU limit</ButtonItem></PanelSectionRow>
+      </> : <PanelSectionRow><div style={{ padding: "4px 0" }}>{telemetry?.gpu_status === "sleeping" ? "Wake the GPU, then refresh controls." : "GPU clock control unavailable. Refresh when GPU access is restored."}</div></PanelSectionRow>}
+      <PanelSectionRow><ButtonItem layout="below" disabled={busy} onClick={() => void perform("Refreshing…", async () => ({ ok: true }), "Controls refreshed")}>Refresh controls</ButtonItem></PanelSectionRow>
+    </PanelSection>
+    <PanelSection title="Updates">{(message || error) && <PanelSectionRow><div style={{ padding: "4px 0" }}>{error || message}</div></PanelSectionRow>}<PanelSectionRow><ButtonItem layout="below" disabled={busy} onClick={() => {
+      busyRef.current = true; setBusy(true); setMessage("Checking for updates…"); setError("");
+      void checkForUpdate().then((r) => { if (!r.ok || r.error) throw new Error(r.error || "Update check failed"); setUpdateAvailable(Boolean(r.available)); setMessage(r.available ? `Version ${r.version} available` : "No update available"); }).catch((e) => { setMessage(""); setError(String(e)); }).finally(() => { busyRef.current = false; setBusy(false); });
+    }}>Check for updates</ButtonItem></PanelSectionRow>
+    {updateAvailable && <PanelSectionRow><ButtonItem layout="below" disabled={busy} onClick={() => {
+      busyRef.current = true; setBusy(true); setMessage("Installing update…"); setError("");
+      void installUpdate().then((r) => { if (!r.ok) throw new Error(r.error || "Update failed"); setUpdateAvailable(false); setMessage(r.message || "Update installed. Reload Decky to activate it."); }).catch((e) => { setMessage(""); setError(String(e)); }).finally(() => { busyRef.current = false; setBusy(false); });
+    }}>Install update</ButtonItem></PanelSectionRow>}</PanelSection>
+  </>;
 }
-
-export default definePlugin(() => ({
-  name: "ROG Control",
-  titleView: <div className={staticClasses.Title}>ROG Control</div>,
-  content: <Content />,
-  icon: <span>🎮</span>,
-}));
+export default definePlugin(() => ({ name: "ROG Control", titleView: <div className={staticClasses.Title}>ROG Control</div>, content: <Content />, icon: <span>🎮</span> }));

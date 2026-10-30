@@ -12,7 +12,7 @@ import decky
 
 
 class Plugin:
-    def _command(self, args, timeout):
+    def _command(self, args, timeout, privileged=False):
         user_home = Path(getattr(decky, "DECKY_USER_HOME", Path.home()))
         launcher = user_home / ".local" / "bin" / "rogcontrol"
         if not launcher.is_file():
@@ -30,11 +30,20 @@ class Plugin:
             account = pwd.getpwuid(user_home.stat().st_uid)
             env["USER"] = account.pw_name
             env["LOGNAME"] = account.pw_name
+            runtime = Path(f"/run/user/{account.pw_uid}")
+            if runtime.is_dir():
+                env["XDG_RUNTIME_DIR"] = str(runtime)
+                if (runtime / "bus").exists():
+                    env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={runtime}/bus"
+            else:
+                env.pop("XDG_RUNTIME_DIR", None)
+                env.pop("DBUS_SESSION_BUS_ADDRESS", None)
             env["PATH"] = f"{user_home}/.local/bin:" + env.get("PATH", "/usr/bin:/bin")
-            runuser = shutil.which("runuser")
-            if not runuser:
-                raise RuntimeError("Cannot switch to the Decky user to access ROG Control")
-            argv = [runuser, "--user", account.pw_name, "--", *argv]
+            if not privileged:
+                runuser = shutil.which("runuser")
+                if not runuser:
+                    raise RuntimeError("Cannot switch to the Decky user to access ROG Control")
+                argv = [runuser, "--user", account.pw_name, "--", *argv]
 
         completed = subprocess.run(
             argv, capture_output=True, text=True, timeout=timeout, env=env,
@@ -48,9 +57,9 @@ class Plugin:
             raise RuntimeError(result.get("error") or "ROG Control request failed")
         return result
 
-    async def _call(self, args, timeout=30):
+    async def _call(self, args, timeout=30, privileged=False):
         try:
-            return await asyncio.to_thread(self._command, args, timeout)
+            return await asyncio.to_thread(self._command, args, timeout, privileged)
         except Exception as error:
             return {"ok": False, "error": str(error)}
 
@@ -69,13 +78,19 @@ class Plugin:
         result = await self._call(["profile", name])
         if not result.get("ok"):
             return result
-        for _attempt in range(40):
-            await asyncio.sleep(0.25)
-            state = await self.get_state()
-            if isinstance(state, dict) and state.get("current_profile") == name:
-                return {"ok": True, "profile": name, "state": state}
-        return {"ok": False,
-                "error": "Profile request was accepted but did not become active."}
+        request_id = result.get("request_id")
+        if not request_id:
+            return {"ok": False, "error": "Update ROG Control to use profile completion feedback."}
+        for _attempt in range(120):
+            await asyncio.sleep(0.5)
+            status = await self._call(["profile-status", request_id])
+            if not status.get("ok"):
+                return status
+            if status.get("status") == "applied":
+                return {"ok": True, "profile": name}
+            if status.get("status") in ("failed", "superseded"):
+                return {"ok": False, "error": status.get("error") or "Profile request was superseded."}
+        return {"ok": False, "error": "Profile application has not finished; check ROG Control."}
 
     async def set_cpu_boost(self, enabled: bool):
         return await self._call(["cpu", "boost", "on" if enabled else "off"])
@@ -87,7 +102,7 @@ class Plugin:
         return await self._call(["update-check"])
 
     async def install_update(self):
-        result = await self._call(["update-install"], timeout=180)
+        result = await self._call(["update-install"], timeout=180, privileged=(os.geteuid() == 0))
         if result.get("ok"):
             result["message"] = "Update installed. Reload Decky to activate it."
         return result

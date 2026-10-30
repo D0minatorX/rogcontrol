@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import uuid
+import time
 
 from . import config, hardware
 
@@ -75,6 +76,8 @@ def request_next(origin='shortcut'):
         current = cfg.get('current_profile')
         path = directory() / 'pending.json'
         previous = json.loads(path.read_text()) if path.exists() else {}
+        if previous.get('origin') == 'decky' and previous.get('id'):
+            _request_status(previous['id'], 'superseded')
         cursor = (previous.get('name')
                   if previous.get('base') == current and allowed(cfg, previous.get('origin'))
                   else current)
@@ -92,6 +95,25 @@ def request_next(origin='shortcut'):
             path.unlink(missing_ok=True)
             raise
     hardware.notify('ROG Control', f'Profile requested: {name}')
+
+
+def _request_status(ticket_id, status, error=None):
+    path = directory() / ('result-' + ticket_id + '.json')
+    temp = path.with_suffix('.tmp')
+    temp.write_text(json.dumps({'status': status, 'error': error}))
+    temp.replace(path)
+
+
+def request_status(ticket_id):
+    if not isinstance(ticket_id, str) or len(ticket_id) != 32 or any(c not in '0123456789abcdef' for c in ticket_id):
+        raise ValueError('invalid profile request ID')
+    path = directory() / ('result-' + ticket_id + '.json')
+    if not path.exists():
+        return {'status': 'unknown'}
+    result = json.loads(path.read_text())
+    if result.get('status') in ('applied', 'failed', 'superseded'):
+        path.unlink(missing_ok=True)
+    return result
 
 
 def request_profile(name, origin='decky'):
@@ -113,6 +135,15 @@ def request_profile(name, origin='decky'):
         ticket = {'id': uuid.uuid4().hex, 'name': name,
                   'origin': origin, 'base': current}
         path = directory() / 'pending.json'
+        if path.exists():
+            previous = json.loads(path.read_text())
+            if previous.get('origin') == 'decky':
+                _request_status(previous['id'], 'superseded')
+        # Keep status files bounded if a plugin disappears before collecting them.
+        for old in directory().glob('result-*.json'):
+            if old.stat().st_mtime < time.time() - 86400:
+                old.unlink(missing_ok=True)
+        _request_status(ticket['id'], 'pending')
         temporary = path.with_suffix('.tmp')
         temporary.write_text(json.dumps(ticket))
         temporary.replace(path)
@@ -120,9 +151,10 @@ def request_profile(name, origin='decky'):
             _launch()
         except OSError:
             path.unlink(missing_ok=True)
+            _request_status(ticket['id'], 'failed', 'Could not start profile worker')
             raise
     hardware.notify('ROG Control', f'Profile requested: {name}')
-    return {'accepted': True, 'profile': name}
+    return {'accepted': True, 'profile': name, 'request_id': ticket['id']}
 
 
 def drain(apply):
@@ -146,8 +178,10 @@ def drain(apply):
                 valid = (allowed(cfg, ticket['origin'])
                          and cfg.get('current_profile') == ticket['base']
                          and ticket['name'] in cfg.get('profiles', {}))
+                locked = False
                 if valid and ticket['origin'] != 'shortcut':
-                    valid = active_session()
+                    locked = not active_session()
+                    valid = not locked
                 if valid:
                     selected = []
                     def select(latest):
@@ -159,10 +193,19 @@ def drain(apply):
                     cfg = config.update_config(select)
                     valid = bool(selected)
             if not valid:
+                if ticket['origin'] == 'decky':
+                    _request_status(ticket['id'], 'failed' if locked else 'superseded',
+                                    'Unlock the active local session and retry.' if locked else None)
                 continue
+            if ticket['origin'] == 'decky':
+                _request_status(ticket['id'], 'applying')
             try:
                 apply(cfg, ticket['name'])
+                if ticket['origin'] == 'decky':
+                    _request_status(ticket['id'], 'applied')
             except Exception as error:
+                if ticket['origin'] == 'decky':
+                    _request_status(ticket['id'], 'failed', str(error))
                 hardware.log(f'Profile {ticket["name"]}: {error}', 'ERROR',
                              source='cycle-profile', dedupe_key='apply')
                 hardware.notify('ROG Control', f'Profile {ticket["name"]} apply failed: {error}')

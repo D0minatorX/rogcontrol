@@ -144,7 +144,7 @@ def apply_selected_profile(config, next_name):
         traceback.print_exc()
         notify("ROG Control",
                f"Profile {next_name} was only partly applied — {e}")
-        return
+        raise
     # Do not announce an obsolete profile after the user has selected another.
     if config_mod.load_config().get('current_profile') == next_name:
         notify("ROG Control", f"Profile switched to {next_name}")
@@ -338,6 +338,8 @@ def main(argv=None):
     decky_commands.add_parser("telemetry", help="Print live temperatures and fan speeds")
     decky_commands.add_parser("update-check", help="Check for a Decky plugin release")
     decky_commands.add_parser("update-install", help="Install a verified Decky plugin release")
+    profile_status = decky_commands.add_parser("profile-status", help="Read profile application status")
+    profile_status.add_argument("request_id")
     select = decky_commands.add_parser("profile", help="Select a saved profile")
     select.add_argument("name")
     cpu = decky_commands.add_parser("cpu", help="Set a current-profile CPU value")
@@ -390,6 +392,9 @@ def main(argv=None):
                 finally:
                     decky_release.cleanup_staged(archive)
                 result["restart_required"] = True
+            elif args.decky_action == "profile-status":
+                from . import profile_requests
+                result = {"ok": True, **profile_requests.request_status(args.request_id)}
             elif args.decky_action == "profile":
                 result = {"ok": True, **decky_api.set_profile(args.name)}
             elif args.setting == "boost":

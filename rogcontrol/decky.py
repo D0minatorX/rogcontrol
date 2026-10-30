@@ -25,7 +25,7 @@ def get_state(config_data=None, caps=None):
     gpu = profile.get("gpu") or {}
     maximum = None
     supported = False
-    if detected.get("nvidia"):
+    if detected.get("nvidia") and not hardware.dgpu_is_suspended():
         with profile_requests.hardware_apply_lock():
             # Reread under the lock when inspecting the live profile: the probe
             # reapplies its saved ceiling and must not restore a stale value.
@@ -39,6 +39,7 @@ def get_state(config_data=None, caps=None):
             supported = bool(maximum and hardware.gpu_clock_limit_supported(gpu.get("clock_limit")))
     limits["gpu_clock_range_mhz"] = [hardware.CLOCK_LIMIT_MIN, maximum] if supported else None
     return {
+        "protocol_version": 2,
         "profiles": list((cfg.get("profiles") or {}).keys()),
         "current_profile": name,
         "cpu": {
@@ -76,7 +77,7 @@ def set_cpu_value(key, value):
     """
     if key not in ("boost", "max_freq"):
         raise ValueError("unsupported CPU setting")
-    caps = hardware.detect_capabilities()
+    caps = hardware.detect_capabilities(probe_gpu=False)
     if key == "boost" and not caps.get("cpu_boost"):
         raise ValueError("CPU boost control is unavailable")
     clock = caps.get("cpu_clock")
@@ -120,10 +121,13 @@ def set_cpu_value(key, value):
 def get_telemetry():
     """Read live sensors without changing GPU settings."""
     gpu_temp = None
-    if not hardware.dgpu_is_suspended():
+    suspended = hardware.dgpu_is_suspended()
+    if not suspended:
         gpu_temp = hardware.read_nvidia_query(("temperature.gpu",), timeout=3)[0]
     return {"cpu_temp": hardware.read_cpu_temp(), "gpu_temp": gpu_temp,
-            "fans": hardware.read_fan_rpms()}
+            "gpu_status": "sleeping" if suspended else ("available" if gpu_temp is not None else "unavailable"),
+            "fans": hardware.read_fan_rpms(),
+            "current_profile": config.load_config().get("current_profile")}
 
 
 def set_gpu_clock_limit(mhz):
@@ -137,6 +141,8 @@ def set_gpu_clock_limit(mhz):
         if name not in (cfg.get("profiles") or {}):
             raise ValueError("there is no active profile")
         gpu = cfg["profiles"][name].get("gpu") or {}
+        if hardware.dgpu_is_suspended():
+            raise RuntimeError("GPU is sleeping; wake it before changing the clock ceiling")
         maximum = hardware.detect_gpu_max_clock() if caps.get("nvidia") else None
         if not maximum or not hardware.gpu_clock_limit_supported(gpu.get("clock_limit")):
             raise ValueError("GPU clock ceiling is unavailable")

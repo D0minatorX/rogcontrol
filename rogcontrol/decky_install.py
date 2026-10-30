@@ -44,6 +44,12 @@ def install_archive(archive_path, expected_version=None, plugin_root_path=None):
     manifest = decky_release.validate_archive(archive_path, expected_version)
     root = Path(plugin_root_path) if plugin_root_path else plugin_root()
     parent = root.parent
+    if root.is_symlink():
+        raise ValueError("plugin destination must not be a symbolic link")
+    if root.exists():
+        existing = detect_installation(root)
+        if not existing.get("installed"):
+            raise ValueError("plugin destination is not an existing ROG Control installation")
     parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".rogcontrol-stage-", dir=parent))
     staged_plugin = stage / PLUGIN_DIRECTORY
