@@ -8,12 +8,6 @@ import traceback
 from . import config as config_mod
 from . import fancurve, hardware, kbdcolor
 
-# See rogcontrol-apply.py: one copy of the curve maths and one of the helper
-# call, both in the package.
-interpolate_curve = fancurve.interpolate_curve
-pct_to_pwm255 = fancurve.pct_to_pwm255
-
-
 def run_helper(*args):
     """Run a privileged action and REPORT failure. The package's, so this
     hotkey cannot drift away from what the boot apply does."""

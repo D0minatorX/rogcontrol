@@ -78,10 +78,6 @@ from rogcontrol import gamescope  # noqa: E402
 from rogcontrol import profile_requests  # noqa: E402
 from rogcontrol import daily_automation, keyboard_idle, hotkeys  # noqa: E402
 
-# One copy of the curve maths, in the package. See rogcontrol-apply.py.
-interpolate_curve = fancurve.interpolate_curve
-pct_to_pwm255 = fancurve.pct_to_pwm255
-
 # The package's path, not a fourth spelling of the same string. Three files
 # wrote it out by hand; a config that moved would have moved for the window
 # and stayed put for this service.

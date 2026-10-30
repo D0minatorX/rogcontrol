@@ -9,7 +9,6 @@ no dependency on LACT or any other GPU-control application.
 import argparse
 import ctypes
 import json
-import sys
 
 
 NVAPI_OK = 0

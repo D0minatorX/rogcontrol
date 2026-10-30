@@ -61,14 +61,6 @@ from rogcontrol import fancurve  # noqa: E402
 from rogcontrol import gamescope, charge_once, keyboard_power  # noqa: E402
 from rogcontrol import hardware  # noqa: E402
 
-# The curve maths and the helper call are the package's, not this script's.
-# Both used to be copied in here verbatim -- interpolate_curve existed in
-# four files and run_helper in seven -- which is how the silent-failure bug
-# fixed in the enforcer survived here for another release.
-interpolate_curve = fancurve.interpolate_curve
-pct_to_pwm255 = fancurve.pct_to_pwm255
-
-
 def run_helper(*args):
     """Run a privileged action and REPORT failure.
 
