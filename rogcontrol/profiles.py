@@ -52,16 +52,6 @@ def expected_ppd_mode(profile_name, profile=None):
     return PROFILE_TO_PPD_MODE.get(profile_name)
 
 
-def ppd_modes_agree(profile_name, actual_mode, profile=None):
-    """True/False if the two can be compared, None if they cannot.
-
-    Three states rather than two, for the same reason as above: "no opinion"
-    and "disagrees" are different things to put on screen."""
-    expected = expected_ppd_mode(profile_name, profile)
-    if expected is None or actual_mode is None:
-        return None
-    return expected == actual_mode
-
 # Ordered coolest/quietest first, which is the order they appear in the
 # profile menu and the tray.
 #

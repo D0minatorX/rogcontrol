@@ -44,6 +44,36 @@ which you tested it. Add or update regression tests where practical. Do not
 make a control visible solely because a range is reported: unsupported
 devices must continue to hide it safely.
 
+## Source layout and local checks
+
+The application source is in `rogcontrol/`. Qt controllers live in
+`rogcontrol/qt/controllers/`, and the window and components are in
+`rogcontrol/qml/`. Hardware reads and helper calls live in `hardware.py`;
+`cpu_plan.py` builds the ordered CPU commands without accessing hardware.
+`fancurve.py` owns shared fan-curve conversion and write decisions. The
+`rogcontrol-apply.py` and `rogcontrol-enforcer.py` scripts handle login and
+background enforcement. The separate Decky plugin is in `decky/`.
+
+With the local test suite available, run from the repository root:
+
+```sh
+python3 scripts/test_qt_release.py
+QT_QPA_PLATFORM=offscreen python3 -m rogcontrol --self-test
+QT_QPA_PLATFORM=offscreen python3 scripts/smoke_qt_capabilities.py
+QT_QPA_PLATFORM=offscreen python3 scripts/smoke_qt_capabilities.py --unsupported
+```
+
+The `tests/` directory is kept local and is not included in this repository.
+The release runner needs those local tests, plus the GPU recovery tests in
+`scripts/`. It rejects unclassified test modules rather than silently omitting
+them. Qt UI tests run separately with the offscreen platform.
+
+These checks use fixtures and mocked hardware operations; they do not prove
+physical device behavior. For installer or resource changes, also verify the
+staged installation/package contents. The dated
+[Qt validation record](docs/QT-1.0.2.2-VALIDATION.md) records the checks performed
+and their limits.
+
 ## What's useful even without touching code
 
 Confirmation reports are genuinely useful: "worked on a G614JI, here's what differed" is a real contribution, not noise. Open an issue for it.

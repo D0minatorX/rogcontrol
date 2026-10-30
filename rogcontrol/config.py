@@ -98,39 +98,9 @@ DEFAULT_CONFIG = {
 }
 
 
-# The "leave it alone" entry in the two auto-switch pickers. It is a label,
-# not a profile: choosing it stores null, and null is what every reader
-# treats as "do not switch on this power source". Storing the label itself
-# would name a profile that does not exist, and the switch would look
-# configured while doing nothing.
-NO_AUTO_SWITCH = "Don't auto-switch"
-
 # Config keys the pickers write, by power source.
 AUTO_SWITCH_KEYS = {"ac": "ac_profile", "battery": "battery_profile",
                     "usbc": "usbc_profile"}
-
-
-def auto_switch_choices(cfg):
-    """The picker's entries: the no-op first, then every profile."""
-    profiles = cfg.get("profiles")
-    names = list(profiles) if isinstance(profiles, dict) else []
-    return [NO_AUTO_SWITCH] + names
-
-
-def auto_switch_selected(cfg, key):
-    """Index into auto_switch_choices for what is stored under ``key``.
-
-    A stored profile that no longer exists -- renamed or deleted since it
-    was chosen -- selects the no-op rather than nothing at all, so the
-    picker cannot come up blank."""
-    choices = auto_switch_choices(cfg)
-    stored = cfg.get(key)
-    return choices.index(stored) if stored in choices[1:] else 0
-
-
-def auto_switch_value(label):
-    """What to store for a chosen label: None for the no-op entry."""
-    return None if label == NO_AUTO_SWITCH else label
 
 
 # --- creating, deleting and moving profiles between machines ----------------
@@ -382,14 +352,6 @@ def restore_backup(cfg, data):
     return migrate_config(cfg)
 
 
-# How often an open window re-checks the config file. The window is not the
-# only writer -- the enforcer's AC auto-switch and its power-mode adoption,
-# the tray and the hotkey cycler all write it -- and a window that loaded the
-# file once at startup and then wrote its whole in-memory copy back on every
-# slider would silently revert every one of them.
-CONFIG_POLL_SECONDS = 5
-
-
 def config_mtime():
     """When the config file was last written, or None if it cannot be asked."""
     try:
@@ -411,28 +373,6 @@ def config_file_moved_on(last_mtime, mtime):
     if last_mtime is None or mtime is None:
         return False
     return mtime != last_mtime
-
-
-def reload_decision(current, fresh):
-    """What a config written by something else means for an open window.
-
-    Returns ``(profile_changed, contents_changed)``; both False means the
-    file moved but says nothing new to us -- which is the common case,
-    because the window's own saves change the mtime too.
-
-    The profile NAME staying the same does not mean its contents did: the
-    enforcer, the hotkey cycler and an import can all rewrite curves and
-    limits under the same name. A window that only watched the name kept
-    showing what it loaded at startup, so the graphs said one thing while
-    the hardware did another -- and the next Apply pushed the stale picture
-    back over the newer values."""
-    name = fresh.get("current_profile")
-    profile_changed = name != current.get("current_profile")
-    contents_changed = (
-        not profile_changed
-        and (fresh.get("profiles") or {}).get(name)
-        != (current.get("profiles") or {}).get(name))
-    return profile_changed, contents_changed
 
 
 # --- where the result of a deferred apply may be written ---------------------

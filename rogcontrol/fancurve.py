@@ -317,17 +317,6 @@ def pct_to_rpm(pct, floor, slope):
     return round(floor + slope * pct)
 
 
-def rpm_to_pct(rpm, floor, slope):
-    """The curve percentage a live rpm reading corresponds to.
-
-    The inverse of pct_to_rpm, and clamped for the same reason at the bottom
-    end: a fan idling a few rpm below the fitted floor would otherwise report
-    a negative percentage."""
-    if slope <= 0:
-        return None
-    return round(max(0, min(100, (rpm - floor) / slope)))
-
-
 def fit_rpm_cal(samples):
     """(floor, slope) anchored exactly through the lowest- and
     highest-percentage points measured, from ``(percent, rpm)`` pairs.

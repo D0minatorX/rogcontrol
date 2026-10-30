@@ -358,15 +358,6 @@ def boost_ambient(color):
     return tuple(min(255, round(c * gain)) for c in color)
 
 
-def average_color(zones):
-    """One colour standing in for several, for a keyboard without zones."""
-    zones = list(zones)
-    if not zones:
-        return (0, 0, 0)
-    return tuple(sum(zone[i] for zone in zones) // len(zones)
-                 for i in range(3))
-
-
 # -- screen frames -----------------------------------------------------------
 #
 # Used only by Ambient mode, but kept here rather than beside the capture

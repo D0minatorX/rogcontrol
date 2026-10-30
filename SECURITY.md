@@ -6,7 +6,7 @@ The part of this app worth a security report is the privileged path: `rogcontrol
 
 If you find a way for the helper to be made to do something other than what its caller asked — argument injection, a path that isn't validated, a way to reach a shell through it, a sudoers rule broader than "run this one binary" — that's a real report.
 
-Bugs in the GTK4 UI, a control that doesn't work on your hardware, or the fan curve not behaving the way you expect are **not** security issues — file those as a normal [bug report](https://github.com/D0minatorX/rogcontrol/issues/new/choose) instead.
+Bugs in the Qt Quick UI, a control that doesn't work on your hardware, or the fan curve not behaving the way you expect are **not** security issues — file those as a normal [bug report](https://github.com/D0minatorX/rogcontrol/issues/new/choose) instead.
 
 ## Supported versions
 

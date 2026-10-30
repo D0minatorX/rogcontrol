@@ -888,17 +888,6 @@ def read_cpu_clock_floor_default(root=None):
     return None
 
 
-def read_current_cpu_clock_cap(root=None):
-    """Ceiling currently in force, in kHz, or None."""
-    for path in sorted(glob.glob(
-            _under(root, CPUFREQ_GLOB) + "/scaling_max_freq")):
-        val = read_int(path)
-        if val is not None:
-            return val
-    return None
-
-
-
 # intel_pstate's own boost switch, checked only after the two cpufreq
 # locations above -- amd-pstate and acpi-cpufreq both keep priority, so an
 # AMD machine never reaches this branch. Meaning is INVERTED next to the
@@ -2204,26 +2193,6 @@ def _read_clamped(path, low, high, root):
 # value back rather than trusted on a zero exit.
 PPT_PL1_PATH = f"{ASUS_WMI_DIR}/ppt_pl1_spl"
 PPT_PL2_PATH = f"{ASUS_WMI_DIR}/ppt_pl2_sppt"
-
-# The firmware clamps beyond this anyway; the helper range-checks
-# independently of what asus-wmi's own kernel-side NVIDIA_BOOST_MIN/MAX-style
-# constants happen to be, on the same "never trust one side alone" grounds as
-# every other range in this file.
-PL_MIN_W, PL_MAX_W = 5, 150
-
-
-def read_ppt_pl1(root=None):
-    """PL1 (sustained package power) the firmware is holding, watts, or None.
-
-    Same shape as read_nv_dynamic_boost -- a cached kernel value, clamped to
-    the range the helper accepts."""
-    return _read_clamped(PPT_PL1_PATH, PL_MIN_W, PL_MAX_W, root)
-
-
-def read_ppt_pl2(root=None):
-    """PL2 (short-term boost power) the firmware is holding, watts, or None."""
-    return _read_clamped(PPT_PL2_PATH, PL_MIN_W, PL_MAX_W, root)
-
 
 def find_rapl_constraints(root=None):
     """``(pl1_path, pl2_path)`` of the package zone's RAPL constraint files,

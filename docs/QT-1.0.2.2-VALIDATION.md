@@ -28,9 +28,13 @@ python3 scripts/smoke_qt_capabilities.py --unsupported
 python3 scripts/smoke_qt_capabilities.py --unsupported --width 360
 ```
 
-The runner explicitly lists 76 obsolete GTK test methods excluded from the
-maintained gate. They are not counted as passing or migrated. Qt smoke and
-controller tests cover selected replacement paths, not every legacy assertion.
+The original runner excluded 76 obsolete GTK test methods from the maintained
+gate. As of the 2026-10-30 cleanup, those exclusions are removed: the retired
+test files were already absent, and the remaining two GTK cases were removed
+from the local GPU capability tests. The runner now loads that entire backend
+module. Qt smoke and controller tests cover selected replacement paths, not
+every legacy assertion. The `tests/` directory remains local and is required
+to run the release gate.
 
 ## Install for device testing
 
@@ -77,3 +81,24 @@ Saved status now expires after 1.5 seconds. Fan boost speed and duration persist
 ### Installer dependency audit
 
 Required Qt/PySide6 installation and runtime recheck verified using stubbed pacman/apt/dnf commands. Optional packages now install independently so an unavailable package does not abort the remaining dependency installs. Added GStreamer introspection, video elements, PipeWire capture, and desktop portal packages for Ambient lighting; Arch optdepends includes these and evdev. No GTK imports in application Python; Gio/GLib and GStreamer remain in use. 282 maintained tests, bash syntax, and the real offscreen Qt runtime diagnostic passed. No actual package installation or distro-wide fresh-install test was performed.
+
+## Cleanup and refactor validation — 2026-10-30
+
+- Removed unused GTK sidebar SVGs and the unused `PendingChangesBar.qml`;
+  both installer paths were updated to stop copying the SVG bundle.
+- Extracted CPU command planning into `cpu_plan.py`, preserving the
+  `hardware.cpu_apply_plan` and `hardware.CPU_APPLY_STEPS` interfaces.
+- Shared fan-curve conversion/write decisions, service-state queries, and CPU
+  boost detection while preserving caller-specific retry and readback behavior.
+- Removed ten uncalled helpers and four unused constants from application source.
+- The release runner passed 396 backend/Qt tests and six isolated UI tests.
+  The same maintained tests remained selected after the test cleanup.
+- Qt capability smoke checks passed with supported and unsupported controls.
+  The offscreen application `--self-test` also passed.
+- Python parsing, installer/uninstaller and PKGBUILD shell syntax, Arch package
+  assembly from the current source, and isolated staged-package imports passed.
+
+This validation used local tests and staged files. It did not replace the
+installed application, perform a full `makepkg` build or system installation,
+or exercise live hardware writes. Previously built release archives were not
+rebuilt as part of this cleanup.
