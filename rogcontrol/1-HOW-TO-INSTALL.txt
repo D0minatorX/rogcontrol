@@ -37,6 +37,12 @@ installer detects what is missing and installs supported dependencies:
 INSTALLING
 ----------
 
+For this 1.0.2.7 update, install manually from a terminal opened from your
+desktop, not from the app's update button. The older updater can terminate
+its own installer when it stops the tray service. The new installer refuses
+that unsafe path before making changes; the bundled updater isolates future
+update terminals from the tray service.
+
 For version 1.0.2.7, unzip Rog-Control-V1.0.2.7.zip, then run:
 
     cd Rog-Control-V1.0.2.7/rogcontrol

@@ -299,6 +299,11 @@ python3 -m rogcontrol.qt.runtime
 
 ## 📦 Installing
 
+**For this 1.0.2.7 update, install manually from a terminal opened from your
+desktop.** The older app's updater can terminate its own installer when the
+tray service stops. The installer now refuses that unsafe path before changing
+the system; the bundled updater isolates future update terminals from the tray.
+
 For the 1.0.2.7 release archive, extract `Rog-Control-V1.0.2.7.zip`, then run:
 
 ```sh

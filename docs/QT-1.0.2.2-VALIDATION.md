@@ -102,3 +102,20 @@ This validation used local tests and staged files. It did not replace the
 installed application, perform a full `makepkg` build or system installation,
 or exercise live hardware writes. Previously built release archives were not
 rebuilt as part of this cleanup.
+
+### Update installer correction — 2026-10-30
+
+The first 1.0.2.7 package inherited an updater bug from 1.0.2.6: a terminal
+launched from the tray-owned app stayed in `rogcontrol-tray.service`'s cgroup.
+Stopping that service killed the installer before the application library was
+replaced. `start_new_session=True` separates Unix sessions, not systemd cgroups.
+
+The corrected updater launches service-owned terminals in a separate transient
+user service. The installer rejects the legacy tray-owned path before system
+changes, with instructions to install manually. This update therefore requires
+a terminal opened from the desktop and `bash install.sh` from the extracted app.
+
+A real disposable user-service reproduction failed before the fix and completed
+afterward when its original parent service was stopped. All 399 backend/Qt tests
+and six isolated UI tests passed, including three added regression tests. This
+check did not run the full installer against the host or change hardware limits.

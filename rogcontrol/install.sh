@@ -77,6 +77,13 @@ echo
 
 [ "$(id -u)" -ne 0 ] || die "Do NOT run this as root. It uses sudo only where needed."
 
+# Refuse legacy tray-owned update terminals before changing the system.
+# Older updaters leave the terminal inside this service's cgroup. Stopping
+# the tray later would kill the installer itself. New updaters isolate it.
+if [ -r /proc/self/cgroup ] && grep -qE '(^|/)rogcontrol-tray\.service$' /proc/self/cgroup; then
+    die "Install this update manually from a terminal opened from your desktop (not from ROG Control). Extract the ZIP, enter its rogcontrol folder, and run: bash install.sh"
+fi
+
 # ---------------------------------------------------------------- system ----
 # Detected once, here, and before anything else consults it, because three
 # separate decisions further down turn on the answer: which package manager

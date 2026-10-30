@@ -231,12 +231,32 @@ def launch_update_terminal(install_sh_path, status_path=None, app_pid=None,
         "echo 'Update installed. ROG Control is reopening.'; "
         "else echo \"Update failed (exit $result). See the output above.\"; fi; "
         "read -r -p 'Press Enter to close... '")
+    # setsid/start_new_session only detaches Unix signals; it does not leave
+    # the tray's systemd cgroup. The installer stops that tray, which would
+    # otherwise kill its own terminal halfway through the update.
+    try:
+        with open('/proc/self/cgroup') as cgroup:
+            service_owned = any(line.rstrip().endswith('.service') for line in cgroup)
+    except OSError:
+        service_owned = False
+    terminal_launcher = []
+    if service_owned:
+        if shutil.which('systemd-run') is None:
+            return False, 'Cannot isolate the updater from its service. Install this update manually from a terminal.'
+        terminal_launcher = ['systemd-run', '--user', '--collect', '--wait',
+                             '--service-type=exec', '--quiet']
+        for key in ('DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR',
+                    'DBUS_SESSION_BUS_ADDRESS', 'XDG_SESSION_TYPE',
+                    'XDG_CURRENT_DESKTOP', 'PATH', 'PYTHONPATH'):
+            if key in os.environ:
+                terminal_launcher.append(f'--setenv={key}={os.environ[key]}')
+        terminal_launcher.append('--')
     for name, prefix in UPDATE_TERMINALS:
         if shutil.which(name) is None:
             continue
         try:
             process = subprocess.Popen(
-                [*prefix, "bash", "-c", inner_command],
+                [*terminal_launcher, *prefix, "bash", "-c", inner_command],
                 start_new_session=True)
             try:
                 if process.wait(timeout=0.3) != 0:
