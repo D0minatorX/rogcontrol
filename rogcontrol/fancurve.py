@@ -208,6 +208,20 @@ def curve_matches_hardware(points, hardware_pairs, n=8):
     return want == got
 
 
+def curve_needs_write(points, hardware_pairs, enabled, *, write_when_unreadable=True):
+    """Whether driver readback calls for a curve write.
+
+    Interactive and one-shot applies write when readback is unavailable.
+    The enforcer instead waits for its scheduled safety refresh in that case.
+    An explicitly disabled curve always needs restoring.
+    """
+    if enabled is False:
+        return True
+    if hardware_pairs is None:
+        return write_when_unreadable
+    return not curve_matches_hardware(points, hardware_pairs)
+
+
 # The editor works in a fixed number of points, and this is it: eight, the
 # same eight the embedded controller stores. Every handle on screen is one
 # firmware slot, so what the user drags is what the fan runs.

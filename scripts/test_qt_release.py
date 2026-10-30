@@ -25,6 +25,8 @@ MAINTAINED_MODULES = (
     'test_charge_once',
     'test_cpu_thermal_policy',
     'test_daily_automation',
+    'test_decky_gpu_telemetry',
+    'test_decky_v012_local',
     'test_display_refresh',
     'test_enforcer_efficiency',
     'test_fan_timeout_reporting',
@@ -82,6 +84,8 @@ def main():
     args = parser.parse_args()
     os.chdir(ROOT)
     sys.path.insert(0, str(ROOT))
+    # GPU profile recovery is maintained alongside its standalone runner.
+    sys.path.insert(0, str(ROOT / 'scripts'))
     sys.path.insert(0, str(ROOT / 'tests'))
     known_modules = set(MAINTAINED_MODULES + ISOLATED_QT_MODULES)
     known_modules.update(name.split('.')[0] for name in MAINTAINED_CLASSES)

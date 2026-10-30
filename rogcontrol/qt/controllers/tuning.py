@@ -338,7 +338,9 @@ def apply_saved_profile(cfg, caps, progress=None, gpu_only=False, force_fan_reap
         enabled = h.read_fan_curve_enabled()
         policy = cpu.get('thermal_policy')
         policy_selected = type(policy) is int and policy in (0, 1, 2)
-        channels = [ch for ch in h.FAN_CHANNELS if ch in fans and (force_fan_reapply or policy_selected or not (enabled.get(ch) is not False and held.get(ch) is not None and fancurve.curve_matches_hardware(fans[ch], held[ch])))]
+        channels = [ch for ch in h.FAN_CHANNELS if ch in fans and (
+            force_fan_reapply or policy_selected or fancurve.curve_needs_write(
+                fans[ch], held.get(ch), enabled.get(ch)))]
         for index, ch in enumerate(channels):
             if index:
                 time.sleep(fancurve.CHANNEL_GAP_S)

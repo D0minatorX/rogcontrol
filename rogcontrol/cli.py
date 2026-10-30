@@ -90,17 +90,13 @@ def apply_profile(profile):
     enabled = hardware.read_fan_curve_enabled()
     policy_selected = type((cpu or {}).get('thermal_policy')) is int and cpu['thermal_policy'] in (0, 1, 2)
     todo = [(ch, pts) for ch, pts in fans.items()
-            if policy_selected or not (enabled.get(ch) is not False
-                    and held.get(ch) is not None
-                    and fancurve.curve_matches_hardware(pts, held[ch]))]
+            if policy_selected or fancurve.curve_needs_write(
+                pts, held.get(ch), enabled.get(ch))]
     for i, (channel, points) in enumerate(todo):
         if i > 0:
             # Separate channels using the shared nominal gap.
             time.sleep(CHANNEL_GAP_S)
-        expanded = interpolate_curve(points, 8)
-        flat = []
-        for t, pct in expanded:
-            flat += [t, pct_to_pwm255(pct)]
+        flat = fancurve.curve_to_flat(points)
         ok, message = hardware.run_fan_helper_logged(channel, *flat, source="cycle")
         if not ok:
             if 'another rogcontrol fan-curve write is in progress' in str(message):

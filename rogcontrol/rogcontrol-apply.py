@@ -301,17 +301,13 @@ def apply_once(config, profile_only=False, force_stock_undervolt=False):
         enabled = hardware.read_fan_curve_enabled()
         policy_selected = type((cpu or {}).get('thermal_policy')) is int and cpu['thermal_policy'] in (0, 1, 2)
         todo = [(ch, pts) for ch, pts in wanted.items()
-                if policy_selected or not (enabled.get(ch) is not False
-                        and held.get(ch) is not None
-                        and fancurve.curve_matches_hardware(pts, held[ch]))]
+                if policy_selected or fancurve.curve_needs_write(
+                    pts, held.get(ch), enabled.get(ch))]
         for i, (channel, points) in enumerate(todo):
             if i > 0:
                 # Keep the shared nominal separation between channels.
                 time.sleep(CHANNEL_GAP_S)
-            expanded = interpolate_curve(points, 8)
-            flat = []
-            for t, pct in expanded:
-                flat += [t, pct_to_pwm255(pct)]
+            flat = fancurve.curve_to_flat(points)
             hardware.run_fan_helper_logged(channel, *flat, source="apply")
 
     # Global settings, below the profile because neither belongs to one.

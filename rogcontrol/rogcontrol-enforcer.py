@@ -277,9 +277,7 @@ def boost_control_available():
     intel_pstate's own inverted no_turbo -- see hardware.INTEL_NO_TURBO_PATH.
     The two cpufreq switches keep priority, so an AMD machine never reaches
     the third check."""
-    return (os.path.exists("/sys/devices/system/cpu/cpufreq/boost")
-            or bool(glob.glob("/sys/devices/system/cpu/cpufreq/policy*/boost"))
-            or os.path.exists(hardware.INTEL_NO_TURBO_PATH))
+    return hardware.cpu_boost_control_available()
 
 
 def epp_control_available():
@@ -433,9 +431,8 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
             pending_fans = []
             for channel, points in fans.items():
                 actual = hardware.read_fan_curve_points(channel)
-                if (enabled.get(channel) is False
-                        or (actual is not None
-                            and not fancurve.curve_matches_hardware(points, actual))):
+                if fancurve.curve_needs_write(
+                        points, actual, enabled.get(channel), write_when_unreadable=False):
                     pending_fans.append((channel, points))
         if pending_fans:
             fan_apply_ok = True
@@ -445,10 +442,7 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
                     # Historical readback checks passed at this interval;
                     # they were not physical fan-response tests.
                     time.sleep(CHANNEL_GAP_S)
-                expanded = interpolate_curve(points, 8)
-                flat = []
-                for t, pct in expanded:
-                    flat += [t, pct_to_pwm255(pct)]
+                flat = fancurve.curve_to_flat(points)
                 ok, _message = hardware.run_fan_helper_logged(
                     channel, *flat, source="enforcer")
                 fan_apply_ok = fan_apply_ok and ok
