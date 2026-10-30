@@ -2,12 +2,13 @@
 
 This plugin exposes saved ROG Control profiles, the active profile's CPU
 Turbo Boost setting, CPU and GPU clock ceilings, and live fan speeds and
-temperatures in Decky Quick Access while using Gamescope.
+temperatures in Decky Quick Access while using Gamescope. Readings refresh
+approximately once per second when the hardware responds in time.
 
 ROG Control must be installed for the same Linux user as Decky, with the
-Decky v0.1.2 CLI support included in the matching ROG Control source version.
+Decky v0.1.2 or later CLI support included in the matching ROG Control source version.
 Install the updated ROG Control app first; older app versions do not report
-profile completion and cannot provide every v0.1.2 feature. The plugin
+profile completion and cannot provide every plugin feature. The plugin
 uses ROG Control's command line and saved profile configuration; CPU controls
 are shown only when the kernel exposes them. The profile chooser submits a
 profile request through ROG Control's background worker. CPU edits are saved

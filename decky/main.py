@@ -25,6 +25,20 @@ class Plugin:
 
         argv = [str(launcher), "decky", *args]
         env = dict(os.environ)
+        # Decky Loader is bundled with its own Python and shared libraries.
+        # Its environment must not leak into the separate system Python used
+        # by ROG Control (otherwise _ssl can fail to load and HTTPS disappears).
+        original_library_path = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        if original_library_path is None:
+            env.pop("LD_LIBRARY_PATH", None)
+        else:
+            env["LD_LIBRARY_PATH"] = original_library_path
+        for key in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "_MEIPASS2", "LD_PRELOAD"):
+            env.pop(key, None)
+        for key in list(env):
+            if key.startswith("_PYI_"):
+                env.pop(key, None)
+        env["PATH"] = f"/usr/bin:/bin:{user_home}/.local/bin"
         env["HOME"] = str(user_home)
         if os.geteuid() == 0:
             account = pwd.getpwuid(user_home.stat().st_uid)
@@ -38,7 +52,6 @@ class Plugin:
             else:
                 env.pop("XDG_RUNTIME_DIR", None)
                 env.pop("DBUS_SESSION_BUS_ADDRESS", None)
-            env["PATH"] = f"{user_home}/.local/bin:" + env.get("PATH", "/usr/bin:/bin")
             if not privileged:
                 runuser = shutil.which("runuser")
                 if not runuser:
@@ -62,6 +75,16 @@ class Plugin:
             return await asyncio.to_thread(self._command, args, timeout, privileged)
         except Exception as error:
             return {"ok": False, "error": str(error)}
+
+    async def get_installed_version(self):
+        try:
+            manifest = json.loads((Path(__file__).resolve().parent / "package.json").read_text(encoding="utf-8"))
+            version = manifest.get("version")
+            if manifest.get("name") != "rog-control-decky" or not isinstance(version, str) or not version:
+                raise ValueError("Invalid plugin manifest")
+            return {"ok": True, "version": version}
+        except (OSError, ValueError, TypeError) as error:
+            return {"ok": False, "error": f"Cannot read installed plugin version: {error}"}
 
     async def get_state(self):
         result = await self._call(["state"])
