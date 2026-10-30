@@ -37,13 +37,13 @@ installer detects what is missing and installs supported dependencies:
 INSTALLING
 ----------
 
-For version 1.0.2.6, unzip Rog-Control-V1.0.2.6.zip, then run:
+For version 1.0.2.7, unzip Rog-Control-V1.0.2.7.zip, then run:
 
-    cd Rog-Control-V1.0.2.6/rogcontrol
+    cd Rog-Control-V1.0.2.7/rogcontrol
     bash install.sh
 
 For a preview before installing, run this from the extracted
-Rog-Control-V1.0.2.6 directory:
+Rog-Control-V1.0.2.7 directory:
 
     python3 -m rogcontrol --demo
 

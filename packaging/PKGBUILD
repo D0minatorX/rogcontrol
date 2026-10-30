@@ -1,6 +1,6 @@
 # Maintainer: D0minatorX <fdeeb1912@gmail.com>
 pkgname=rogcontrol
-pkgver=1.0.2.6
+pkgver=1.0.2.7
 pkgrel=1
 pkgdesc="CPU/GPU power, undervolt, fans, keyboard, charge limit, and GPU mode control for ASUS ROG laptops (G614PR)"
 arch=('x86_64')
