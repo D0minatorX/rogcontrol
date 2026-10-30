@@ -923,7 +923,7 @@ fi
 
 LIBDIR="$HOME/.local/lib/rogcontrol"
 rm -rf "$LIBDIR"
-mkdir -p "$LIBDIR/qt" "$LIBDIR/qml" "$LIBDIR/icons"
+mkdir -p "$LIBDIR/qt" "$LIBDIR/qml"
 for f in "$SCRIPT_DIR"/*.py; do
     # rogcontrol-*.py are the standalone executables sitting in the same
     # directory. They are not part of the package (and are not even importable
@@ -935,8 +935,6 @@ for sub in qt qml; do
     cp -R "$SCRIPT_DIR/$sub/." "$LIBDIR/$sub/"
 done
 find "$LIBDIR" -type d -name __pycache__ -prune -exec rm -rf {} +
-# UI icons are loaded directly from these files, independent of OS themes.
-install -m 644 "$SCRIPT_DIR"/icons/*.svg "$LIBDIR/icons/"
 say "Application package installed to ~/.local/lib/rogcontrol"
 
 # The launcher. `python3 -m rogcontrol` with ~/.local/lib on the path, which

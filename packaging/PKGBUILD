@@ -43,7 +43,7 @@ package() {
 
   # -- python package, importable as `python3 -m rogcontrol` -------------
   install -d "${sitepkg}/rogcontrol"
-  cp -r "${app}"/*.py "${app}/icons" "${app}/qt" "${app}/qml" \
+  cp -r "${app}"/*.py "${app}/qt" "${app}/qml" \
     "${sitepkg}/rogcontrol/"
   find "${sitepkg}/rogcontrol" -name '__pycache__' -exec rm -rf {} +
 
@@ -85,9 +85,6 @@ EOF
   install -m 644 "${app}/rogcontrol.png" "usr/share/icons/hicolor/256x256/apps/rogcontrol.png"
   install -m 644 "${app}/rogcontrol-quiet.png" "usr/share/icons/hicolor/256x256/apps/rogcontrol-quiet.png"
   install -m 644 "${app}/rogcontrol-balanced.png" "usr/share/icons/hicolor/256x256/apps/rogcontrol-balanced.png"
-
-  install -d "usr/share/${pkgname}/icons"
-  install -m 644 "${app}"/icons/*.svg "usr/share/${pkgname}/icons/"
 
   # -- systemd user units (rewritten to /usr/bin, not %h/.local/bin) -------
   install -d "usr/lib/systemd/user"
