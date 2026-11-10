@@ -1034,6 +1034,7 @@ step "Installing services"
 mkdir -p "$HOME/.config/systemd/user"
 install -m 644 "$SCRIPT_DIR/rogcontrol-apply.service" \
                "$SCRIPT_DIR/rogcontrol-enforcer.service" \
+               "$SCRIPT_DIR/rogcontrol-session.service" \
                "$SCRIPT_DIR/rogcontrol-tray.service" "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
 # Stop any tray launched by a legacy desktop entry before applying the saved
@@ -1054,7 +1055,7 @@ except Exception as error:
 PY_STARTUP
 )"; then
     if [ "$START_ON_BOOT" = 1 ]; then
-        say "Start on boot enabled: profile apply, enforcer and tray services scheduled to start"
+        say "Start on boot enabled: hardware services at OS boot, tray at graphical login"
     else
         say "Start on boot is off: profile apply, enforcer and tray services disabled"
     fi

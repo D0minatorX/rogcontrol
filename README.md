@@ -159,7 +159,7 @@ applying the policy and leaves its last settings in place.
 The Battery checkbox replaces that zone's Awake setting while unplugged.
 The background service detects power changes within about five seconds,
 even with the window closed and automatic profile switching disabled.
-Saved settings are also applied at login, and failed writes are retried.
+Saved hardware settings are applied at boot before login, and failed writes are retried.
 Power-state controls allow lighting; they do not raise zero brightness or
 replace the selected effect. Avoid enabling lighting management in both
 ROG Control and G-Helper at the same time, since they control the same device.
@@ -205,10 +205,18 @@ and service restarts; a failed restore is retried in the background.
 Display sits directly below Performance and also contains panel overdrive
 and AMD panel self-refresh on supported hardware. **Quick Access → Startup**,
 below Gamescope, groups **Start on boot** and **Boot sound**. Start on boot
-is on by default: the tray, saved-profile apply service, and background
-enforcer start normally without opening the window. Turn it off to prevent
-all three from starting automatically at the next login. Changing the switch
-does not interrupt the current session. Updates preserve your choice.
+is on by default: saved-profile apply and background enforcement start at
+OS boot, as soon as the user manager and hardware are available. The tray
+starts after graphical login without opening the window. GPU settings that
+need a display and desktop features wait for the graphical session. A login
+hook restarts the enforcer to pick up the desktop environment. This
+uses `loginctl enable-linger` for your account; services still run as you.
+Your home directory must be available at boot (a home unlocked only at login
+cannot provide the installed app or settings before login). Turn the switch
+off to disable ROG Control's automatic startup without interrupting the
+current session. Updates preserve your choice. Lingering remains enabled
+when this switch is off or the app is uninstalled, since other user services
+may depend on it; `loginctl disable-linger` can undo it if no longer needed.
 
 Both automatic features default to off and run in the existing user enforcer
 service with the window closed. Display and charging changes are checked
@@ -304,25 +312,25 @@ python3 -m rogcontrol.qt.runtime
 
 ## 📦 Installing
 
-Version 1.0.2.8 improves desktop detection for display refresh automation, retries
-Mutter display-state reads after a resume timeout, and retains compositor error
-details if a refresh command fails.
+Version 1.0.2.9 starts hardware profile services at OS boot before login,
+refreshes the background service environment at graphical login, and improves
+the keyboard tab with a compact lighting card and responsive hotkey/Fn grids.
 
-**For this 1.0.2.8 update, install manually from a terminal opened from your
+**For this 1.0.2.9 update, install manually from a terminal opened from your
 desktop.** The older app's updater can terminate its own installer when the
 tray service stops. The installer now refuses that unsafe path before changing
 the system; the bundled updater isolates future update terminals from the tray.
 
-For the 1.0.2.8 release archive, extract `Rog-Control-V1.0.2.8.zip`, then run:
+For the 1.0.2.9 release archive, extract `Rog-Control-V1.0.2.9.zip`, then run:
 
 ```sh
-cd Rog-Control-V1.0.2.8/rogcontrol
+cd Rog-Control-V1.0.2.9/rogcontrol
 bash install.sh
 ```
 
 The archive includes the Qt controllers, QML pages, JavaScript helpers, and
 icons. To preview the extracted application before installing, run
-`python3 -m rogcontrol --demo` from `Rog-Control-V1.0.2.8`.
+`python3 -m rogcontrol --demo` from `Rog-Control-V1.0.2.9`.
 
 To install from a Git checkout:
 

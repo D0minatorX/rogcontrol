@@ -1,4 +1,4 @@
-"""Control login startup for the tray and background services."""
+"""Start hardware services at boot and the tray in the graphical session."""
 import os
 from pathlib import Path
 import subprocess
@@ -9,6 +9,7 @@ SERVICES = (
     "rogcontrol-apply.service",
     "rogcontrol-enforcer.service",
     "rogcontrol-tray.service",
+    "rogcontrol-session.service",
 )
 
 
@@ -56,20 +57,43 @@ def _remove_legacy_autostart():
             (directory / "autostart" / name).unlink(missing_ok=True)
 
 
+def _enable_lingering():
+    """Keep the user manager available before login, without running as root.
+
+    Lingering is shared by all user services, so disabling ROG Control must
+    never turn it off. logind authorizes this for the calling account.
+    """
+    try:
+        result = subprocess.run(
+            ["loginctl", "enable-linger"], capture_output=True,
+            text=True, timeout=30)
+    except subprocess.TimeoutExpired as error:
+        raise OSError("Timed out enabling ROG Control before login") from error
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip() or "loginctl failed"
+        raise OSError(f"Could not enable startup before login: {detail}")
+
+
 def configure_services(enabled, *, start_now=False):
-    """Apply login enablement without saving preferences.
+    """Apply boot/session enablement without saving preferences.
 
     The installer also starts/stops the services immediately. The UI only
-    changes the next login, leaving the current session running.
+    changes future startup, leaving the current session running.
     """
     previous = _enabled_services()
     try:
         if enabled:
+            _enable_lingering()
             _systemctl("enable", *SERVICES)
             if start_now:
                 # The oneshot apply retries hardware writes for over a minute.
                 # Queue the jobs; the installer reports running/starting state.
-                _systemctl("restart", "--no-block", *SERVICES)
+                # An SSH/TTY installer must not consume the login hook or
+                # launch a tray before the desktop exists.
+                graphical = _systemctl("is-active", "--quiet",
+                                       "graphical-session.target", check=False)
+                units = SERVICES if graphical.returncode == 0 else SERVICES[:2]
+                _systemctl("restart", "--no-block", *units)
         else:
             options = ("--now",) if start_now else ()
             _systemctl("disable", *options, *SERVICES)

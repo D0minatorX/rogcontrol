@@ -85,6 +85,7 @@ if [ "$KEEP_SETTINGS" -eq 0 ] && [ -f "$APP_CONFIG" ]; then
 fi
 
 step "Stopping services"
+systemctl --user disable --now rogcontrol-session.service >/dev/null 2>&1 || true
 systemctl --user disable --now rogcontrol-enforcer.service >/dev/null 2>&1 || true
 systemctl --user disable --now rogcontrol-apply.service    >/dev/null 2>&1 || true
 systemctl --user disable --now rogcontrol-tray.service     >/dev/null 2>&1 || true
@@ -115,6 +116,7 @@ say "App and scripts removed"
 
 rm -f "$HOME"/.config/systemd/user/rogcontrol-apply.service \
       "$HOME"/.config/systemd/user/rogcontrol-enforcer.service \
+      "$HOME"/.config/systemd/user/rogcontrol-session.service \
       "$HOME"/.config/systemd/user/rogcontrol-tray.service
 systemctl --user daemon-reload
 say "Service units removed"

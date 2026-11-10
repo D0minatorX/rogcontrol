@@ -1,0 +1,15 @@
+[Unit]
+Description=Refresh ROG Control desktop environment after graphical login
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+# Boot workers inherit no Wayland display. Restart with the environment the
+# desktop imports into the user manager; try-restart leaves a stopped service
+# alone. Queue the restart so session startup never waits for hardware writes.
+ExecStart=/usr/bin/systemctl --user try-restart --no-block rogcontrol-enforcer.service
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical-session.target
