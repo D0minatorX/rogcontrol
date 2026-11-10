@@ -31,11 +31,32 @@ RGB_RANGES = {1: 'auto', 2: 'full', 3: 'limited'}
 
 
 def backend_name():
-    desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').lower().split(':')
-    if any('gnome' in name for name in desktop):
+    # User services can start before GNOME imports XDG_CURRENT_DESKTOP.
+    desktop = (os.environ.get('XDG_CURRENT_DESKTOP')
+               or os.environ.get('XDG_SESSION_DESKTOP')
+               or os.environ.get('DESKTOP_SESSION') or '')
+    names = Path(desktop).name.lower().split(':')
+    if any('gnome' in name for name in names):
         return 'gnome'
-    if 'kde' in desktop:
+    if any(name in ('kde', 'plasma', 'plasmawayland', 'plasmax11') for name in names):
         return 'kde'
+    if desktop or not os.environ.get('DBUS_SESSION_BUS_ADDRESS'):
+        return None
+    # With no session hints, require an already running compositor. Never
+    # auto-start one or infer a desktop merely from installed executables.
+    try:
+        from gi.repository import Gio
+        connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        owned, = connection.call_sync(
+            'org.freedesktop.DBus', '/org/freedesktop/DBus',
+            'org.freedesktop.DBus', 'ListNames', None, None,
+            Gio.DBusCallFlags.NO_AUTO_START, 1000, None).unpack()
+        if 'org.gnome.Mutter.DisplayConfig' in owned:
+            return 'gnome'
+        if 'org.kde.KWin' in owned:
+            return 'kde'
+    except Exception:
+        pass  # Startup/logout can leave the session bus temporarily unavailable.
     return None
 
 
@@ -248,17 +269,31 @@ def set_refresh_rate(rate):
 
 
 def _run(argv):
-    return subprocess.run(argv, capture_output=True, text=True, check=True,
-                          timeout=10).stdout
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, check=True,
+                              timeout=10).stdout
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or '').strip()
+        raise RuntimeError(f'{argv[0]} failed: {detail or str(error)}') from error
 
 
 def _gnome_state():
-    from gi.repository import Gio
+    from gi.repository import Gio, GLib
     connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-    return connection.call_sync(
-        'org.gnome.Mutter.DisplayConfig', '/org/gnome/Mutter/DisplayConfig',
-        'org.gnome.Mutter.DisplayConfig', 'GetCurrentState', None, None,
-        Gio.DBusCallFlags.NO_AUTO_START, 5000, None).unpack()
+    for attempt in range(2):
+        try:
+            return connection.call_sync(
+                'org.gnome.Mutter.DisplayConfig', '/org/gnome/Mutter/DisplayConfig',
+                'org.gnome.Mutter.DisplayConfig', 'GetCurrentState', None, None,
+                Gio.DBusCallFlags.NO_AUTO_START, 5000, None).unpack()
+        except GLib.Error as error:
+            # Mutter may be unresponsive while resuming. Only retry this
+            # read-only query, never a display write whose outcome is unknown.
+            transient = (error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.TIMED_OUT)
+                         or error.matches(Gio.dbus_error_quark(), Gio.DBusError.NO_REPLY)
+                         or error.matches(Gio.dbus_error_quark(), Gio.DBusError.TIMEOUT))
+            if attempt or not transient:
+                raise
 
 
 @contextmanager

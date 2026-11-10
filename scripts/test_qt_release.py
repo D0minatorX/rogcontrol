@@ -28,6 +28,7 @@ MAINTAINED_MODULES = (
     'test_decky_gpu_telemetry',
     'test_decky_v012_local',
     'test_display_refresh',
+    'test_display_refresh_recovery',
     'test_enforcer_efficiency',
     'test_fan_timeout_reporting',
     'test_feature_report',

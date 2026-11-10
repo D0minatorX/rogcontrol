@@ -299,21 +299,25 @@ python3 -m rogcontrol.qt.runtime
 
 ## 📦 Installing
 
-**For this 1.0.2.7 update, install manually from a terminal opened from your
+Version 1.0.2.8 improves desktop detection for display refresh automation, retries
+Mutter display-state reads after a resume timeout, and retains compositor error
+details if a refresh command fails.
+
+**For this 1.0.2.8 update, install manually from a terminal opened from your
 desktop.** The older app's updater can terminate its own installer when the
 tray service stops. The installer now refuses that unsafe path before changing
 the system; the bundled updater isolates future update terminals from the tray.
 
-For the 1.0.2.7 release archive, extract `Rog-Control-V1.0.2.7.zip`, then run:
+For the 1.0.2.8 release archive, extract `Rog-Control-V1.0.2.8.zip`, then run:
 
 ```sh
-cd Rog-Control-V1.0.2.7/rogcontrol
+cd Rog-Control-V1.0.2.8/rogcontrol
 bash install.sh
 ```
 
 The archive includes the Qt controllers, QML pages, JavaScript helpers, and
 icons. To preview the extracted application before installing, run
-`python3 -m rogcontrol --demo` from `Rog-Control-V1.0.2.7`.
+`python3 -m rogcontrol --demo` from `Rog-Control-V1.0.2.8`.
 
 To install from a Git checkout:
 
