@@ -7,7 +7,7 @@ Rectangle {
     radius: cornerRadius
     property var colors
     color: colors.sidebar
-    implicitHeight: 72
+    implicitHeight: 74
     Rectangle { anchors.top: parent.top; width: parent.width; height: parent.height / 2; color: root.colors.sidebar }
     ScrollView {
         id: viewport
@@ -25,7 +25,8 @@ Rectangle {
                     required property string modelData
                     property bool selected: modelData === appController.activeProfile
                     width: Math.max(160, (viewport.availableWidth - 8 * (appController.profileNames.length-1)) / Math.max(1, appController.profileNames.length))
-                    height: 46
+                    height: Math.min(46, tiles.height)
+                    anchors.verticalCenter: parent.verticalCenter
                     enabled: !appController.busy
                     onClicked: appController.selectProfile(modelData)
                     Accessible.name: modelData + (selected ? ', selected' : '')

@@ -1,5 +1,6 @@
 """Lighting, background input preferences and portal capture lifecycle."""
 from copy import deepcopy
+import math
 import threading
 from PySide6.QtCore import QObject, Property, Signal, Slot, QTimer, Qt
 from PySide6.QtGui import QColor
@@ -8,6 +9,7 @@ from .settings import SettingsController
 
 class KeyboardController(SettingsController):
     detailsChanged = Signal()
+    previewSampleChanged = Signal()
     page = 'keyboard'
     ambientColors = Signal(object)
     ambientStatus = Signal(object)
@@ -63,6 +65,69 @@ class KeyboardController(SettingsController):
     powerPreferences = Property('QVariantMap', lambda s: s._power_preferences(), notify=detailsChanged)
     inputPreferences = Property('QVariantMap', lambda s: s._input_preferences('key_bindings'), notify=detailsChanged)
     fnPreferences = Property('QVariantMap', lambda s: s._input_preferences('fn_lock'), notify=detailsChanged)
+
+    previewSample = Property(
+        'QVariantMap',
+        lambda s: {'mode': s._last_mode or '',
+                   'colors': [s.hexcolor(c) for c in (s._colors or [])]},
+        notify=previewSampleChanged)
+
+    @Slot('QVariantMap', 'QVariantMap', 'QVariantMap', str, result='QVariantList')
+    def previewZoneColors(self, lighting, readings, sample, profile_color):
+        """Derive display-only colours, without polling or touching hardware.
+
+        Existing live/portal samples take precedence over dashboard readings.
+        A mode tag prevents an in-flight edit from displaying another mode's
+        captured colours. Animation between colours belongs to the QML item.
+        """
+        from ... import kbdcolor
+
+        def color(value):
+            candidate = QColor(str(value))
+            return candidate if candidate.isValid() else None
+
+        mode = lighting.get('mode')
+        if mode in ('Ambient', *kbdcolor.LIVE_COLOUR_MODES):
+            captured = sample.get('colors') if sample.get('mode') == mode else None
+            if captured:
+                parsed = [color(value) for value in captured]
+                if all(c is not None for c in parsed):
+                    values = [c.name() for c in parsed]
+                    if len(values) in (1, kbdcolor.KBD_ZONES):
+                        return values * kbdcolor.KBD_ZONES if len(values) == 1 else values
+            if mode == 'Ambient':
+                return []
+            if mode == 'Battery Level':
+                battery = readings.get('battery')
+                if not isinstance(battery, (list, tuple)) or len(battery) < 2:
+                    return []
+                value, charging = battery[:2]
+            else:
+                value = readings.get('cpu_temp' if mode == 'CPU Temp Color' else 'gpu_temp')
+            try:
+                if isinstance(value, bool) or not math.isfinite(float(value)):
+                    return []
+                value = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return []
+            rgb = (kbdcolor.battery_to_rgb(value, bool(charging))
+                   if mode == 'Battery Level' else kbdcolor.temp_to_rgb(value))
+            return [self.hexcolor(rgb)] * kbdcolor.KBD_ZONES
+        if mode == 'Profile Color':
+            selected = color(profile_color)
+            return [selected.name()] * kbdcolor.KBD_ZONES if selected is not None else []
+        first = color(lighting.get('color1'))
+        if first is None:
+            return []
+        if mode == 'Gradient Static':
+            second = color(lighting.get('color2'))
+            if second is None:
+                return []
+            return [self.hexcolor(c) for c in kbdcolor.gradient_zone_colors(
+                first.getRgb()[:3], second.getRgb()[:3])]
+        if mode in kbdcolor.KBD_RGB_MODES:
+            return [first.name()] * kbdcolor.KBD_ZONES
+        return []
 
     def _power_preferences(self):
         if self.app.demo:
@@ -421,6 +486,7 @@ class KeyboardController(SettingsController):
             self._last_mode = mode
             self._ambient_generation += 1
             self._colors = self._last_colors = None
+            self.previewSampleChanged.emit()
         if mode == 'Ambient' and not self._ambient_mode:
             self._start_ambient()
         elif mode != 'Ambient' and self._ambient_mode:
@@ -472,6 +538,7 @@ class KeyboardController(SettingsController):
         self._ambient_mode = False
         self._ambient_generation += 1
         self._colors = self._last_colors = None
+        self.previewSampleChanged.emit()
         if self._ambient_stop:
             self._ambient_stop.set()
 
@@ -480,6 +547,7 @@ class KeyboardController(SettingsController):
         generation, colors = payload
         if not self._closed and generation == self._ambient_generation and self._ambient_mode:
             self._colors = colors
+            self.previewSampleChanged.emit()
             self._paint()
 
     @Slot(object)
@@ -557,6 +625,7 @@ class KeyboardController(SettingsController):
         elif result[0] == self.app.config.get('kbd_rgb', {}).get('mode'):
             if result[1]:
                 self._colors = [result[1]]
+                self.previewSampleChanged.emit()
                 self._paint()
             elif result[2]:
                 self._status = result[2]

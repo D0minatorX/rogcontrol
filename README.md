@@ -140,7 +140,17 @@ include your exact model, GPU, kernel and driver versions, logs, and the steps
 that reproduce the difference. Pull requests should preserve the automatic
 detection behavior and keep unsupported hardware unaffected.
 
+Wide windows arrange controls into columns; smaller windows reflow vertically.
+The settings, supported ranges, actions, and colour palette are unchanged.
+
 ### ⌨️ Keyboard
+The G614-style keyboard illustration reacts to brightness, colours, effects,
+and speed. Sensor-driven colours and Ambient reuse the app's existing readings
+and capture samples; the preview does not add hardware polling or request
+screen capture. Individual keys are decorative, not per-key lighting controls.
+Animation timing is illustrative. The lighting controls and key assignments
+remain in their existing sub-tabs.
+
 Brightness uses four direct choices: **Off**, **Low**, **Medium**, and **High**.
 The colour dialog includes **Pick colour from screen**, using the desktop's
 native eyedropper. Picked colours remain a draft until you press **Select**;
@@ -312,25 +322,26 @@ python3 -m rogcontrol.qt.runtime
 
 ## 📦 Installing
 
-Version 1.0.2.9 starts hardware profile services at OS boot before login,
-refreshes the background service environment at graphical login, and improves
-the keyboard tab with a compact lighting card and responsive hotkey/Fn grids.
+Version 1.0.3.0 adds responsive wide layouts, a reactive ROG G614 keyboard
+lighting preview, a four-zone LED strip, and unified notifications that dismiss
+after two seconds. Existing settings, actions, tabs, and app colours are preserved.
+Hardware profile services continue to start at OS boot before login.
 
-**For this 1.0.2.9 update, install manually from a terminal opened from your
+**For this 1.0.3.0 update, install manually from a terminal opened from your
 desktop.** The older app's updater can terminate its own installer when the
 tray service stops. The installer now refuses that unsafe path before changing
 the system; the bundled updater isolates future update terminals from the tray.
 
-For the 1.0.2.9 release archive, extract `Rog-Control-V1.0.2.9.zip`, then run:
+For the 1.0.3.0 release archive, extract `Rog-Control-V1.0.3.0.zip`, then run:
 
 ```sh
-cd Rog-Control-V1.0.2.9/rogcontrol
+cd Rog-Control-V1.0.3.0/rogcontrol
 bash install.sh
 ```
 
 The archive includes the Qt controllers, QML pages, JavaScript helpers, and
 icons. To preview the extracted application before installing, run
-`python3 -m rogcontrol --demo` from `Rog-Control-V1.0.2.9`.
+`python3 -m rogcontrol --demo` from `Rog-Control-V1.0.3.0`.
 
 To install from a Git checkout:
 

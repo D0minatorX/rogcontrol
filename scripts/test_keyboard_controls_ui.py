@@ -15,6 +15,7 @@ from PySide6.QtTest import QSignalSpy, QTest
 from rogcontrol.qt.workers import TaskRunner
 from rogcontrol.qt.controllers.app import AppController
 from rogcontrol.qt.controllers.keyboard import KeyboardController
+from rogcontrol.qt.controllers.overview import OverviewController
 
 ROOT = Path(__file__).resolve().parents[1]
 COLORS = dict(text='#eceef1', mutedText='#a5a7b0', border='#28282d',
@@ -32,13 +33,16 @@ class KeyboardControlsUiTests(unittest.TestCase):
         self.app = AppController(self.runner, demo=True)
         self.app.navigate('keyboard')
         self.keyboard = KeyboardController(self.app)
+        self.overview = OverviewController(self.app)
         self.view = QQuickView()
         context = self.view.rootContext()
         context.setContextProperty('appController', self.app)
         context.setContextProperty('keyboardController', self.keyboard)
+        context.setContextProperty('overviewController', self.overview)
 
     def tearDown(self):
         self.keyboard.close()
+        self.overview.close()
         self.app.close()
         self.runner.shutdown()
         self.view.close()

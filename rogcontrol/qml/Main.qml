@@ -6,7 +6,7 @@ import "components"
 import "pages"
 ApplicationWindow {
     id: window
-    width: 1040; height: 860
+    width: Math.max(360, Math.min(1600, Screen.desktopAvailableWidth - 48)); height: Math.max(480, Math.min(1000, Screen.desktopAvailableHeight - 48))
     minimumWidth: 360; minimumHeight: 480
     flags: Qt.Window | Qt.FramelessWindowHint
     visible: false
@@ -20,7 +20,7 @@ ApplicationWindow {
     property var tuningPage: appController.currentPage === 'cpu' ? cpuController : appController.currentPage === 'gpu' ? gpuController : appController.currentPage === 'fans' ? fansController : null
     property var pages: [{id:'quick_access',title:'Home',icon:'⌂'}, {id:'cpu',title:'CPU',icon:'▣'}, {id:'gpu',title:'GPU',icon:'▱'}, {id:'fans',title:'Fans',icon:'✣'}, {id:'keyboard',title:'Keyboard',icon:'⌨'}, {id:'system',title:'System',icon:'⚙'}]
     header: Rectangle {
-        height: 52; color: theme.sidebar; radius: window.cornerRadius
+        height: 44; color: theme.sidebar; radius: window.cornerRadius
         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: parent.height / 2; color: theme.sidebar }
         MouseArea {
             anchors.fill: parent
@@ -69,8 +69,8 @@ ApplicationWindow {
     }
     Repeater {
         model: [Qt.TopEdge, Qt.BottomEdge, Qt.LeftEdge, Qt.RightEdge,
-                Qt.TopEdge | Qt.LeftEdge, Qt.TopEdge | Qt.RightEdge,
-                Qt.BottomEdge | Qt.LeftEdge, Qt.BottomEdge | Qt.RightEdge]
+        Qt.TopEdge | Qt.LeftEdge, Qt.TopEdge | Qt.RightEdge,
+        Qt.BottomEdge | Qt.LeftEdge, Qt.BottomEdge | Qt.RightEdge]
         MouseArea {
             required property int modelData
             parent: window.contentItem
@@ -106,39 +106,33 @@ ApplicationWindow {
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
-                Layout.topMargin: 22; Layout.bottomMargin: 20
+                Layout.topMargin: 18; Layout.bottomMargin: 16
                 spacing: 7
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
-                    Text { text: appController.pageTitle === 'Home' ? 'ROG CONTROL' : appController.pageTitle.toUpperCase(); color: theme.text; font.pixelSize: window.narrow ? 21 : 24; font.letterSpacing: 1; Layout.fillWidth: true }
+                    Text { text: appController.pageTitle === 'Home' ? 'ROG CONTROL' : appController.pageTitle; color: theme.text; font.pixelSize: window.narrow ? 21 : 24; font.letterSpacing: 1; Layout.fillWidth: true }
                     RogButton { colors: theme; visible: appController.currentPage === 'fans'; text: window.narrow ? 'Calibrate' : 'Calibrate fans'; implicitWidth: window.narrow ? 78 : 120; enabled: !appController.busy && fansController.channels.length > 0 && (appController.demoMode || !!fansController.live.calibration_available); onClicked: fansController.calibrate() }
                     RogButton { colors: theme; visible: window.tuningPage !== null; text: 'Revert'; implicitWidth: window.narrow ? 62 : 90; enabled: window.tuningPage !== null && window.tuningPage.dirty && !appController.busy; onClicked: window.tuningPage.revert() }
                     RogButton { colors: theme; visible: window.tuningPage !== null; text: 'Apply'; implicitWidth: window.narrow ? 62 : 90; primary: true; enabled: window.tuningPage !== null && window.tuningPage.ready && !appController.busy; onClicked: window.tuningPage.apply() }
                 }
                 Text { text: (overviewController.data.cpu_name || 'Detecting processor…') + ' / ' + (overviewController.data.gpu_name || 'Detecting graphics…'); color: theme.mutedText; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true }
+
             }
             ScrollView {
                 id: scroll
+                objectName: 'pageViewport'
                 Layout.fillWidth: true; Layout.fillHeight: true; clip: true
                 contentWidth: availableWidth
                 ColumnLayout {
                     width: scroll.availableWidth
                     spacing: 14
-                    Text {
-                        text: profileController.status; visible: text.length > 0
-                        color: theme.mutedText; Layout.fillWidth: true; Layout.leftMargin: 22; Layout.rightMargin: 22
-                        wrapMode: Text.WordWrap; font.pixelSize: 11
-                    }
+
                     Loader {
                         Layout.fillWidth: true; Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
                         sourceComponent: appController.currentPage === 'quick_access' ? home : appController.currentPage === 'cpu' ? cpu : appController.currentPage === 'gpu' ? gpu : appController.currentPage === 'fans' ? fans : appController.currentPage === 'keyboard' ? keyboard : system
                     }
                     Item { Layout.preferredHeight: 14 }
                 }
-            }
-            Rectangle {
-                visible: status.text.length > 0; Layout.fillWidth: true; Layout.preferredHeight: status.implicitHeight + 20; color: theme.selected
-                Text { id: status; anchors.fill: parent; anchors.margins: 10; color: theme.text; font.pixelSize: 11; wrapMode: Text.WordWrap; text: appController.statusText }
             }
             ProfileBar { cornerRadius: window.cornerRadius; colors: theme; Layout.fillWidth: true; Layout.preferredHeight: implicitHeight }
         }
@@ -149,6 +143,54 @@ ApplicationWindow {
     Component { id: fans; FansPage { colors: theme } }
     Component { id: keyboard; KeyboardPage { colors: theme } }
     Component { id: system; SystemPage { colors: theme } }
+    Rectangle {
+        id: notification
+        objectName: 'statusNotification'
+        z: 20
+        anchors.top: parent.top; anchors.right: parent.right
+        anchors.margins: 16
+        width: Math.min(420, parent.width - 32)
+        height: notificationContent.implicitHeight + 24
+        radius: 10; color: theme.panel; border.color: theme.border
+        property string dismissedMessage: ''
+        readonly property string message: {
+            let messages = [appController.statusText, profileController.status]
+            const page = appController.currentPage
+            if (window.tuningPage !== null) messages.push(window.tuningPage.status)
+            if (page === 'keyboard') messages.push(keyboardController.status)
+            if (page === 'system') messages.push(systemController.status)
+            if (page === 'quick_access') messages.push(quickAccessController.status, gpuController.status, fansController.status)
+            return messages.filter((value, index, all) => value.length > 0 && all.indexOf(value) === index).join('\n')
+        }
+        onMessageChanged: {
+            dismissedMessage = ''
+            if (message.length > 0) notificationExpiry.restart()
+            else notificationExpiry.stop()
+        }
+        Timer {
+            id: notificationExpiry
+            interval: 2000; repeat: false
+            onTriggered: notification.dismissedMessage = notification.message
+        }
+        visible: message.length > 0 && message !== dismissedMessage
+        RowLayout {
+            id: notificationContent
+            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+            anchors.margins: 12; spacing: 12
+            Rectangle { width: 3; Layout.fillHeight: true; radius: 1.5; color: theme.accent }
+            Text {
+                objectName: 'notificationMessage'
+                Layout.fillWidth: true; text: notification.message
+                color: theme.text; font.pixelSize: 12; wrapMode: Text.WordWrap
+                Accessible.role: Accessible.StaticText
+            }
+            RogButton {
+                colors: theme; text: '×'; implicitWidth: 30; implicitHeight: 30
+                Accessible.name: 'Dismiss notification'
+                onClicked: notification.dismissedMessage = notification.message
+            }
+        }
+    }
     ProfileDialog { id: profileDialog; colors: theme }
     function ask(controller, action, message) {
         confirmation.controller = controller; confirmation.action = action; confirmation.message = message; confirmation.open()

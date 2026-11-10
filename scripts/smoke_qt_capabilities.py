@@ -80,6 +80,11 @@ def verify(page):
             failures.append('system: missing PPD service card')
         else:
             root = card.parentItem()
+            while root is not None and root.metaObject().indexOfProperty('section') < 0:
+                root = root.parentItem()
+            if root is None:
+                failures.append('system: missing section owner')
+                return
             root.setProperty('section', 'Services')
             graphics_button = next((obj for obj in visual_items(root)
                                     if obj.objectName() == 'graphicsDaemonButton'), None)

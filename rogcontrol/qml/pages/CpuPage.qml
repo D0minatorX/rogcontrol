@@ -42,5 +42,4 @@ ColumnLayout {
         }
     }
     Text { visible: cpuController.ready && !controls0.hasControls && !controls1.hasControls && !controls2.hasControls && !efficiency.hasControls && !firmwarePolicy.hasControls; text: 'No supported tuning controls detected.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-    Text { Layout.fillWidth: true; text: cpuController.status; visible: text.length > 0; color: root.colors.mutedText; wrapMode: Text.WordWrap; font.pixelSize: 12 }
 }

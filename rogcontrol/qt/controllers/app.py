@@ -33,7 +33,7 @@ class AppController(QObject):
         self._config_error_status = ''
         self.statusTimer = QTimer(self)
         self.statusTimer.setSingleShot(True)
-        self.statusTimer.setInterval(1500)
+        self.statusTimer.setInterval(2000)
         self.statusTimer.timeout.connect(self._clear_status)
         runner.finished.connect(self._complete)
         self.timer = QTimer(self)

@@ -31,52 +31,54 @@ ColumnLayout {
         StatusRow { colors: root.colors; label: 'Profile agreement'; value: !root.readings.power_mode || !root.readings.expected_mode ? 'Not comparable' : root.readings.power_mode === root.readings.expected_mode ? 'In sync' : 'Profile expects ' + root.readings.expected_mode }
         Text { text: 'The background service synchronizes stock profiles with the OS power mode.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
     }
-    MetricCard {
-        visible: root.section === 'Services'
-        title: 'Graphics daemon'; colors: root.colors; Layout.fillWidth: true
-        StatusRow { colors: root.colors; label: root.readings.backend || 'Backend'; value: root.readings.graphics ? root.readings.graphics.state || root.readings.graphics.error || 'Unavailable' : 'Checking…' }
-        Text { text: root.readings.graphics ? root.readings.graphics.message || root.readings.graphics.error || '' : ''; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-        Text { text: 'Manages GPU mode switching. Disable stops the service and automatic startup; GPU mode switching stays unavailable until you enable it again.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-        RowLayout {
-            RogButton {
-                objectName: 'graphicsDaemonButton'; colors: root.colors
-                text: !root.readings.graphics ? 'Checking graphics daemon…' : !root.graphics.has_unit ? 'Graphics daemon unavailable' : !root.graphicsStateKnown ? 'Checking graphics daemon…' : root.graphics.active ? 'Disable graphics daemon' : 'Enable graphics daemon'
-                enabled: !appController.busy && !!root.graphics.has_unit && root.graphicsStateKnown && ['cardwire', 'supergfxctl'].indexOf(root.readings.backend) >= 0
-                onClicked: systemController.setGraphics(!root.graphics.active)
+    GridLayout { Layout.fillWidth: true; columns: root.width >= 1100 ? 3 : (root.width >= 740 ? 2 : 1); columnSpacing: 14; rowSpacing: 14; visible: root.section === 'Services'
+        MetricCard { Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop;
+            visible: root.section === 'Services'
+            title: 'Graphics daemon'; colors: root.colors; Layout.fillWidth: true
+            StatusRow { colors: root.colors; label: root.readings.backend || 'Backend'; value: root.readings.graphics ? root.readings.graphics.state || root.readings.graphics.error || 'Unavailable' : 'Checking…' }
+            Text { text: root.readings.graphics ? root.readings.graphics.message || root.readings.graphics.error || '' : ''; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Text { text: 'Manages GPU mode switching. Disable stops the service and automatic startup; GPU mode switching stays unavailable until you enable it again.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            RowLayout {
+                RogButton {
+                    objectName: 'graphicsDaemonButton'; colors: root.colors
+                    text: !root.readings.graphics ? 'Checking graphics daemon…' : !root.graphics.has_unit ? 'Graphics daemon unavailable' : !root.graphicsStateKnown ? 'Checking graphics daemon…' : root.graphics.active ? 'Disable graphics daemon' : 'Enable graphics daemon'
+                    enabled: !appController.busy && !!root.graphics.has_unit && root.graphicsStateKnown && ['cardwire', 'supergfxctl'].indexOf(root.readings.backend) >= 0
+                    onClicked: systemController.setGraphics(!root.graphics.active)
+                }
             }
         }
-    }
-    MetricCard {
-        visible: root.section === 'Services'
-        objectName: 'ppdServiceCard'
-        title: 'Power Profiles Daemon'; colors: root.colors; Layout.fillWidth: true
-        StatusRow { colors: root.colors; label: 'PPD'; value: root.ppd.tuned_ppd ? 'Provided by tuned-ppd' : root.ppd.installed === false ? 'Not installed' : root.ppd.masked ? 'Disabled (masked)' : root.ppd.state || 'Checking…' }
-        Text {
-            text: root.ppd.tuned_ppd ? 'tuned-ppd already provides OS power modes. These controls leave it unchanged.' : 'Optional OS power-mode synchronization. Disable stops PPD and blocks automatic D-Bus startup; Enable restores startup. Actions open a terminal for authentication and package prompts. After installing, use Enable if needed.'
-            color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap
+        MetricCard { Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop;
+            visible: root.section === 'Services'
+            objectName: 'ppdServiceCard'
+            title: 'Power Profiles Daemon'; colors: root.colors; Layout.fillWidth: true
+            StatusRow { colors: root.colors; label: 'PPD'; value: root.ppd.tuned_ppd ? 'Provided by tuned-ppd' : root.ppd.installed === false ? 'Not installed' : root.ppd.masked ? 'Disabled (masked)' : root.ppd.state || 'Checking…' }
+            Text {
+                text: root.ppd.tuned_ppd ? 'tuned-ppd already provides OS power modes. These controls leave it unchanged.' : 'Optional OS power-mode synchronization. Disable stops PPD and blocks automatic D-Bus startup; Enable restores startup. Actions open a terminal for authentication and package prompts. After installing, use Enable if needed.'
+                color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap
+            }
+            Flow {
+                Layout.fillWidth: true; spacing: 8
+                RogButton { colors: root.colors; text: 'Enable PPD'; enabled: !appController.busy && !!root.ppd.has_unit && !root.ppd.tuned_ppd; onClicked: systemController.managePpd('enable') }
+                RogButton { colors: root.colors; text: 'Disable PPD'; enabled: !appController.busy && !!root.ppd.has_unit && !root.ppd.tuned_ppd; onClicked: systemController.managePpd('disable') }
+                RogButton { colors: root.colors; text: 'Install PPD…'; enabled: !appController.busy && !!root.ppd.manager && !root.ppd.installed && !root.ppd.tuned_ppd; onClicked: systemController.managePpd('install') }
+                RogButton { colors: root.colors; text: 'Uninstall PPD…'; enabled: !appController.busy && !!root.ppd.manager && !!root.ppd.installed && !root.ppd.tuned_ppd; onClicked: systemController.managePpd('uninstall') }
+            }
+            Text { visible: root.ppd.manager === 'rpm-ostree'; text: 'Package changes require a reboot. If PPD is part of the base image, use Disable instead of Uninstall.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         }
-        Flow {
-            Layout.fillWidth: true; spacing: 8
-            RogButton { colors: root.colors; text: 'Enable PPD'; enabled: !appController.busy && !!root.ppd.has_unit && !root.ppd.tuned_ppd; onClicked: systemController.managePpd('enable') }
-            RogButton { colors: root.colors; text: 'Disable PPD'; enabled: !appController.busy && !!root.ppd.has_unit && !root.ppd.tuned_ppd; onClicked: systemController.managePpd('disable') }
-            RogButton { colors: root.colors; text: 'Install PPD…'; enabled: !appController.busy && !!root.ppd.manager && !root.ppd.installed && !root.ppd.tuned_ppd; onClicked: systemController.managePpd('install') }
-            RogButton { colors: root.colors; text: 'Uninstall PPD…'; enabled: !appController.busy && !!root.ppd.manager && !!root.ppd.installed && !root.ppd.tuned_ppd; onClicked: systemController.managePpd('uninstall') }
+        MetricCard { Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop;
+            visible: root.section === 'Services'
+            title: 'asusd compatibility'; colors: root.colors; Layout.fillWidth: true
+            StatusRow { colors: root.colors; label: 'asusd'; value: root.readings.asusd ? root.readings.asusd.state || root.readings.asusd.error || 'Unknown' : 'Checking…' }
+            Text { text: 'Running asusd can conflict with ROG Control firmware and lighting settings.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Flow {
+                Layout.fillWidth: true; spacing: 8
+                RogButton { colors: root.colors; text: 'Check'; enabled: !appController.busy; onClicked: systemController.refresh() }
+                RogButton { colors: root.colors; text: 'Disable asusd'; enabled: !appController.busy && !!root.readings.asusd && !!root.readings.asusd.installed; onClicked: systemController.setAsusd(false) }
+                RogButton { colors: root.colors; text: 'Enable asusd'; enabled: !appController.busy && !!root.readings.asusd && !!root.readings.asusd.installed; onClicked: systemController.setAsusd(true) }
+                RogButton { colors: root.colors; text: 'Copy uninstall command'; enabled: !!root.readings.uninstall; onClicked: systemController.copy('uninstall') }
+            }
+            Text { text: root.readings.uninstall || ''; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         }
-        Text { visible: root.ppd.manager === 'rpm-ostree'; text: 'Package changes require a reboot. If PPD is part of the base image, use Disable instead of Uninstall.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-    }
-    MetricCard {
-        visible: root.section === 'Services'
-        title: 'asusd compatibility'; colors: root.colors; Layout.fillWidth: true
-        StatusRow { colors: root.colors; label: 'asusd'; value: root.readings.asusd ? root.readings.asusd.state || root.readings.asusd.error || 'Unknown' : 'Checking…' }
-        Text { text: 'Running asusd can conflict with ROG Control firmware and lighting settings.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-        Flow {
-            Layout.fillWidth: true; spacing: 8
-            RogButton { colors: root.colors; text: 'Check'; enabled: !appController.busy; onClicked: systemController.refresh() }
-            RogButton { colors: root.colors; text: 'Disable asusd'; enabled: !appController.busy && !!root.readings.asusd && !!root.readings.asusd.installed; onClicked: systemController.setAsusd(false) }
-            RogButton { colors: root.colors; text: 'Enable asusd'; enabled: !appController.busy && !!root.readings.asusd && !!root.readings.asusd.installed; onClicked: systemController.setAsusd(true) }
-            RogButton { colors: root.colors; text: 'Copy uninstall command'; enabled: !!root.readings.uninstall; onClicked: systemController.copy('uninstall') }
-        }
-        Text { text: root.readings.uninstall || ''; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
     }
     MetricCard {
         visible: root.section === 'Updates'
@@ -100,25 +102,26 @@ ColumnLayout {
             }
         }
     }
-    MetricCard {
-        visible: root.section === 'Diagnostics'
-        title: 'About and hardware report'; colors: root.colors; Layout.fillWidth: true
-        StatusRow { colors: root.colors; label: 'ROG Control'; value: root.readings.version || '' }
-        Text { text: 'Detected hardware: ' + (overviewController.data.cpu_name || 'CPU unavailable') + ' / ' + (overviewController.data.gpu_name || 'GPU unavailable'); color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-        RowLayout {
-            RogButton { colors: root.colors; text: 'Save hardware report'; enabled: !appController.busy; onClicked: systemController.hardwareReport() }
+    GridLayout { Layout.fillWidth: true; columns: root.width >= 900 ? 2 : 1; columnSpacing: 14; rowSpacing: 14; visible: root.section === 'Diagnostics'
+        MetricCard { Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop;
+            visible: root.section === 'Diagnostics'
+            title: 'About and hardware report'; colors: root.colors; Layout.fillWidth: true
+            StatusRow { colors: root.colors; label: 'ROG Control'; value: root.readings.version || '' }
+            Text { text: 'Detected hardware: ' + (overviewController.data.cpu_name || 'CPU unavailable') + ' / ' + (overviewController.data.gpu_name || 'GPU unavailable'); color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            RowLayout {
+                RogButton { colors: root.colors; text: 'Save hardware report'; enabled: !appController.busy; onClicked: systemController.hardwareReport() }
+            }
+        }
+        MetricCard { Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop;
+            visible: root.section === 'Diagnostics'
+            title: 'Diagnostic log'; colors: root.colors; Layout.fillWidth: true
+            SettingsSwitch { colors: root.colors; title: 'Errors only'; onEdited: value => systemController.setProblemsOnly(value) }
+            Flow {
+                Layout.fillWidth: true; spacing: 8
+                RogButton { colors: root.colors; text: 'Refresh'; onClicked: systemController.refresh() }
+                RogButton { colors: root.colors; text: 'Clear…'; enabled: !appController.busy; onClicked: systemController.request('clear-log') }
+            }
+            TextArea { text: root.readings.log === null ? 'Log unavailable' : root.readings.log || 'No entries'; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; color: root.colors.text; Layout.fillWidth: true; Layout.maximumHeight: 300; Accessible.name: 'Diagnostic log'; background: Rectangle { color: root.colors.window } }
         }
     }
-    MetricCard {
-        visible: root.section === 'Diagnostics'
-        title: 'Diagnostic log'; colors: root.colors; Layout.fillWidth: true
-        SettingsSwitch { colors: root.colors; title: 'Errors only'; onEdited: value => systemController.setProblemsOnly(value) }
-        Flow {
-            Layout.fillWidth: true; spacing: 8
-            RogButton { colors: root.colors; text: 'Refresh'; onClicked: systemController.refresh() }
-            RogButton { colors: root.colors; text: 'Clear…'; enabled: !appController.busy; onClicked: systemController.request('clear-log') }
-        }
-        TextArea { text: root.readings.log === null ? 'Log unavailable' : root.readings.log || 'No entries'; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; color: root.colors.text; Layout.fillWidth: true; Layout.maximumHeight: 300; Accessible.name: 'Diagnostic log'; background: Rectangle { color: root.colors.window } }
-    }
-    Text { text: systemController.status; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
 }

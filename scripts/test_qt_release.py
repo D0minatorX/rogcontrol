@@ -58,7 +58,7 @@ MAINTAINED_MODULES = (
     'test_updates',
     'test_wayland_idle',
 )
-ISOLATED_QT_MODULES = ('test_color_picker_ui', 'test_keyboard_controls_ui')
+ISOLATED_QT_MODULES = ('test_color_picker_ui', 'test_keyboard_controls_ui', 'test_wide_layout_ui')
 
 
 def main():

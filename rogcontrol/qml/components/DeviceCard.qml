@@ -24,23 +24,26 @@ MetricCard {
         elide: Text.ElideRight; Layout.fillWidth: true
     }
 
-    ColumnLayout {
+    GridLayout {
         Layout.fillWidth: true
-        spacing: 4
+        columns: root.width >= 600 ? 5 : (root.width >= 340 ? 3 : 2)
+        columnSpacing: 20
+        rowSpacing: 4
         Repeater {
             model: [
-                { label: 'Frequency', key: root.device + '_clock', unit: 'MHz', max: root.device === 'gpu' ? 3000 : 6000, accent: true },
-                { label: 'Power', key: root.device + '_power', unit: 'W', max: root.device === 'gpu' ? 150 : 100, accent: true },
-                { label: 'Temperature', key: root.device + '_temp', unit: '°C', max: 110 },
-                { label: 'Fan speed', key: 'fan', unit: 'RPM', max: 6000 },
-                { label: 'Memory', key: 'memory', unit: '' }
+            { label: 'Frequency', key: root.device + '_clock', unit: 'MHz', max: root.device === 'gpu' ? 3000 : 6000, accent: true },
+            { label: 'Power', key: root.device + '_power', unit: 'W', max: root.device === 'gpu' ? 150 : 100, accent: true },
+            { label: 'Temperature', key: root.device + '_temp', unit: '°C', max: 110 },
+            { label: 'Fan speed', key: 'fan', unit: 'RPM', max: 6000 },
+            { label: 'Memory', key: 'memory', unit: '' }
             ]
             delegate: ColumnLayout {
                 required property var modelData
                 Layout.fillWidth: true
                 spacing: modelData.accent === true ? 3 : 0
-                RowLayout {
+                ColumnLayout {
                     Layout.fillWidth: true
+                    spacing: 4
                     Text {
                         text: modelData.key === 'memory' ? (root.device === 'gpu' ? 'VRAM' : 'RAM') : modelData.label
                         color: root.colors.mutedText
@@ -50,7 +53,7 @@ MetricCard {
                     Text {
                         text: {
                             if (modelData.key === 'fan')
-                                return root.format((root.readings.fan_rpm || {})[root.device === 'cpu' ? '1' : '2'], modelData.unit)
+                            return root.format((root.readings.fan_rpm || {})[root.device === 'cpu' ? '1' : '2'], modelData.unit)
                             if (modelData.key === 'memory') {
                                 var memory = root.readings[root.device === 'gpu' ? 'vram' : 'ram']
                                 if (!memory || memory.length < 2) return '—'
@@ -62,7 +65,7 @@ MetricCard {
                         }
                         color: root.colors.text
                         font.pixelSize: 12
-                        horizontalAlignment: Text.AlignRight
+                        horizontalAlignment: Text.AlignLeft
                     }
                 }
                 Rectangle {

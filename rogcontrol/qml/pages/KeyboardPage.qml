@@ -11,7 +11,7 @@ GridLayout {
     property var bindings: keyboardController.inputPreferences
     property var fnlock: keyboardController.fnPreferences
     property int section: 0
-    columns: root.width >= 800 ? 2 : 1
+    columns: root.width >= 1100 ? 3 : 1
     columnSpacing: 14; rowSpacing: 14
     SegmentedSetting {
         Layout.columnSpan: root.columns
@@ -25,150 +25,165 @@ GridLayout {
         value: root.section
         onEdited: value => root.section = value
     }
-    MetricCard {
-        Layout.columnSpan: root.columns
+    ColumnLayout {
+        Layout.columnSpan: root.columns === 3 ? 2 : 1
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.minimumHeight: implicitHeight
+        Layout.preferredWidth: root.columns === 3 ? 900 : 1
         Layout.alignment: Qt.AlignTop
-        Layout.preferredWidth: 1
+        spacing: 14
         visible: root.section === 0
-        objectName: 'lightingCard'
-        title: 'Keyboard lighting'; colors: root.colors; Layout.fillWidth: true
-        GridLayout {
-            Layout.fillWidth: true
-            columns: root.width >= 760 ? 2 : 1
-            columnSpacing: 28
-            rowSpacing: 20
-            SegmentedSetting {
-                colors: root.colors
+        MetricCard {
+            Layout.columnSpan: 1
+            Layout.alignment: Qt.AlignTop
+            Layout.preferredWidth: 1; Layout.fillHeight: true; stretchBody: true
+            visible: root.section === 0
+            objectName: 'lightingCard'
+            title: 'Keyboard lighting'; colors: root.colors; Layout.fillWidth: true
+            KeyboardPreview {
                 Layout.fillWidth: true
-                Layout.preferredWidth: 1
-                Layout.alignment: Qt.AlignTop
-                title: 'Brightness'
-                choices: ['Off', 'Low', 'Medium', 'High']
-                value: root.lighting.brightness
-                repeaterName: 'brightnessLevels'
-                buttonPrefix: 'brightnessLevel'
-                onEdited: value => keyboardController.setLighting('brightness', value)
-            }
-            SettingsChoice {
+                Layout.fillHeight: true
+                Layout.minimumHeight: root.columns === 3 ? 240 : 150
+                Layout.maximumHeight: 380
                 colors: root.colors
-                Layout.fillWidth: true
-                Layout.preferredWidth: 1
-                Layout.alignment: Qt.AlignTop
-                title: 'Effect'
-                choices: root.readings.modes || []
-                value: root.lighting.mode
-                onEdited: value => keyboardController.setLighting('mode', value)
+                lighting: root.lighting
+                enabled: !!(root.readings.caps && root.readings.caps.kbd_rgb)
+                baseColours: keyboardController.previewZoneColors(
+                root.lighting, overviewController.data, keyboardController.previewSample,
+                keyboardController.profileColors[appController.activeProfile] || root.lighting.color1)
             }
             GridLayout {
-                visible: ['Static','Breathing','Pulse','Gradient Static'].indexOf(root.lighting.mode) >= 0
                 Layout.fillWidth: true
-                Layout.preferredWidth: 1
-                Layout.alignment: Qt.AlignTop
-                columns: root.width >= 980 ? 2 : 1
-                columnSpacing: 20
-                rowSpacing: 12
-                ColumnLayout {
+                columns: root.width >= 760 ? 2 : 1
+                columnSpacing: 28
+                rowSpacing: 20
+                SegmentedSetting {
+                    colors: root.colors
                     Layout.fillWidth: true
-                    spacing: 8
-                    Text { text: 'Primary colour'; color: root.colors.text; font.pixelSize: 12 }
-                    ColorPicker { colors: root.colors; value: root.lighting.color1; onEdited: value => keyboardController.setLighting('color1', value.toString()) }
+                    Layout.preferredWidth: 1
+                    Layout.alignment: Qt.AlignTop
+                    title: 'Brightness'
+                    choices: ['Off', 'Low', 'Medium', 'High']
+                    value: root.lighting.brightness
+                    repeaterName: 'brightnessLevels'
+                    buttonPrefix: 'brightnessLevel'
+                    onEdited: value => keyboardController.setLighting('brightness', value)
                 }
-                ColumnLayout {
+                SettingsChoice { fieldHeight: 44;
+                    colors: root.colors
                     Layout.fillWidth: true
-                    spacing: 8
-                    visible: ['Breathing','Gradient Static'].indexOf(root.lighting.mode) >= 0
-                    Text { text: 'Secondary colour'; color: root.colors.text; font.pixelSize: 12 }
-                    ColorPicker { colors: root.colors; value: root.lighting.color2; onEdited: value => keyboardController.setLighting('color2', value.toString()) }
+                    Layout.preferredWidth: 1
+                    Layout.alignment: Qt.AlignTop
+                    title: 'Effect'
+                    choices: root.readings.modes || []
+                    value: root.lighting.mode
+                    onEdited: value => keyboardController.setLighting('mode', value)
+                }
+                GridLayout {
+                    visible: ['Static','Breathing','Pulse','Gradient Static'].indexOf(root.lighting.mode) >= 0
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    Layout.alignment: Qt.AlignTop
+                    columns: root.width >= 1200 ? 2 : 1
+                    columnSpacing: 20
+                    rowSpacing: 12
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text { text: 'Primary colour'; color: root.colors.text; font.pixelSize: 12 }
+                        ColorPicker { colors: root.colors; value: root.lighting.color1; onEdited: value => keyboardController.setLighting('color1', value.toString()) }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        visible: ['Breathing','Gradient Static'].indexOf(root.lighting.mode) >= 0
+                        Text { text: 'Secondary colour'; color: root.colors.text; font.pixelSize: 12 }
+                        ColorPicker { colors: root.colors; value: root.lighting.color2; onEdited: value => keyboardController.setLighting('color2', value.toString()) }
+                    }
+                }
+                SegmentedSetting {
+                    objectName: 'animationSpeed'
+                    visible: ['Breathing','Pulse','Color Cycle','Rainbow'].indexOf(root.lighting.mode) >= 0
+                    colors: root.colors
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    Layout.alignment: Qt.AlignTop
+                    title: 'Animation speed'
+                    choices: ['Slow', 'Medium', 'Fast']
+                    minimum: 1
+                    value: root.lighting.speed
+                    repeaterName: 'speedLevels'
+                    buttonPrefix: 'speedLevel'
+                    onEdited: value => keyboardController.setLighting('speed', value)
                 }
             }
-            SegmentedSetting {
-                objectName: 'animationSpeed'
-                visible: ['Breathing','Pulse','Color Cycle','Rainbow'].indexOf(root.lighting.mode) >= 0
-                colors: root.colors
+            Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: root.colors.border }
+            RowLayout {
                 Layout.fillWidth: true
-                Layout.preferredWidth: 1
-                Layout.alignment: Qt.AlignTop
-                title: 'Animation speed'
-                choices: ['Slow', 'Medium', 'Fast']
-                minimum: 1
-                value: root.lighting.speed
-                repeaterName: 'speedLevels'
-                buttonPrefix: 'speedLevel'
-                onEdited: value => keyboardController.setLighting('speed', value)
-            }
-        }
-        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: root.colors.border }
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 16
-            Text {
-                text: [root.readings.hint || '',
-                       root.readings.dimmed ? 'Temporarily dimmed by idle policy; saved brightness is preserved.' : '',
-                       root.lighting.mode === 'Ambient' ? 'Ambient follows your screen and requests permission to capture it.' : '']
-                      .filter(function(line) { return line.length > 0 }).join('\n')
-                color: root.colors.mutedText
-                Layout.fillWidth: true
-                wrapMode: Text.WordWrap
-                font.pixelSize: 12
-            }
-            RogButton { colors: root.colors; text: 'Recheck'; onClicked: keyboardController.retry() }
-        }
-    }
-    MetricCard {
-        Layout.columnSpan: root.columns
-        Layout.alignment: Qt.AlignTop
-        Layout.preferredWidth: 1
-        title: 'Profile colours'; colors: root.colors; Layout.fillWidth: true
-        visible: root.section === 0 && root.lighting.mode === 'Profile Color'
-        GridLayout {
-            Layout.fillWidth: true
-            columns: root.width >= 800 ? 3 : (root.width > 620 ? 2 : 1)
-            columnSpacing: 24
-            rowSpacing: 12
-            Repeater {
-                model: appController.profileNames
-                ColumnLayout {
-                    required property string modelData
-                    Text { text: modelData; color: root.colors.text }
-                    ColorPicker { colors: root.colors; value: keyboardController.profileColors[modelData] || '#ee2445'; onEdited: value => keyboardController.setProfileColor(modelData, value.toString()) }
+                spacing: 16
+                Text {
+                    text: [root.readings.hint || '',
+                    root.readings.dimmed ? 'Temporarily dimmed by idle policy; saved brightness is preserved.' : '',
+                    root.lighting.mode === 'Ambient' ? 'Ambient follows your screen and requests permission to capture it.' : '']
+                    .filter(function(line) { return line.length > 0 }).join('\n')
+                    color: root.colors.mutedText
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: 12
                 }
+                RogButton { colors: root.colors; text: 'Recheck'; onClicked: keyboardController.retry() }
             }
         }
-    }
-    GridLayout {
-        Layout.columnSpan: root.columns
-        Layout.fillWidth: true
-        columns: root.columns
-        columnSpacing: 14
-        rowSpacing: 14
-        visible: root.section === 0
-        ColumnLayout {
-            Layout.fillWidth: true
-            Layout.preferredWidth: 1
+        MetricCard {
+            Layout.columnSpan: 1
             Layout.alignment: Qt.AlignTop
-            spacing: 14
-            MetricCard {
-                Layout.alignment: Qt.AlignTop
-                Layout.preferredWidth: 1
-                visible: root.section === 0
-                title: 'Backlight inactivity timeout'; colors: root.colors; Layout.fillWidth: true
-                Text { text: root.readings.idle || 'Checking desktop idle detection…'; color: root.colors.mutedText; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                NumberSetting { colors: root.colors; Layout.fillWidth: true; title: 'On external power'; unit: 's'; minimum: 0; maximum: 3600; step: 10; value: root.config.kbd_idle_timeout_ac_seconds || 0; enabled: !!root.readings.idle_supported && !appController.busy; onEdited: value => keyboardController.setPreference('kbd_idle_timeout_ac_seconds', value) }
-                NumberSetting { colors: root.colors; Layout.fillWidth: true; title: 'On battery'; helpText: 'Seconds · 0 = off'; unit: 's'; minimum: 0; maximum: 3600; step: 10; value: root.config.kbd_idle_timeout_battery_seconds || 0; enabled: !!root.readings.idle_supported && !appController.busy; onEdited: value => keyboardController.setPreference('kbd_idle_timeout_battery_seconds', value) }
-                RogButton { colors: root.colors; text: 'Turn off saved timeouts'; visible: root.readings.idle_supported === false && ((root.config.kbd_idle_timeout_ac_seconds || 0) > 0 || (root.config.kbd_idle_timeout_battery_seconds || 0) > 0); enabled: !appController.busy; onClicked: keyboardController.disableIdle() }
+            Layout.preferredWidth: 1
+            title: 'Profile colours'; colors: root.colors; Layout.fillWidth: true
+            visible: root.section === 0 && root.lighting.mode === 'Profile Color'
+            GridLayout {
+                Layout.fillWidth: true
+                columns: root.width >= 1100 ? 4 : (root.width >= 800 ? 3 : (root.width > 620 ? 2 : 1))
+                columnSpacing: 24
+                rowSpacing: 12
+                Repeater {
+                    model: appController.profileNames
+                    ColumnLayout {
+                        required property string modelData
+                        Text { text: modelData; color: root.colors.text }
+                        ColorPicker { colors: root.colors; value: keyboardController.profileColors[modelData] || '#ee2445'; onEdited: value => keyboardController.setProfileColor(modelData, value.toString()) }
+                    }
+                }
             }
-            MetricCard {
-                Layout.alignment: Qt.AlignTop
-                Layout.preferredWidth: 1
-                visible: root.section === 0 && !!(root.readings.caps && root.readings.caps.kbd_rgb)
-                title: 'Charger flash'; colors: root.colors; Layout.fillWidth: true
+        }
+    }
+    ColumnLayout {
+        Layout.fillWidth: true
+        Layout.preferredWidth: root.columns === 3 ? 450 : 1
+        Layout.minimumWidth: root.columns === 3 ? 360 : 0
+        Layout.alignment: Qt.AlignTop
+        spacing: 14
+        visible: root.section === 0
+        MetricCard {
+            Layout.alignment: Qt.AlignTop
+            Layout.preferredWidth: 1
+            visible: root.section === 0
+            title: 'Backlight inactivity timeout'; colors: root.colors; Layout.fillWidth: true
+            Text { text: root.readings.idle || 'Checking desktop idle detection…'; color: root.colors.mutedText; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+            NumberSetting { colors: root.colors; Layout.fillWidth: true; title: 'On external power'; unit: 's'; minimum: 0; maximum: 3600; step: 10; value: root.config.kbd_idle_timeout_ac_seconds || 0; enabled: !!root.readings.idle_supported && !appController.busy; onEdited: value => keyboardController.setPreference('kbd_idle_timeout_ac_seconds', value) }
+            NumberSetting { colors: root.colors; Layout.fillWidth: true; title: 'On battery'; helpText: 'Seconds · 0 = off'; unit: 's'; minimum: 0; maximum: 3600; step: 10; value: root.config.kbd_idle_timeout_battery_seconds || 0; enabled: !!root.readings.idle_supported && !appController.busy; onEdited: value => keyboardController.setPreference('kbd_idle_timeout_battery_seconds', value) }
+            RogButton { colors: root.colors; text: 'Turn off saved timeouts'; visible: root.readings.idle_supported === false && ((root.config.kbd_idle_timeout_ac_seconds || 0) > 0 || (root.config.kbd_idle_timeout_battery_seconds || 0) > 0); enabled: !appController.busy; onClicked: keyboardController.disableIdle() }
+            Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: root.colors.border }
+            ColumnLayout { Layout.fillWidth: true; visible: !!(root.readings.caps && root.readings.caps.kbd_rgb)
+                Text { text: 'Charger flash'; color: root.colors.text; font.pixelSize: 14 }
                 SettingsSwitch { trailing: true; colors: root.colors; title: 'Flash on charger change'; value: !!root.config.charger_flash; enabled: !appController.busy; description: 'The background service restores your lighting. Ambient cannot be restored, so flashing is skipped in Ambient mode.'; onEdited: value => keyboardController.setPreference('charger_flash', value) }
                 ColorPicker { colors: root.colors; value: keyboardController.flashColor; enabled: !appController.busy; onEdited: value => keyboardController.setPreference('charger_flash_color', value.toString()) }
+
             }
         }
         MetricCard {
             Layout.alignment: Qt.AlignTop
-            Layout.fillHeight: true
+            Layout.fillHeight: false
             Layout.preferredWidth: 1
             visible: root.section === 0
             title: 'Lighting power policy'; colors: root.colors; Layout.fillWidth: true
@@ -227,7 +242,7 @@ GridLayout {
         SettingsSwitch { trailing: true; colors: root.colors; title: 'Enable ASUS button assignments'; value: !!root.bindings.enabled; enabled: (!!root.readings.bindings_supported || !!root.bindings.enabled) && !appController.busy; onEdited: value => keyboardController.setBinding('key_bindings', 'enabled', value) }
         GridLayout {
             Layout.fillWidth: true
-            columns: root.width >= 1000 ? 3 : (root.width >= 620 ? 2 : 1)
+            columns: root.width >= 1300 ? 4 : (root.width >= 1000 ? 3 : (root.width >= 620 ? 2 : 1))
             columnSpacing: 24
             rowSpacing: 14
             Repeater {
@@ -251,7 +266,7 @@ GridLayout {
         SettingsSwitch { trailing: true; colors: root.colors; title: 'Media actions on F1–F12'; description: 'Super+F2 toggles media actions. Modified F-key shortcuts keep their normal behaviour.'; value: root.fnlock.media !== false; enabled: !!root.readings.fn_supported && !!root.fnlock.enabled && !appController.busy; onEdited: value => keyboardController.setBinding('fn_lock', 'media', value) }
         GridLayout {
             Layout.fillWidth: true
-            columns: root.width >= 1000 ? 3 : (root.width >= 620 ? 2 : 1)
+            columns: root.width >= 1300 ? 4 : (root.width >= 1000 ? 3 : (root.width >= 620 ? 2 : 1))
             columnSpacing: 24
             rowSpacing: 14
             Repeater {
@@ -266,5 +281,4 @@ GridLayout {
             }
         }
     }
-    Text { visible: text.length > 0; Layout.columnSpan: root.columns; text: keyboardController.status; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
 }
