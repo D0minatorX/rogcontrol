@@ -8,25 +8,22 @@ ColumnLayout {
     property string selectedChannel: '1'
     readonly property var channel: fansController.channels.find(item => item.key === selectedChannel) || fansController.channels[0] || ({})
     spacing: 16
-    Flow {
-        Layout.fillWidth: true; spacing: 8
-        Repeater {
-            model: fansController.channels.length
-            Button {
-                id: channelButton
-                required property int index
-                property var fanData: fansController.channels[index]
-                property bool selected: root.channel.key === fanData.key
-                width: Math.max(100, Math.min(124, (root.width-16)/3)); height: 44
-                Accessible.name: fanData.title
-                onClicked: { editor.cancelDrag(); root.selectedChannel = fanData.key; editor.selectedPoint = 0 }
-                contentItem: Column {
-                    spacing: 2
-                    Text { text: channelButton.fanData.title; color: channelButton.selected ? root.colors.accent : root.colors.text; font.pixelSize: 12; anchors.horizontalCenter: parent.horizontalCenter }
-                    Text { text: channelButton.fanData.rpm === null || channelButton.fanData.rpm === undefined ? 'RPM unavailable' : channelButton.fanData.rpm + ' RPM'; color: root.colors.mutedText; font.pixelSize: 11; anchors.horizontalCenter: parent.horizontalCenter }
-                }
-                background: Rectangle { radius: 7; color: channelButton.selected ? root.colors.selected : channelButton.hovered ? root.colors.hover : root.colors.panel; border.color: channelButton.selected || channelButton.activeFocus ? root.colors.accent : root.colors.border }
-            }
+    SegmentedSetting {
+        objectName: 'fanNavigation'
+        visible: fansController.channels.length > 0
+        Layout.fillWidth: true
+        Layout.preferredWidth: 560
+        Layout.maximumWidth: 560
+        colors: root.colors
+        navigation: true
+        repeaterName: 'fanChannels'
+        choices: fansController.channels.map(item => item.title)
+        secondaryLabels: fansController.channels.map(item => item.rpm === null || item.rpm === undefined ? 'RPM unavailable' : item.rpm + ' RPM')
+        value: fansController.channels.findIndex(item => item.key === root.channel.key)
+        onEdited: value => {
+            editor.cancelDrag()
+            root.selectedChannel = fansController.channels[value].key
+            editor.selectedPoint = 0
         }
     }
     Text { visible: fansController.ready && fansController.channels.length === 0; text: 'No custom fan curve interface was detected.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }

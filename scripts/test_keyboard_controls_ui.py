@@ -70,6 +70,91 @@ class KeyboardControlsUiTests(unittest.TestCase):
             self.assertTrue(button.property('primary'))
         self.view.grabWindow().save('/tmp/rogcontrol-brightness-controls.png')
 
+    def test_speed_choices_apply_each_level_and_hide_for_static_effect(self):
+        root = self.load('rogcontrol/qml/pages/KeyboardPage.qml', 360, 1100)
+        self.keyboard.setLighting('mode', 'Breathing')
+        QTest.qWait(350)
+        selector = root.findChild(QObject, 'animationSpeed')
+        self.assertIsNotNone(selector)
+        self.assertTrue(selector.property('visible'))
+        for index in range(3):
+            repeater = root.findChild(QObject, 'speedLevels')
+            button, _ = QQmlExpression(QQmlEngine.contextForObject(repeater), repeater,
+                                      f'itemAt({index})').evaluate()
+            centre = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+            QTest.mouseClick(self.view, Qt.LeftButton, Qt.NoModifier, centre)
+            for _ in range(60):
+                QTest.qWait(10)
+                if self.app.config.get('kbd_rgb', {}).get('speed') == index + 1:
+                    break
+            self.assertEqual(self.app.config['kbd_rgb']['speed'], index + 1)
+            self.assertTrue(button.property('primary'))
+        self.keyboard.setLighting('mode', 'Static')
+        QTest.qWait(350)
+        self.assertFalse(selector.property('visible'))
+
+    def test_section_navigation_fits_narrow_window_and_preserves_lighting(self):
+        root = self.load('rogcontrol/qml/pages/KeyboardPage.qml', 360, 1100)
+        repeater = root.findChild(QObject, 'keyboardSections')
+        for index in (1, 0):
+            button, _ = QQmlExpression(QQmlEngine.contextForObject(repeater), repeater,
+                                      f'itemAt({index})').evaluate()
+            self.assertGreaterEqual(button.width(), 130)
+            centre = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+            QTest.mouseClick(self.view, Qt.LeftButton, Qt.NoModifier, centre)
+            QTest.qWait(40)
+            self.assertEqual(root.property('section'), index)
+            self.assertEqual(root.findChild(QObject, 'lightingCard').property('visible'), index == 0)
+            self.assertEqual(root.findChild(QObject, 'hotkeysCard').property('visible'), index == 1)
+            self.assertEqual(self.keyboard.lighting['brightness'], 3)
+
+    def test_power_matrix_updates_only_clicked_zone_and_state(self):
+        root = self.load('rogcontrol/qml/pages/KeyboardPage.qml', 1080, 1100)
+        self.keyboard.setPower('', 'enabled', True)
+        QTest.qWait(50)
+        pending = [root]
+        button = None
+        while pending:
+            item = pending.pop()
+            if item.objectName() == 'power-keyboard-sleep':
+                button = item
+                break
+            pending.extend(item.childItems())
+        self.assertIsNotNone(button)
+        centre = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+        QTest.mouseClick(self.view, Qt.LeftButton, Qt.NoModifier, centre)
+        QTest.qWait(50)
+        self.assertFalse(self.app.config['keyboard_power']['keyboard']['sleep'])
+        self.assertTrue(self.app.config['keyboard_power']['lightbar']['sleep'])
+        self.assertTrue(self.app.config['keyboard_power']['keyboard']['awake'])
+
+    def test_fan_navigation_selects_channels_and_keeps_live_rpm(self):
+        from rogcontrol.qt.controllers.fans import FansController
+        self.app.navigate('fans')
+        fans = FansController(self.app)
+        fans.refresh()
+        self.addCleanup(fans.close)
+        self.view.rootContext().setContextProperty('fansController', fans)
+        root = self.load('rogcontrol/qml/pages/FansPage.qml', 360, 1000)
+        repeater = root.findChild(QObject, 'fanChannels')
+        self.assertIsNotNone(repeater)
+        for index in range(3):
+            button, _ = QQmlExpression(QQmlEngine.contextForObject(repeater), repeater,
+                                      f'itemAt({index})').evaluate()
+            centre = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+            QTest.mouseClick(self.view, Qt.LeftButton, Qt.NoModifier, centre)
+            QTest.qWait(40)
+            self.assertEqual(root.property('selectedChannel'), str(index + 1))
+            self.assertTrue(button.property('primary'))
+        fans._live['rpms']['3'] = 3100
+        fans.detailsChanged.emit()
+        QTest.qWait(40)
+        navigation = root.findChild(QObject, 'fanNavigation')
+        labels, _ = QQmlExpression(QQmlEngine.contextForObject(navigation), navigation,
+                                  'secondaryLabels[2]').evaluate()
+        self.assertEqual(labels, '3100 RPM')
+        self.assertEqual(root.property('selectedChannel'), '3')
+
     def test_colour_dialog_fits_minimum_window_size(self):
         root = self.load('rogcontrol/qml/components/ColorPicker.qml', 360, 480)
         root.findChild(QObject, 'colorSwatch').clicked.emit()

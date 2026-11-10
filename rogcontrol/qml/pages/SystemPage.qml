@@ -12,16 +12,16 @@ ColumnLayout {
     property string section: 'General'
     spacing: 14
     StatusRow { Layout.fillWidth: true; colors: root.colors; label: 'Installed ROG Control version'; value: root.readings.version || 'Loading…' }
-    Flow {
-        Layout.fillWidth: true; spacing: 8
-        Repeater {
-            model: ['General', 'Services', 'Updates', 'Diagnostics']
-            RogButton {
-                required property string modelData
-                colors: root.colors; text: modelData; primary: root.section === modelData
-                onClicked: root.section = modelData
-            }
-        }
+    SegmentedSetting {
+        Layout.fillWidth: true
+        Layout.preferredWidth: 560
+        Layout.maximumWidth: 560
+        colors: root.colors
+        navigation: true
+        repeaterName: 'systemSections'
+        choices: ['General', 'Services', 'Updates', 'Diagnostics']
+        value: choices.indexOf(root.section)
+        onEdited: value => root.section = choices[value]
     }
     MetricCard {
         visible: root.section === 'General'
