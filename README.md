@@ -322,10 +322,12 @@ python3 -m rogcontrol.qt.runtime
 
 ## 📦 Installing
 
-Version 1.0.3.0 adds responsive wide layouts, a reactive ROG G614 keyboard
-lighting preview, a four-zone LED strip, and unified notifications that dismiss
-after two seconds. Existing settings, actions, tabs, and app colours are preserved.
-Hardware profile services continue to start at OS boot before login.
+Version 1.0.3.0 adds an angular ROG interface across all tabs, a continuous
+graphite background, textured header artwork, and a redesigned profile bar.
+It includes responsive wide layouts, a reactive ROG G614 keyboard lighting preview,
+a four-zone LED strip, and unified notifications that dismiss after two seconds.
+Existing settings and actions are preserved. Hardware profile services continue
+to start at OS boot before login.
 
 **For this 1.0.3.0 update, install manually from a terminal opened from your
 desktop.** The older app's updater can terminate its own installer when the

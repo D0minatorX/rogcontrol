@@ -167,6 +167,18 @@ class WideLayoutTests(unittest.TestCase):
                           and a['y']<b['y']+b['h']-.01 and a['y']+a['h']>b['y']+.01)
                 self.assertFalse(overlaps,(a['label'],b['label']))
 
+    def test_keyboard_cards_follow_mockup_desktop_columns(self):
+        root=self.page('keyboard')
+        lighting=root.findChild(QObject,'lightingCard')
+        timeout=next(i for i in visual_items(root) if i.property('title')=='Backlight inactivity timeout')
+        policy=next(i for i in visual_items(root) if i.property('title')=='Lighting power policy')
+        self.assertGreater(lighting.width(),root.width()*.5)
+        self.assertEqual(lighting.property('angular'),True)
+        self.assertEqual(lighting.property('clip'),True)
+        self.assertGreater(timeout.mapToScene(QPointF(0,0)).x(),lighting.mapToScene(QPointF(0,0)).x()+lighting.width()*.65)
+        self.assertGreater(policy.mapToScene(QPointF(0,0)).y(),timeout.mapToScene(QPointF(0,0)).y())
+        self.assertEqual(self.warnings,[])
+
     def test_keyboard_preview_reacts_to_lighting_and_pauses_when_hidden(self):
         self.page('keyboard')
         preview=self.window.findChild(QObject,'keyboardPreview')

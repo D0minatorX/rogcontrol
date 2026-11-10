@@ -24,7 +24,7 @@ ColumnLayout {
     Rectangle {
         Layout.fillWidth: true
         implicitHeight: root.secondaryLabels.length > 0 ? 58 : root.navigation ? 42 : 44
-        radius: 11
+        radius: 5
         color: root.navigation ? 'transparent' : root.colors.window
         border.color: root.navigation ? 'transparent' : root.colors.border
         Rectangle {
@@ -79,9 +79,14 @@ ColumnLayout {
                         }
                     }
                     background: Rectangle {
-                        radius: 7
+                        radius: 6
+                        Rectangle {
+                            anchors.fill: parent; anchors.margins: -3
+                            visible: !root.navigation && parent.parent.primary
+                            radius: 8; color: 'transparent'; border.color: root.colors.accent; opacity: .55
+                        }
                         color: root.navigation ? (parent.hovered ? root.colors.hover : 'transparent') : (parent.primary ? root.colors.accent : parent.hovered ? root.colors.hover : 'transparent')
-                        border.color: parent.visualFocus ? root.colors.accent : 'transparent'
+                        border.color: parent.visualFocus || (!root.navigation && parent.primary) ? Qt.lighter(root.colors.accent, 1.4) : 'transparent'
                         Behavior on color { ColorAnimation { duration: 120 } }
                     }
                     onClicked: root.edited(index + root.minimum)
@@ -96,6 +101,8 @@ ColumnLayout {
             width: Math.max(0, segmentWidth - 24)
             height: 2
             radius: 1
+            Rectangle { anchors.fill: parent; anchors.margins: -3; radius: 5; color: root.colors.accent; opacity: .1 }
+            Rectangle { anchors.fill: parent; anchors.margins: -1; radius: 3; color: root.colors.accent; opacity: .2 }
             color: root.colors.accent
             Behavior on x { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
         }

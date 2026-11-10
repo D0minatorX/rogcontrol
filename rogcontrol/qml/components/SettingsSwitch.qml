@@ -14,7 +14,7 @@ ColumnLayout {
     signal edited(bool value)
     RowLayout {
         Layout.fillWidth: true; spacing: 12
-        Text { visible: root.trailing; text: root.title; color: root.colors.text; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        Text { visible: root.trailing; text: root.title; color: root.colors.text; font.pixelSize: 13; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         RogSwitch {
             colors: root.colors
             Layout.fillWidth: !root.trailing

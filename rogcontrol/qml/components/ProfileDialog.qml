@@ -19,7 +19,7 @@ RogDialog {
             id: name; placeholderText: 'Unique profile name'; Layout.fillWidth: true
             implicitHeight: 42; leftPadding: 12; color: root.colors.text
             placeholderTextColor: root.colors.mutedText; selectionColor: root.colors.accent
-            background: Rectangle { radius: 9; color: root.colors.window; border.color: name.activeFocus ? root.colors.accent : root.colors.border }
+            background: AngularPanel { cut: 7; decorated: false; fillColor: root.colors.window; lineColor: name.activeFocus ? root.colors.accent : root.colors.border; accentColor: root.colors.accent }
             Accessible.name: 'Profile name'
             onAccepted: if (root.acceptEnabled) root.accept()
         }

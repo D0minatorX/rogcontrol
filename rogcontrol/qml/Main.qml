@@ -14,14 +14,37 @@ ApplicationWindow {
     title: 'ROG Control' + (appController.demoMode ? ' · Demo' : '')
     color: "transparent"
     readonly property int cornerRadius: visibility === Window.Maximized || visibility === Window.FullScreen ? 0 : 14
-    background: Rectangle { color: theme.window; radius: window.cornerRadius }
+    background: Rectangle {
+        color: theme.window; radius: window.cornerRadius
+        SurfaceBackdrop { anchors.fill: parent; colors: theme }
+        ReferenceArtwork {
+            visible: !theme.light && window.width >= 980
+            anchors.right: parent.right; y: 48
+            width: Math.min(836, parent.width * .6); height: 106
+            sourceClipRect: Qt.rect(750, 48, 836, 106)
+            Rectangle {
+                anchors.left: parent.left; width: 100; height: parent.height
+                gradient: Gradient { orientation: Gradient.Horizontal; GradientStop { position: 0; color: theme.window } GradientStop { position: 1; color: 'transparent' } }
+            }
+            Rectangle {
+                anchors.bottom: parent.bottom; width: parent.width; height: 20
+                gradient: Gradient { GradientStop { position: 0; color: 'transparent' } GradientStop { position: 1; color: theme.window } }
+            }
+        }
+    }
     Palette { id: theme; appearance: appController.appearance }
     property bool narrow: width < 620
     property var tuningPage: appController.currentPage === 'cpu' ? cpuController : appController.currentPage === 'gpu' ? gpuController : appController.currentPage === 'fans' ? fansController : null
     property var pages: [{id:'quick_access',title:'Home',icon:'⌂'}, {id:'cpu',title:'CPU',icon:'▣'}, {id:'gpu',title:'GPU',icon:'▱'}, {id:'fans',title:'Fans',icon:'✣'}, {id:'keyboard',title:'Keyboard',icon:'⌨'}, {id:'system',title:'System',icon:'⚙'}]
     header: Rectangle {
-        height: 44; color: theme.sidebar; radius: window.cornerRadius
+        height: 48; color: theme.sidebar; radius: window.cornerRadius
         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: parent.height / 2; color: theme.sidebar }
+        ReferenceArtwork {
+            visible: !theme.light
+            anchors.fill: parent
+            sourceClipRect: Qt.rect(250, 0, 1080, 48)
+        }
+        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.border; opacity: .5 }
         MouseArea {
             anchors.fill: parent
             onPressed: window.startSystemMove()
@@ -29,8 +52,12 @@ ApplicationWindow {
         }
         RowLayout {
             anchors.fill: parent; anchors.leftMargin: 22; anchors.rightMargin: 8
-            Text { text: 'ROG'; color: theme.accent; font.pixelSize: 14; font.letterSpacing: 2 }
-            Text { text: 'CONTROL'; color: theme.text; font.pixelSize: 14; font.letterSpacing: 2; Layout.fillWidth: true }
+            ReferenceArtwork {
+                Layout.preferredWidth: window.narrow ? 56 : 224
+                Layout.preferredHeight: 36
+                sourceClipRect: window.narrow ? Qt.rect(22, 8, 56, 36) : Qt.rect(22, 8, 224, 36)
+            }
+            Item { Layout.fillWidth: true }
             WindowControl {
                 id: profileMenuButton
                 colors: theme; glyph: 'menu'; text: 'Profile actions'
@@ -67,6 +94,7 @@ ApplicationWindow {
             WindowControl { colors: theme; glyph: 'close'; text: 'Hide'; Accessible.name: 'Hide window'; onClicked: window.close() }
         }
     }
+    footer: ProfileBar { cornerRadius: window.cornerRadius; colors: theme; height: implicitHeight }
     Repeater {
         model: [Qt.TopEdge, Qt.BottomEdge, Qt.LeftEdge, Qt.RightEdge,
         Qt.TopEdge | Qt.LeftEdge, Qt.TopEdge | Qt.RightEdge,
@@ -89,11 +117,20 @@ ApplicationWindow {
     RowLayout {
         anchors.fill: parent; spacing: 0
         Rectangle {
-            Layout.fillHeight: true; Layout.preferredWidth: window.width >= 980 ? 164 : 82; color: theme.sidebar; visible: !window.narrow
+            Layout.fillHeight: true; Layout.preferredWidth: window.width >= 980 ? 164 : 82; color: 'transparent'; visible: !window.narrow
             radius: window.cornerRadius
-            Rectangle { anchors.top: parent.top; width: parent.width; height: parent.height / 2; color: theme.sidebar }
-            Rectangle { anchors.right: parent.right; width: parent.width / 2; height: parent.height; color: theme.sidebar }
-            Column { anchors.top: parent.top; anchors.topMargin: 12; anchors.horizontalCenter: parent.horizontalCenter; spacing: 5
+            ReferenceArtwork {
+                visible: !theme.light
+                anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                height: Math.max(0, parent.height - 325)
+                sourceClipRect: Qt.rect(0, 373, 162, 521)
+                Rectangle {
+                    anchors.top: parent.top; width: parent.width; height: 35
+                    gradient: Gradient { GradientStop { position: 0; color: theme.window } GradientStop { position: 1; color: 'transparent' } }
+                }
+            }
+            Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: theme.border; opacity: .5 }
+            Column { anchors.top: parent.top; anchors.topMargin: 22; anchors.horizontalCenter: parent.horizontalCenter; spacing: 5
                 Repeater { model: window.pages; NavigationItem { expanded: window.width >= 980; required property var modelData; text: modelData.title; symbol: modelData.id; selected: appController.currentPage === modelData.id; colors: theme; onClicked: appController.navigate(modelData.id) } }
             }
         }
@@ -106,16 +143,17 @@ ApplicationWindow {
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
-                Layout.topMargin: 18; Layout.bottomMargin: 16
+                Layout.topMargin: 22; Layout.bottomMargin: 16
                 spacing: 7
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
-                    Text { text: appController.pageTitle === 'Home' ? 'ROG CONTROL' : appController.pageTitle; color: theme.text; font.pixelSize: window.narrow ? 21 : 24; font.letterSpacing: 1; Layout.fillWidth: true }
+                    SlashAccent { tint: theme.accent; doubleSlash: true; Layout.rightMargin: 8 }
+                    Text { text: appController.pageTitle === 'Home' ? 'ROG CONTROL' : appController.pageTitle; color: theme.text; font.pixelSize: window.narrow ? 21 : 26; font.bold: true; font.italic: true; font.letterSpacing: 1; Layout.fillWidth: true }
                     RogButton { colors: theme; visible: appController.currentPage === 'fans'; text: window.narrow ? 'Calibrate' : 'Calibrate fans'; implicitWidth: window.narrow ? 78 : 120; enabled: !appController.busy && fansController.channels.length > 0 && (appController.demoMode || !!fansController.live.calibration_available); onClicked: fansController.calibrate() }
                     RogButton { colors: theme; visible: window.tuningPage !== null; text: 'Revert'; implicitWidth: window.narrow ? 62 : 90; enabled: window.tuningPage !== null && window.tuningPage.dirty && !appController.busy; onClicked: window.tuningPage.revert() }
                     RogButton { colors: theme; visible: window.tuningPage !== null; text: 'Apply'; implicitWidth: window.narrow ? 62 : 90; primary: true; enabled: window.tuningPage !== null && window.tuningPage.ready && !appController.busy; onClicked: window.tuningPage.apply() }
                 }
-                Text { text: (overviewController.data.cpu_name || 'Detecting processor…') + ' / ' + (overviewController.data.gpu_name || 'Detecting graphics…'); color: theme.mutedText; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true }
+                Text { visible: appController.currentPage !== 'keyboard'; text: (overviewController.data.cpu_name || 'Detecting processor…') + ' / ' + (overviewController.data.gpu_name || 'Detecting graphics…'); color: theme.mutedText; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true }
 
             }
             ScrollView {
@@ -134,7 +172,6 @@ ApplicationWindow {
                     Item { Layout.preferredHeight: 14 }
                 }
             }
-            ProfileBar { cornerRadius: window.cornerRadius; colors: theme; Layout.fillWidth: true; Layout.preferredHeight: implicitHeight }
         }
     }
     Component { id: home; QuickAccessPage { colors: theme } }

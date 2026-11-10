@@ -17,10 +17,10 @@ Dialog {
     topPadding: 16
     bottomPadding: 20
     closePolicy: Popup.CloseOnEscape
-    background: Rectangle {
-        radius: 16
-        color: root.colors.panel
-        border.color: root.colors.border
+    background: AngularPanel {
+        fillColor: root.colors.panel
+        lineColor: root.colors.border
+        accentColor: root.colors.accent
     }
     Overlay.modal: Rectangle { color: '#99000000' }
     header: RowLayout {

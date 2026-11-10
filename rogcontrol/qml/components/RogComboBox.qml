@@ -12,7 +12,7 @@ ComboBox {
     contentItem: Text {
         text: control.displayText || 'Select…'
         color: control.colors.text
-        font.pixelSize: 12
+        font.pixelSize: 13
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight
     }
@@ -21,9 +21,9 @@ ComboBox {
         text: control.popup.visible ? '⌃' : '⌄'; font.pixelSize: 19; color: control.colors.mutedText
     }
     background: Rectangle {
-        radius: 10
+        radius: 5
         color: control.hovered ? control.colors.hover : control.colors.sidebar
-        border.color: control.activeFocus || control.popup.visible ? control.colors.accent : 'transparent'
+        border.color: control.activeFocus || control.popup.visible ? control.colors.accent : control.colors.border
     }
     delegate: ItemDelegate {
         id: entry
@@ -34,7 +34,7 @@ ComboBox {
         contentItem: Text {
             text: (control.currentIndex === entry.index ? '✓  ' : '    ') + String(entry.modelData)
             color: control.currentIndex === entry.index ? control.colors.accent : control.colors.text
-            font.pixelSize: 12; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+            font.pixelSize: 13; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
         }
         background: Rectangle { radius: 7; color: entry.highlighted ? control.colors.hover : 'transparent' }
     }

@@ -79,10 +79,10 @@ Dialog {
         }
         colorChosen(draftColor)
     }
-    background: Rectangle {
-        radius: 16
-        color: dialog.colors.panel
-        border.color: dialog.colors.border
+    background: AngularPanel {
+        fillColor: dialog.colors.panel
+        lineColor: dialog.colors.border
+        accentColor: dialog.colors.accent
     }
     Overlay.modal: Rectangle { color: '#99000000' }
 

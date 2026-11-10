@@ -47,21 +47,23 @@ Item {
     readonly property real ledOpacity: !enabled || !hasColour || lighting.brightness === 0 ? 0 : (lighting.brightness/3) * (lighting.mode === 'Pulse' ? .15+.85*Math.pow((1+Math.cos(phase*2*Math.PI))/2,2) : 1)
     Rectangle {
         id: chassis
-        width: Math.min(parent.width-20,820)
+        width: Math.min(parent.width-12,840)
         height: Math.min(parent.height-24, width * 7/16 + 20)
         anchors.horizontalCenter: parent.horizontalCenter
         y: 3
-        radius: 12
-        color: preview.colors.window
-        border.color: Qt.lighter(preview.colors.border,1.6)
-        Rectangle {
-            anchors.fill: parent; anchors.margins: 3
-            radius: 9
-            gradient: Gradient {
-                GradientStop { position: 0; color: preview.colors.hover }
-                GradientStop { position: .2; color: preview.colors.panel }
-                GradientStop { position: 1; color: preview.colors.sidebar }
-            }
+        radius: 0
+        color: 'transparent'
+        AngularPanel {
+            anchors.fill: parent; cut: 17; decorated: false
+            fillColor: preview.colors.hover
+            lineColor: Qt.lighter(preview.colors.border,1.6)
+            accentColor: preview.colors.accent
+        }
+        AngularPanel {
+            anchors.fill: parent; anchors.margins: 3; cut: 15; decorated: false
+            fillColor: preview.colors.panel
+            lineColor: preview.colors.window
+            accentColor: preview.colors.accent
         }
         Item {
             id: deck
@@ -83,7 +85,7 @@ Item {
                     Rectangle {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                         height: 4; radius: 3
-                        color: keycap.led; opacity: preview.ledOpacity*.35
+                        color: keycap.led; opacity: preview.ledOpacity*.65
                     }
                     Rectangle {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -95,7 +97,7 @@ Item {
                             GradientStop { position: 0; color: keycap.modelData.clear || keycap.modelData.space ? preview.mix(preview.colors.hover,keycap.led,.35*preview.ledOpacity) : Qt.lighter(preview.colors.hover,1.15) }
                             GradientStop { position: 1; color: preview.colors.panel }
                         }
-                        border.color: preview.mix(preview.colors.border,keycap.led,.42*preview.ledOpacity)
+                        border.color: preview.mix(preview.colors.border,keycap.led,.75*preview.ledOpacity)
                         Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 3; height: 1; color: preview.colors.text; opacity: .08 }
                         Rectangle {
                             visible: !!keycap.modelData.clear
@@ -118,11 +120,11 @@ Item {
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 text: keycap.modelData.label
-                                color: preview.mix(preview.colors.mutedText,Qt.lighter(keycap.led,1.8),preview.ledOpacity)
+                                color: preview.mix(preview.colors.text,Qt.lighter(keycap.led,2.0),preview.ledOpacity)
                                 width: Math.max(0, keycap.width - 6)
                                 horizontalAlignment: Text.AlignHCenter
                                 elide: Text.ElideRight
-                                font.pixelSize: Math.min(keycap.modelData.macro ? 9 : (keycap.modelData.label.length>4 ? 9 : 11), deck.unitX * .42, keycap.height * .6)
+                                font.pixelSize: Math.min(keycap.modelData.macro ? 11 : (keycap.modelData.label.length>4 ? 12 : 14), deck.unitX * .42, keycap.height * .6)
                                 font.weight: Font.Medium
                             }
                             Text {

@@ -14,13 +14,13 @@ RowLayout {
     property int step: 1
     signal edited(int value)
     spacing: 12
-    Text { text: root.title; color: root.colors.text; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+    Text { text: root.title; color: root.colors.text; font.pixelSize: 13; Layout.fillWidth: true; wrapMode: Text.WordWrap }
     HelpInfo { colors: root.colors; helpText: root.helpText }
     SpinBox {
         id: spin
         from: root.minimum; to: root.maximum; stepSize: root.step; value: root.value
         onValueModified: { root.value = value; root.edited(value) }
-        editable: true; implicitHeight: 38; implicitWidth: 138
+        editable: true; implicitHeight: 32; implicitWidth: 138
         leftPadding: 38; rightPadding: 38
         Accessible.name: root.title
         opacity: enabled ? 1 : .45
@@ -42,7 +42,7 @@ RowLayout {
             color: spin.up.pressed ? root.colors.selected : spin.up.hovered ? root.colors.hover : 'transparent'
             Text { anchors.centerIn: parent; text: '+'; font.pixelSize: 18; color: spin.value < spin.to ? root.colors.text : root.colors.mutedText }
         }
-        background: Rectangle { radius: 10; color: root.colors.window; border.color: spin.activeFocus ? root.colors.accent : 'transparent' }
+        background: AngularPanel { cut: 7; decorated: false; fillColor: root.colors.window; lineColor: spin.activeFocus ? root.colors.accent : root.colors.border; accentColor: root.colors.accent }
     }
     Text { text: root.unit; color: root.colors.mutedText; font.pixelSize: 11; Layout.preferredWidth: 18 }
 }

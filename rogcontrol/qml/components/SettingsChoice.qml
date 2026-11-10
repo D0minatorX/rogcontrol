@@ -14,7 +14,7 @@ ColumnLayout {
     signal edited(var value)
     RowLayout {
         Layout.fillWidth: true
-        Text { text: root.title; color: root.colors.text; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 12 }
+        Text { text: root.title; color: root.colors.text; Layout.fillWidth: true; wrapMode: Text.WordWrap; font.pixelSize: 13 }
         HelpInfo { colors: root.colors; helpText: root.helpText }
     }
     RogComboBox {

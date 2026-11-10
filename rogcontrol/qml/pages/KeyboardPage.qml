@@ -30,7 +30,7 @@ GridLayout {
         Layout.fillWidth: true
         Layout.fillHeight: true
         Layout.minimumHeight: implicitHeight
-        Layout.preferredWidth: root.columns === 3 ? 900 : 1
+        Layout.preferredWidth: root.columns === 3 ? 880 : 1
         Layout.alignment: Qt.AlignTop
         spacing: 14
         visible: root.section === 0
@@ -159,7 +159,7 @@ GridLayout {
     }
     ColumnLayout {
         Layout.fillWidth: true
-        Layout.preferredWidth: root.columns === 3 ? 450 : 1
+        Layout.preferredWidth: root.columns === 3 ? 480 : 1
         Layout.minimumWidth: root.columns === 3 ? 360 : 0
         Layout.alignment: Qt.AlignTop
         spacing: 14
@@ -168,7 +168,7 @@ GridLayout {
             Layout.alignment: Qt.AlignTop
             Layout.preferredWidth: 1
             visible: root.section === 0
-            title: 'Backlight inactivity timeout'; colors: root.colors; Layout.fillWidth: true
+            objectName: 'backlightTimeoutCard'; title: 'Backlight inactivity timeout'; colors: root.colors; Layout.fillWidth: true
             Text { text: root.readings.idle || 'Checking desktop idle detection…'; color: root.colors.mutedText; wrapMode: Text.WordWrap; Layout.fillWidth: true }
             NumberSetting { colors: root.colors; Layout.fillWidth: true; title: 'On external power'; unit: 's'; minimum: 0; maximum: 3600; step: 10; value: root.config.kbd_idle_timeout_ac_seconds || 0; enabled: !!root.readings.idle_supported && !appController.busy; onEdited: value => keyboardController.setPreference('kbd_idle_timeout_ac_seconds', value) }
             NumberSetting { colors: root.colors; Layout.fillWidth: true; title: 'On battery'; helpText: 'Seconds · 0 = off'; unit: 's'; minimum: 0; maximum: 3600; step: 10; value: root.config.kbd_idle_timeout_battery_seconds || 0; enabled: !!root.readings.idle_supported && !appController.busy; onEdited: value => keyboardController.setPreference('kbd_idle_timeout_battery_seconds', value) }
@@ -186,7 +186,7 @@ GridLayout {
             Layout.fillHeight: false
             Layout.preferredWidth: 1
             visible: root.section === 0
-            title: 'Lighting power policy'; colors: root.colors; Layout.fillWidth: true
+            objectName: 'lightingPowerPolicyCard'; title: 'Lighting power policy'; colors: root.colors; Layout.fillWidth: true
             SettingsSwitch { trailing: true; colors: root.colors; title: 'Manage lighting power states'; value: !!root.power.enabled; enabled: (!!root.readings.power_supported || !!root.power.enabled) && !appController.busy; onEdited: value => keyboardController.setPower('', 'enabled', value) }
             Text { visible: !root.readings.power_supported; text: 'Lighting power zones require a supported ASUS interface. Recheck after reconnecting.'; color: root.colors.mutedText; Layout.fillWidth: true; wrapMode: Text.WordWrap }
             RowLayout {
