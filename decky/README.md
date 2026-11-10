@@ -1,9 +1,19 @@
 # ROG Control Decky plugin
 
 This plugin exposes saved ROG Control profiles, the active profile's CPU
-Turbo Boost setting, CPU and GPU clock ceilings, and live fan speeds and
-temperatures in Decky Quick Access while using Gamescope. Readings refresh
+Turbo Boost setting, CPU and GPU clock ceilings, and live hardware readings
+in Decky Quick Access while using Gamescope. Version 0.1.4 adds matching CPU
+and GPU cards showing usage, current clock, temperature, and power draw,
+with a separate fan-speed row. Readings refresh
 approximately once per second when the hardware responds in time.
+
+CPU usage measures aggregate busy time across all cores over a short sampling
+interval; CPU clock shows the highest current clock across cpufreq policies.
+CPU power is package power, including SoC components where reported by the
+hardware. GPU readings refer to the NVIDIA GPU. Sleeping GPUs are not queried;
+unsupported sensors show **Unavailable**, and old readings are marked stale.
+The sensor helper is bundled with the plugin and uses the existing ROG Control
+hardware readers, so these readings do not require a newer desktop app.
 
 ROG Control must be installed for the same Linux user as Decky, with the
 Decky v0.1.2 or later CLI support included in the matching ROG Control source version.

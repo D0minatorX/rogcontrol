@@ -26,6 +26,7 @@ MAINTAINED_MODULES = (
     'test_cpu_thermal_policy',
     'test_daily_automation',
     'test_decky_gpu_telemetry',
+    'test_decky_live_info',
     'test_decky_v012_local',
     'test_display_refresh',
     'test_display_refresh_recovery',

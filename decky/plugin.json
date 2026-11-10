@@ -5,7 +5,7 @@
   "api_version": 1,
   "publish": {
     "tags": ["utility", "gamescope"],
-    "description": "Switch profiles, tune CPU and GPU clocks, and monitor temperatures and fans.",
+    "description": "Switch profiles, tune CPU and GPU clocks, and monitor CPU/GPU usage, clocks, temperatures, power, and fans.",
     "image": "https://raw.githubusercontent.com/D0minatorX/rogcontrol/main/rogcontrol/rogcontrol.png"
   }
 }

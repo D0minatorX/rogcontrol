@@ -36,7 +36,7 @@ def build_package(output_dir, build=True):
     with tempfile.TemporaryDirectory(prefix="rogcontrol-decky-package-") as temp:
         stage = Path(temp) / "ROG-Control"
         stage.mkdir()
-        for relative in ("main.py", "plugin.json", "package.json", "README.md", "install.sh"):
+        for relative in ("main.py", "telemetry.py", "plugin.json", "package.json", "README.md", "install.sh"):
             shutil.copy2(PLUGIN / relative, stage / relative)
         shutil.copy2(ROOT / "LICENSE", stage / "LICENSE")
         shutil.copytree(PLUGIN / "dist", stage / "dist")

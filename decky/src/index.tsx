@@ -2,7 +2,7 @@ import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow, SliderField, s
 import { callable, definePlugin } from "@decky/api";
 import { useCallback, useEffect, useRef, useState } from "react";
 type State = { protocol_version?: number; profiles: string[]; current_profile: string | null; cpu: { boost: boolean | null; max_freq_mhz: number }; gpu?: { clock_limit_mhz: number | null }; capabilities: { boost: boolean; max_freq: boolean; clock_range_mhz: [number, number] | null; gpu_clock_range_mhz?: [number, number] | null } };
-type Telemetry = { cpu_temp: number | null; gpu_temp: number | null; gpu_status?: string; fans: Record<string, number | null>; current_profile?: string | null };
+type Telemetry = { cpu_temp: number | null; gpu_temp: number | null; gpu_status?: string; cpu_usage?: number | null; cpu_clock_mhz?: number | null; cpu_power_w?: number | null; gpu_usage?: number | null; gpu_clock_mhz?: number | null; gpu_power_w?: number | null; fans: Record<string, number | null>; current_profile?: string | null };
 type Result = { ok: boolean; error?: string; message?: string; available?: boolean; version?: string };
 const getInstalledVersion = callable<[], Result>("get_installed_version");
 const getState = callable<[], State | Result>("get_state");
@@ -14,7 +14,32 @@ const setGpuClockLimit = callable<[number], Result>("set_gpu_clock_limit");
 const checkForUpdate = callable<[], Result>("check_for_update");
 const installUpdate = callable<[], Result>("install_update");
 const isResult = (v: State | Telemetry | Result): v is Result => "ok" in v;
-const reading = (v: number | null | undefined, unit: string) => v == null ? "Unavailable" : `${Math.round(v)} ${unit}`;
+const reading = (v: number | null | undefined, unit: string, decimals = 0) => v == null || !Number.isFinite(v) ? "Unavailable" : `${v.toFixed(decimals)} ${unit}`;
+function ProcessorCard({ name, temperature, usage, clock, power, sleeping, stale }: {
+  name: string; temperature?: number | null; usage?: number | null;
+  clock?: number | null; power?: number | null; sleeping?: boolean; stale: boolean;
+}) {
+  const validUsage = usage != null && Number.isFinite(usage);
+  const metric = (label: string, value: string) => <div style={{ minWidth: 0 }}>
+    <div style={{ fontSize: "11px", color: "#b8c2d0", marginBottom: "3px" }}>{label}</div>
+    <div style={{ fontSize: "14px", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{sleeping ? "—" : value}</div>
+  </div>;
+  return <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: "10px", padding: "12px", background: "rgba(0,0,0,0.18)", opacity: stale ? 0.6 : 1 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "10px" }}>
+      <span style={{ fontSize: "15px", fontWeight: 700 }}>{name}</span>
+      <span style={{ color: sleeping ? "#b8c2d0" : "#e3edf8", fontSize: "14px", fontVariantNumeric: "tabular-nums" }}>{sleeping ? "Sleeping" : reading(temperature, "°C")}</span>
+    </div>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px 16px" }}>
+      {metric("Usage", reading(usage, "%"))}
+      {metric(name === "CPU" ? "Peak core clock" : "Core clock", reading(clock, "MHz"))}
+      {metric(name === "CPU" ? "Package power" : "GPU power", reading(power, "W", 1))}
+      {metric("Status", sleeping ? "Sleeping" : stale ? "Stale" : [temperature, usage, clock, power].some(v => v != null && Number.isFinite(v)) ? "Live" : "Unavailable")}
+    </div>
+    <div aria-hidden="true" style={{ height: "3px", borderRadius: "2px", marginTop: "12px", background: "rgba(255,255,255,0.1)", overflow: "hidden" }}>
+      <div style={{ height: "100%", width: `${sleeping || !validUsage ? 0 : Math.max(0, Math.min(100, usage!))}%`, background: name === "CPU" ? "#66c0f4" : "#a5d78b", transition: "width 0.3s ease" }} />
+    </div>
+  </div>;
+}
 function Content() {
   const [state, setState] = useState<State | null>(null);
   const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
@@ -71,13 +96,19 @@ function Content() {
   const cpu = state.capabilities.clock_range_mhz; const gpu = state.capabilities.gpu_clock_range_mhz;
   const age = sampleAt == null ? null : Math.max(0, Math.floor((now - sampleAt) / 1000));
   return <>
-    <PanelSection title="Live hardware"><PanelSectionRow><div style={{ padding: "4px 0", width: "100%", lineHeight: 1.5 }}>
-      <div style={{ display: "flex", gap: "12px", justifyContent: "space-between" }}>
-        <div><span style={{ opacity: 0.7 }}>CPU</span><br />{reading(telemetry?.cpu_temp, "°C")}</div>
-        <div><span style={{ opacity: 0.7 }}>GPU</span><br />{telemetry?.gpu_status === "sleeping" ? "Sleeping" : reading(telemetry?.gpu_temp, "°C")}</div>
+    <PanelSection title="Live hardware"><PanelSectionRow><div style={{ padding: "4px 0", width: "100%" }}>
+      <div style={{ display: "grid", gap: "10px" }}>
+        <ProcessorCard name="CPU" temperature={telemetry?.cpu_temp} usage={telemetry?.cpu_usage} clock={telemetry?.cpu_clock_mhz} power={telemetry?.cpu_power_w} stale={Boolean(sampleError) || age != null && age > 5} />
+        <ProcessorCard name="GPU" temperature={telemetry?.gpu_temp} usage={telemetry?.gpu_usage} clock={telemetry?.gpu_clock_mhz} power={telemetry?.gpu_power_w} sleeping={telemetry?.gpu_status === "sleeping"} stale={Boolean(sampleError) || age != null && age > 5} />
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: "10px" }}>
+          <div style={{ color: "#b8c2d0", fontSize: "11px", marginBottom: "6px" }}>FAN SPEEDS</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "8px", fontSize: "12px", fontVariantNumeric: "tabular-nums" }}>
+            {[ ["CPU", "1"], ["GPU", "2"], ["Mid", "3"] ].map(([label, id]) => <div key={id}><div style={{ color: "#b8c2d0", marginBottom: "3px" }}>{label}</div>{reading(telemetry?.fans?.[id], "RPM")}</div>)}
+          </div>
+        </div>
       </div>
-      <div style={{ marginTop: "8px" }}><span style={{ opacity: 0.7 }}>Fans</span> · CPU {reading(telemetry?.fans?.["1"], "RPM")} · GPU {reading(telemetry?.fans?.["2"], "RPM")} · Mid {reading(telemetry?.fans?.["3"], "RPM")}</div>
-      <div style={{ opacity: 0.7, fontSize: "0.85em", marginTop: "4px" }}>{sampleError ? `Readings unavailable: ${sampleError}` : age == null ? "Waiting for readings…" : `${age > 5 ? "Stale · " : "Updated "}${age}s ago`}</div>
+      <div role="status" style={{ color: "#b8c2d0", fontSize: "11px", marginTop: "10px", overflowWrap: "anywhere" }}>{sampleError ? `Readings unavailable · ${age == null ? "No sample" : `Last sample ${age}s ago`}` : age == null ? "Waiting for readings…" : `${age > 5 ? "Stale · " : "Updated "}${age}s ago`}</div>
+      {sampleError && <div style={{ color: "#b8c2d0", fontSize: "11px", marginTop: "4px", overflowWrap: "anywhere" }}>{sampleError}</div>}
     </div></PanelSectionRow></PanelSection>
     <PanelSection title="Profile"><PanelSectionRow><DropdownItem label="Active profile" description={state.protocol_version !== 2 ? "Update ROG Control to enable profile feedback." : undefined} disabled={busy || !state.profiles.length || state.protocol_version !== 2} selectedOption={state.current_profile} rgOptions={state.profiles.map((name) => ({ label: name, data: name }))} onChange={(v) => { if (v.data !== state.current_profile) void perform(`Applying ${v.data}…`, () => setProfile(v.data), telemetry?.gpu_status === "sleeping" ? `Profile ${v.data} applied; GPU settings may wait for wake` : `Profile ${v.data} applied`); }} /></PanelSectionRow>
       {feedback === "profile" && (message || error) && <PanelSectionRow><div style={{ padding: "4px 0" }}>{error || message}</div></PanelSectionRow>}</PanelSection>

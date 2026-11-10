@@ -24,6 +24,9 @@ class Plugin:
                     "ROG Control was not found. Install it for the Decky user first.")
 
         argv = [str(launcher), "decky", *args]
+        if args == ["telemetry"]:
+            argv = ["/usr/bin/python3", str(Path(__file__).resolve().with_name("telemetry.py")),
+                    str(user_home / ".local" / "lib")]
         env = dict(os.environ)
         # Decky Loader is bundled with its own Python and shared libraries.
         # Its environment must not leak into the separate system Python used
