@@ -1,7 +1,7 @@
 """Lighting, background input preferences and portal capture lifecycle."""
 from copy import deepcopy
 import threading
-from PySide6.QtCore import Property, Signal, Slot, QTimer, Qt
+from PySide6.QtCore import QObject, Property, Signal, Slot, QTimer, Qt
 from PySide6.QtGui import QColor
 from .settings import SettingsController
 
@@ -16,6 +16,8 @@ class KeyboardController(SettingsController):
     def __init__(self, app, parent=None):
         super().__init__(app, parent)
         self.stateChanged.connect(self.detailsChanged.emit)
+        from ..screen_color import ScreenColorPicker
+        self._screen_picker = ScreenColorPicker(self)
         self._edits = {}
         self._preference_edits = {}
         self._colors = None
@@ -48,6 +50,8 @@ class KeyboardController(SettingsController):
     @staticmethod
     def hexcolor(color):
         return '#%02x%02x%02x' % tuple(color)
+
+    screenPicker = Property(QObject, lambda s: s._screen_picker, constant=True)
 
     settings = Property('QVariantMap', lambda s: dict(deepcopy(s.app.config), **s._preference_edits), notify=detailsChanged)
 
@@ -559,6 +563,7 @@ class KeyboardController(SettingsController):
         self.stateChanged.emit()
 
     def close(self):
+        self._screen_picker.cancel()
         self.debounce.stop()
         self.liveTimer.stop()
         self.preferenceTimer.stop()

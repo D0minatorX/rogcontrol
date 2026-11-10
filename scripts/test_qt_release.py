@@ -53,11 +53,12 @@ MAINTAINED_MODULES = (
     'test_profile_requests',
     'test_qt_controllers',
     'test_startup',
+    'test_screen_color',
     'test_tray',
     'test_updates',
     'test_wayland_idle',
 )
-ISOLATED_QT_MODULES = ('test_color_picker_ui',)
+ISOLATED_QT_MODULES = ('test_color_picker_ui', 'test_keyboard_controls_ui')
 
 
 def main():
@@ -82,7 +83,7 @@ def main():
     if not result.wasSuccessful():
         return 1
     env = dict(os.environ, QT_QPA_PLATFORM='offscreen')
-    return subprocess.run([sys.executable, '-m', 'unittest', *('tests.' + name for name in ISOLATED_QT_MODULES)],
+    return subprocess.run([sys.executable, '-m', 'unittest', *(('scripts.' if (ROOT / 'scripts' / (name + '.py')).exists() else 'tests.') + name for name in ISOLATED_QT_MODULES)],
                           cwd=ROOT, env=env, check=False).returncode
 
 

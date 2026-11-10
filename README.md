@@ -141,6 +141,11 @@ that reproduce the difference. Pull requests should preserve the automatic
 detection behavior and keep unsupported hardware unaffected.
 
 ### ⌨️ Keyboard
+Brightness uses four direct choices: **Off**, **Low**, **Medium**, and **High**.
+The colour dialog includes **Pick colour from screen**, using the desktop's
+native eyedropper. Picked colours remain a draft until you press **Select**;
+cancelling keeps the existing colour.
+
 Brightness and ten lighting modes: Static, Breathing, Pulse, Colour Cycle, Rainbow, Gradient Static, GPU Temp Colour, CPU Temp Colour, Battery Level, and Ambient (follows what's on screen, via the desktop's screen-sharing portal).
 
 On the **G614PR with the ASUS 19b6 controller**, **Lighting power states**

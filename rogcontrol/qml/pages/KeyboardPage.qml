@@ -17,7 +17,32 @@ GridLayout {
         Layout.alignment: Qt.AlignTop
         Layout.preferredWidth: 1
         title: 'Keyboard lighting'; colors: root.colors; Layout.fillWidth: true
-        SliderRow { colors: root.colors; Layout.fillWidth: true; title: 'Brightness'; minimum: 0; maximum: 3; value: root.lighting.brightness; onEdited: value => keyboardController.setLighting('brightness', value) }
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            Text { text: 'Brightness'; color: root.colors.text; font.pixelSize: 12 }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                Repeater {
+                    objectName: 'brightnessLevels'
+                    model: ['Off', 'Low', 'Medium', 'High']
+                    RogButton {
+                        required property int index
+                        required property string modelData
+                        colors: root.colors
+                        objectName: 'brightnessLevel' + index
+                        Layout.fillWidth: true
+                        implicitWidth: 0
+                        text: modelData
+                        primary: root.lighting.brightness === index
+                        Accessible.checkable: true
+                        Accessible.checked: primary
+                        onClicked: keyboardController.setLighting('brightness', index)
+                    }
+                }
+            }
+        }
         SettingsChoice { colors: root.colors; Layout.fillWidth: true; title: 'Effect'; choices: root.readings.modes || []; value: root.lighting.mode; onEdited: value => keyboardController.setLighting('mode', value) }
         GridLayout {
             Layout.fillWidth: true; columns: root.width > 620 ? 2 : 1; columnSpacing: 24

@@ -130,7 +130,11 @@ state in sysfs rather than waking it with nvidia-smi to ask.
 
 KEYBOARD
 
-Brightness, and eleven lighting modes: Static, Breathing, Pulse, Colour Cycle,
+Brightness has four direct choices: Off, Low, Medium, and High.
+Use Pick colour from screen in a colour dialog for the native desktop
+eyedropper; press Select to confirm, or Cancel to keep the existing colour.
+
+Eleven lighting modes: Static, Breathing, Pulse, Colour Cycle,
 Rainbow, Gradient Static, GPU Temp Colour, CPU Temp Colour, Battery Level,
 Ambient, and Profile Colour.
 

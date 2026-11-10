@@ -4,6 +4,29 @@ import QtQuick.Layouts
 
 Dialog {
     id: dialog
+    property var screenPicker: typeof keyboardController !== 'undefined' ? keyboardController.screenPicker : null
+    property bool pickPending: false
+    property string pickError: ''
+    Connections {
+        target: dialog.screenPicker
+        function onColorPicked(value) {
+            if (!dialog.pickPending || !dialog.visible) return
+            dialog.setColor(value)
+            dialog.editorVisible = true
+        }
+        function onChanged() {
+            if (dialog.pickPending && !dialog.screenPicker.busy) {
+                dialog.pickError = dialog.screenPicker.error
+                // Result delivery follows changed, so keep ownership until
+                // the next event-loop turn.
+                Qt.callLater(function() { dialog.pickPending = false })
+            }
+        }
+    }
+    onClosed: {
+        if (pickPending && screenPicker) screenPicker.cancel()
+        pickPending = false
+    }
     property var colors
     property color initialColor: '#ee2445'
     property real hue: 0
@@ -45,6 +68,7 @@ Dialog {
     padding: 14
     closePolicy: Popup.CloseOnEscape
     onAboutToShow: {
+        pickError = ''
         setColor(initialColor)
         editorVisible = false
     }
@@ -96,6 +120,26 @@ Dialog {
 
     contentItem: ColumnLayout {
         spacing: 10
+        RogButton {
+            objectName: 'screenEyedropper'
+            colors: dialog.colors
+            Layout.fillWidth: true
+            text: dialog.pickPending ? 'Picking… press Esc to cancel' : 'Pick colour from screen'
+            enabled: dialog.screenPicker !== null && !dialog.screenPicker.busy
+            onClicked: {
+                dialog.pickError = ''
+                dialog.pickPending = true
+                dialog.screenPicker.pick()
+            }
+        }
+        Text {
+            visible: dialog.pickError.length > 0
+            text: dialog.pickError
+            color: dialog.colors.mutedText
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            font.pixelSize: 12
+        }
         ColumnLayout {
             id: palettePage
             objectName: 'palettePage'
@@ -249,7 +293,7 @@ Dialog {
                 id: colourArea
                 objectName: 'saturationValueArea'
                 Layout.fillWidth: true
-                Layout.preferredHeight: 270
+                Layout.preferredHeight: Math.max(90, Math.min(270, dialog.parent.height - 330))
                 clip: true
                 Rectangle { anchors.fill: parent; color: Qt.hsva(dialog.hue, 1, 1, 1) }
                 Rectangle {
@@ -344,6 +388,7 @@ Dialog {
         }
         Button {
             id: selectButton
+            enabled: !dialog.pickPending
             implicitWidth: 90; implicitHeight: 38
             Layout.rightMargin: 16; Layout.bottomMargin: 16
             Accessible.name: 'Select colour'
