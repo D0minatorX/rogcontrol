@@ -87,7 +87,7 @@ var keys = [
     {"label":"","x":4.5,"y":5.99,"w":5,"h":0.9,"sub":"","space":true},
     {"label":"Alt","x":9.5,"y":5.99,"w":1,"h":0.9,"sub":"","space":false},
     {"label":"PrtSc","x":10.5,"y":5.99,"w":1,"h":0.9,"sub":"","space":false},
-    {"label":"Copilot","x":11.5,"y":5.99,"w":1,"h":0.9,"sub":"","space":false},
+    {"label":"","x":11.5,"y":5.99,"w":1,"h":0.9,"sub":"","copilot":true},
     {"label":"←","x":13,"y":5.99,"w":1,"h":0.9,"sub":"Home","space":false},
     {"label":"↓","x":14,"y":5.99,"w":1,"h":0.9,"sub":"PgDn","space":false},
     {"label":"→","x":15,"y":5.99,"w":1,"h":0.9,"sub":"End","space":false}
