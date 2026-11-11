@@ -107,7 +107,7 @@ function Content() {
           </div>
         </div>
       </div>
-      <div role="status" style={{ color: "#b8c2d0", fontSize: "11px", marginTop: "10px", overflowWrap: "anywhere" }}>{sampleError ? `Readings unavailable · ${age == null ? "No sample" : `Last sample ${age}s ago`}` : age == null ? "Waiting for readings…" : `${age > 5 ? "Stale · " : "Updated "}${age}s ago`}</div>
+      {(sampleError || age == null || age > 5) && <div role="status" style={{ color: "#b8c2d0", fontSize: "11px", marginTop: "10px", overflowWrap: "anywhere" }}>{sampleError ? `Readings unavailable · ${age == null ? "No sample" : `Last sample ${age}s ago`}` : age == null ? "Waiting for readings…" : `Stale · ${age}s ago`}</div>}
       {sampleError && <div style={{ color: "#b8c2d0", fontSize: "11px", marginTop: "4px", overflowWrap: "anywhere" }}>{sampleError}</div>}
     </div></PanelSectionRow></PanelSection>
     <PanelSection title="Profile"><PanelSectionRow><DropdownItem label="Active profile" description={state.protocol_version !== 2 ? "Update ROG Control to enable profile feedback." : undefined} disabled={busy || !state.profiles.length || state.protocol_version !== 2} selectedOption={state.current_profile} rgOptions={state.profiles.map((name) => ({ label: name, data: name }))} onChange={(v) => { if (v.data !== state.current_profile) void perform(`Applying ${v.data}…`, () => setProfile(v.data), telemetry?.gpu_status === "sleeping" ? `Profile ${v.data} applied; GPU settings may wait for wake` : `Profile ${v.data} applied`); }} /></PanelSectionRow>

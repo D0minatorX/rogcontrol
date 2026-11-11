@@ -2,8 +2,9 @@
 
 This plugin exposes saved ROG Control profiles, the active profile's CPU
 Turbo Boost setting, CPU and GPU clock ceilings, and live hardware readings
-in Decky Quick Access while using Gamescope. Version 0.1.4 adds matching CPU
-and GPU cards showing usage, current clock, temperature, and power draw,
+in Decky Quick Access while using Gamescope. Version 0.1.5 hides the routine
+“Updated … ago” line while retaining loading, stale, and error messages. Matching CPU
+and GPU cards show usage, current clock, temperature, and power draw,
 with a separate fan-speed row. Readings refresh
 approximately once per second when the hardware responds in time.
 
