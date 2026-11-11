@@ -49,36 +49,12 @@ Item {
         return hex ? Qt.rgba(parseInt(hex.slice(1,3),16)/255, parseInt(hex.slice(3,5),16)/255, parseInt(hex.slice(5,7),16)/255, 1) : colors.mutedText
     }
     readonly property real ledOpacity: !enabled || !hasColour || lighting.brightness === 0 ? 0 : (lighting.brightness/3) * (lighting.mode === 'Pulse' ? .15+.85*Math.pow((1+Math.cos(phase*2*Math.PI))/2,2) : 1)
-    Rectangle {
+    Item {
         id: chassis
         width: Math.min(parent.width-12,840)
         height: Math.min(parent.height-24, width * 7/16 + 20)
         anchors.horizontalCenter: parent.horizontalCenter
         y: 3
-        radius: 0
-        color: 'transparent'
-        AngularPanel {
-            anchors.fill: parent; cut: 17; decorated: false
-            fillColor: preview.colors.hover
-            lineColor: Qt.lighter(preview.colors.border,1.6)
-            accentColor: preview.colors.accent
-        }
-        AngularPanel {
-            anchors.fill: parent; anchors.margins: 3; cut: 15; decorated: false
-            fillColor: '#35363a'
-            lineColor: preview.colors.window
-            accentColor: preview.colors.accent
-        }
-        Rectangle {
-            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-            anchors.leftMargin: 18; anchors.rightMargin: 18; anchors.topMargin: 5
-            height: 2; radius: 1; color: '#55565a'; opacity: .55
-        }
-        Rectangle {
-            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-            anchors.leftMargin: chassis.width * .28; anchors.rightMargin: chassis.width * .28
-            height: 1; color: '#08090b'; opacity: .7
-        }
         Item {
             id: deck
             anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 14
@@ -90,17 +66,18 @@ Item {
                 Rectangle {
                     id: keycap
                     required property var modelData
+                    readonly property bool translucent: !!modelData.clear || !!modelData.space
                     property color led: preview.zoneColours[Math.min(3, Math.floor(modelData.x/4))] || preview.colors.mutedText
                     x: modelData.x*deck.unitX
                     y: modelData.y*deck.unitY
                     width: modelData.w*deck.unitX-4
                     height: modelData.h*deck.unitY-3
                     radius: modelData.power ? 8 : 4
-                    color: modelData.power || modelData.clear ? 'transparent' : '#08090a'
+                    color: modelData.power || keycap.translucent ? 'transparent' : '#08090a'
                     Rectangle {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                         height: 2; radius: 1
-                        color: keycap.modelData.power || keycap.modelData.clear ? 'transparent' : '#050607'
+                        color: keycap.modelData.power || keycap.translucent ? 'transparent' : '#050607'
                     }
                     Rectangle {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -108,10 +85,10 @@ Item {
                         height: parent.height-2
                         clip: deck.width < 560
                         radius: 3
-                        color: keycap.modelData.power || keycap.modelData.clear ? 'transparent' : '#191b1e'
-                        border.color: keycap.modelData.power ? 'transparent' : keycap.modelData.clear ? '#727680' : '#292b2f'
+                        color: keycap.modelData.power || keycap.translucent ? 'transparent' : '#191b1e'
+                        border.color: keycap.modelData.power ? 'transparent' : keycap.translucent ? '#727680' : '#292b2f'
                         Rectangle {
-                            visible: !!keycap.modelData.clear
+                            visible: keycap.translucent
                             anchors.fill: parent; anchors.margins: 1
                             radius: 3
                             gradient: Gradient {
@@ -132,7 +109,7 @@ Item {
                                 }
                             }
                         }
-                        Rectangle { visible: !keycap.modelData.power; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 3; height: 1; color: '#d9e1ec'; opacity: keycap.modelData.clear ? .4 : .06 }
+                        Rectangle { visible: !keycap.modelData.power; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 3; height: 1; color: '#d9e1ec'; opacity: keycap.translucent ? .4 : .06 }
                         Text {
                             visible: preview.shiftedLegend(keycap.modelData.label) !== ''
                             anchors.left: parent.left; anchors.top: parent.top
@@ -247,43 +224,58 @@ Item {
             }
         }
     }
-    // A recessed diffuser with a soft halo; all four zones share the key lighting.
+    // A continuous diffuser with a narrow luminous core and soft spill.
     Rectangle {
         id: lightbar
         objectName: 'keyboardLightbar'
         anchors.horizontalCenter: chassis.horizontalCenter
-        anchors.top: chassis.bottom; anchors.topMargin: 7
-        width: chassis.width - 30; height: 9; radius: 4.5
-        color: preview.colors.window
-        border.color: preview.colors.border
-        Rectangle {
-            anchors.fill: parent; anchors.margins: -3
-            radius: 7
-            opacity: .16 * preview.ledOpacity
-            gradient: Gradient {
-                orientation: Gradient.Horizontal
-                GradientStop { position: 0; color: preview.zoneColours[0] || preview.colors.mutedText }
-                GradientStop { position: .33; color: preview.zoneColours[1] || preview.colors.mutedText }
-                GradientStop { position: .67; color: preview.zoneColours[2] || preview.colors.mutedText }
-                GradientStop { position: 1; color: preview.zoneColours[3] || preview.colors.mutedText }
+        anchors.top: chassis.bottom; anchors.topMargin: 6
+        width: chassis.width - 28; height: 10; radius: 5
+        color: '#080a0d'
+        border.color: '#24272e'
+        Gradient {
+            id: diffuserGradient
+            orientation: Gradient.Horizontal
+            GradientStop { position: 0; color: preview.zoneColours[0] || preview.colors.mutedText }
+            GradientStop { position: .33; color: preview.zoneColours[1] || preview.colors.mutedText }
+            GradientStop { position: .67; color: preview.zoneColours[2] || preview.colors.mutedText }
+            GradientStop { position: 1; color: preview.zoneColours[3] || preview.colors.mutedText }
+        }
+        Repeater {
+            model: 8
+            Rectangle {
+                required property int index
+                readonly property real spread: (8-index)*1.5
+                anchors.centerIn: parent
+                width: lightbar.width + spread*2
+                height: 5 + spread*2
+                radius: height/2
+                gradient: diffuserGradient
+                opacity: (.012 + index*.005) * preview.ledOpacity
             }
         }
         Rectangle {
-            anchors.fill: parent; anchors.margins: 2
-            radius: 2.5
+            anchors.centerIn: parent
+            width: parent.width-4; height: 6; radius: 3
+            gradient: diffuserGradient
+            opacity: .4*preview.ledOpacity
+        }
+        Rectangle {
+            anchors.centerIn: parent
+            width: parent.width-8; height: 3; radius: 1.5
             opacity: preview.ledOpacity
             gradient: Gradient {
                 orientation: Gradient.Horizontal
-                GradientStop { position: 0; color: preview.zoneColours[0] || preview.colors.mutedText }
-                GradientStop { position: .33; color: preview.zoneColours[1] || preview.colors.mutedText }
-                GradientStop { position: .67; color: preview.zoneColours[2] || preview.colors.mutedText }
-                GradientStop { position: 1; color: preview.zoneColours[3] || preview.colors.mutedText }
+                GradientStop { position: 0; color: Qt.lighter(preview.zoneColours[0] || preview.colors.mutedText,1.35) }
+                GradientStop { position: .33; color: Qt.lighter(preview.zoneColours[1] || preview.colors.mutedText,1.35) }
+                GradientStop { position: .67; color: Qt.lighter(preview.zoneColours[2] || preview.colors.mutedText,1.35) }
+                GradientStop { position: 1; color: Qt.lighter(preview.zoneColours[3] || preview.colors.mutedText,1.35) }
             }
             Rectangle {
-                anchors.left: parent.left; anchors.right: parent.right
-                anchors.top: parent.top; anchors.margins: 1
-                height: 1; radius: .5
-                color: preview.colors.text; opacity: .35
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.top: parent.top
+                width: parent.width-4; height: 1; radius: .5
+                color: '#e6f6ff'; opacity: .28
             }
         }
     }
