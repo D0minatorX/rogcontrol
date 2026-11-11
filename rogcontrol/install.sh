@@ -153,7 +153,7 @@ case "$PM" in
     apt) QT_PACKAGES=(python3-pyside6.qtquick python3-pyside6.qtquickcontrols2
         python3-pyside6.qtwidgets python3-pyside6.qtnetwork python3-pyside6.qtqml
         qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts
-        qml6-module-qtquick-window qml6-module-qtquick-templates
+        qml6-module-qtquick-window qml6-module-qtquick-templates qml6-module-qtquick-shapes
         qml6-module-qtqml-models qml6-module-qtqml-workerscript
         libqt6svg6 qt6-wayland python3-gi) ;;
     *) QT_PACKAGES=() ;;

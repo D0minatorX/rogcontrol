@@ -68,6 +68,8 @@ Item {
                     required property var modelData
                     readonly property bool translucent: !!modelData.clear || !!modelData.space
                     property color led: preview.zoneColours[Math.min(3, Math.floor(modelData.x/4))] || preview.colors.mutedText
+                    readonly property color legendColour: preview.mix(Qt.rgba(.71,.75,.81,1),led,preview.ledOpacity * .55)
+                    readonly property color secondaryLegendColour: preview.mix(Qt.rgba(.57,.62,.68,1),led,preview.ledOpacity * .45)
                     x: modelData.x*deck.unitX
                     y: modelData.y*deck.unitY
                     width: modelData.w*deck.unitX-4
@@ -136,26 +138,23 @@ Item {
                             fillMode: Image.PreserveAspectFit
                             sourceSize.width: 64; sourceSize.height: 64
                         }
-                        Image {
+                        KeyboardSymbol {
                             visible: !!keycap.modelData.copilot
                             anchors.centerIn: parent
                             anchors.horizontalCenterOffset: 2
                             anchors.verticalCenterOffset: -1
-                            width: parent.width * .44
+                            width: Math.round(parent.width * .5)
                             height: width
-                            source: 'keyboard-copilot.svg'
-                            fillMode: Image.PreserveAspectFit
-                            sourceSize.width: 48; sourceSize.height: 48
-                            opacity: .35+.65*preview.ledOpacity
+                            symbol: 'copilot'
+                            color: keycap.legendColour
                         }
-                        Image {
+                        KeyboardSymbol {
                             visible: keycap.modelData.label === 'Super'
                             anchors.centerIn: parent
                             anchors.horizontalCenterOffset: 1
-                            width: parent.width * .34; height: width
-                            source: 'keyboard-windows.svg'
-                            sourceSize.width: 48; sourceSize.height: 48
-                            opacity: .35+.65*preview.ledOpacity
+                            width: Math.round(parent.width * .36); height: width
+                            symbol: 'windows'
+                            color: keycap.legendColour
                         }
                         Item {
                             visible: keycap.modelData.label === 'Super'
@@ -166,33 +165,31 @@ Item {
                                 anchors.horizontalCenter: parent.horizontalCenter; y: 0
                                 width: parent.width*.65; height: parent.height*.65
                                 radius: width*.4; color: 'transparent'
-                                border.color: keycap.led
+                                border.color: keycap.secondaryLegendColour
                             }
                             Rectangle {
                                 anchors.bottom: parent.bottom
                                 width: parent.width; height: parent.height*.6; radius: 1
-                                color: keycap.led
+                                color: keycap.secondaryLegendColour
                                 Rectangle {
                                     anchors.centerIn: parent; width: 1; height: parent.height*.55
                                     color: '#22252a'
                                 }
                             }
-                            opacity: .35+.65*preview.ledOpacity
                         }
                         Rectangle {
                             visible: !!keycap.modelData.copilot
                             anchors.left: parent.left; anchors.bottom: parent.bottom
                             anchors.leftMargin: 4; anchors.bottomMargin: 3
                             width: Math.max(6,deck.unitX*.17); height: width
-                            color: 'transparent'; border.color: '#ac12d8'; border.width: 1
+                            color: 'transparent'; border.color: keycap.secondaryLegendColour; border.width: 1
                             Row {
                                 anchors.centerIn: parent; spacing: 2
                                 Repeater {
                                     model: 2
-                                    Rectangle { width: 1; height: 5; color: '#ac12d8' }
+                                    Rectangle { width: 1; height: 5; color: keycap.secondaryLegendColour }
                                 }
                             }
-                            opacity: .35+.65*preview.ledOpacity
                         }
                         Column {
                             visible: !keycap.modelData.power && !keycap.modelData.copilot && keycap.modelData.label !== 'Super'
@@ -201,7 +198,7 @@ Item {
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 text: keycap.modelData.label
-                                color: preview.mix(Qt.rgba(.71,.75,.81,1),keycap.led,preview.ledOpacity * .55)
+                                color: keycap.legendColour
                                 width: Math.max(0, keycap.width - 6)
                                 horizontalAlignment: Text.AlignHCenter
                                 elide: Text.ElideRight
@@ -212,7 +209,7 @@ Item {
                                 visible: keycap.modelData.sub.length > 0 && deck.width >= 560
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 text: keycap.modelData.sub
-                                color: preview.mix(Qt.rgba(.57,.62,.68,1),keycap.led,preview.ledOpacity * .45)
+                                color: keycap.secondaryLegendColour
                                 width: Math.max(0, keycap.width - 6)
                                 horizontalAlignment: Text.AlignHCenter
                                 elide: Text.ElideRight
