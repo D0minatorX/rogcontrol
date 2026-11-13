@@ -16,20 +16,14 @@ ApplicationWindow {
     readonly property int cornerRadius: visibility === Window.Maximized || visibility === Window.FullScreen ? 0 : 14
     background: Rectangle {
         color: theme.window; radius: window.cornerRadius
-        SurfaceBackdrop { anchors.fill: parent; colors: theme }
+        SurfaceBackdrop { anchors.fill: parent; colors: theme; visible: theme.light }
         ReferenceArtwork {
-            visible: !theme.light && window.width >= 980
-            anchors.right: parent.right; y: 48
-            width: Math.min(836, parent.width * .6); height: 106
-            sourceClipRect: Qt.rect(750, 48, 836, 106)
-            Rectangle {
-                anchors.left: parent.left; width: 100; height: parent.height
-                gradient: Gradient { orientation: Gradient.Horizontal; GradientStop { position: 0; color: theme.window } GradientStop { position: 1; color: 'transparent' } }
-            }
-            Rectangle {
-                anchors.bottom: parent.bottom; width: parent.width; height: 20
-                gradient: Gradient { GradientStop { position: 0; color: 'transparent' } GradientStop { position: 1; color: theme.window } }
-            }
+            anchors.fill: parent
+            visible: !theme.light
+            cornerRadius: window.cornerRadius
+            headerHeight: window.header.height
+            footerHeight: window.footer.height
+            sidebarWidth: window.narrow ? 0 : window.width >= 980 ? 164 : 82
         }
     }
     Palette { id: theme; appearance: appController.appearance }
@@ -37,13 +31,7 @@ ApplicationWindow {
     property var tuningPage: appController.currentPage === 'cpu' ? cpuController : appController.currentPage === 'gpu' ? gpuController : appController.currentPage === 'fans' ? fansController : null
     property var pages: [{id:'quick_access',title:'Home',icon:'⌂'}, {id:'cpu',title:'CPU',icon:'▣'}, {id:'gpu',title:'GPU',icon:'▱'}, {id:'fans',title:'Fans',icon:'✣'}, {id:'keyboard',title:'Keyboard',icon:'⌨'}, {id:'system',title:'System',icon:'⚙'}]
     header: Rectangle {
-        height: 48; color: theme.sidebar; radius: window.cornerRadius
-        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: parent.height / 2; color: theme.sidebar }
-        ReferenceArtwork {
-            visible: !theme.light
-            anchors.fill: parent
-            sourceClipRect: Qt.rect(250, 0, 1080, 48)
-        }
+        height: 48; color: theme.light ? theme.sidebar : 'transparent'; radius: window.cornerRadius
         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.border; opacity: .5 }
         MouseArea {
             anchors.fill: parent
@@ -52,10 +40,18 @@ ApplicationWindow {
         }
         RowLayout {
             anchors.fill: parent; anchors.leftMargin: 22; anchors.rightMargin: 8
-            ReferenceArtwork {
+            Item {
                 Layout.preferredWidth: window.narrow ? 56 : 224
                 Layout.preferredHeight: 36
-                sourceClipRect: window.narrow ? Qt.rect(22, 8, 56, 36) : Qt.rect(22, 8, 224, 36)
+                Item {
+                    visible: theme.light
+                    anchors.fill: parent
+                    clip: true
+                    Image {
+                        source: Qt.resolvedUrl('artwork/design-reference.png')
+                        x: -22; y: -8
+                    }
+                }
             }
             Item { Layout.fillWidth: true }
             WindowControl {
@@ -119,16 +115,6 @@ ApplicationWindow {
         Rectangle {
             Layout.fillHeight: true; Layout.preferredWidth: window.width >= 980 ? 164 : 82; color: 'transparent'; visible: !window.narrow
             radius: window.cornerRadius
-            ReferenceArtwork {
-                visible: !theme.light
-                anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                height: Math.max(0, parent.height - 325)
-                sourceClipRect: Qt.rect(0, 373, 162, 521)
-                Rectangle {
-                    anchors.top: parent.top; width: parent.width; height: 35
-                    gradient: Gradient { GradientStop { position: 0; color: theme.window } GradientStop { position: 1; color: 'transparent' } }
-                }
-            }
             Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: theme.border; opacity: .5 }
             Column { anchors.top: parent.top; anchors.topMargin: 22; anchors.horizontalCenter: parent.horizontalCenter; spacing: 5
                 Repeater { model: window.pages; NavigationItem { expanded: window.width >= 980; required property var modelData; text: modelData.title; symbol: modelData.id; selected: appController.currentPage === modelData.id; colors: theme; onClicked: appController.navigate(modelData.id) } }

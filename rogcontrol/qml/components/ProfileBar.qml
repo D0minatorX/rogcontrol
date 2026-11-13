@@ -6,19 +6,24 @@ Item {
     property int cornerRadius: 0
     property var colors
     implicitHeight: 100
+    readonly property int minimumTileWidth: 160
+    readonly property int tileSpacing: 16
+    readonly property int sideMargin: 32
+    readonly property real minimumRowWidth: appController.profileNames.length * (minimumTileWidth + tileSpacing) - tileSpacing
     ProfileSurface {
         anchors.fill: parent; anchors.margins: 22; anchors.topMargin: 2
         colors: root.colors; rail: true
     }
     ScrollView {
         id: viewport
-        anchors.fill: parent; anchors.leftMargin: 32; anchors.rightMargin: 32; anchors.topMargin: 12; anchors.bottomMargin: 32
+        anchors.fill: parent; anchors.leftMargin: root.sideMargin
+        anchors.rightMargin: root.minimumRowWidth > root.width - 2 * root.sideMargin ? 2 * root.sideMargin : root.sideMargin; anchors.topMargin: 12; anchors.bottomMargin: 32
         clip: true; contentHeight: availableHeight; contentWidth: tiles.implicitWidth
         ScrollBar.vertical.policy: ScrollBar.AlwaysOff
         ScrollBar.horizontal.policy: ScrollBar.AsNeeded
         Row {
             id: tiles
-            spacing: 16; height: viewport.availableHeight
+            spacing: root.tileSpacing; height: viewport.availableHeight
             Repeater {
                 model: appController.profileNames
                 Button {
@@ -26,7 +31,7 @@ Item {
                     required property string modelData
                     required property int index
                     property bool selected: modelData === appController.activeProfile
-                    width: Math.max(160, (viewport.availableWidth - 16 * (appController.profileNames.length-1)) / Math.max(1, appController.profileNames.length))
+                    width: Math.max(root.minimumTileWidth, (viewport.availableWidth - root.tileSpacing * (appController.profileNames.length-1)) / Math.max(1, appController.profileNames.length))
                     height: Math.min(54, tiles.height)
                     anchors.verticalCenter: parent.verticalCenter
                     enabled: !appController.busy

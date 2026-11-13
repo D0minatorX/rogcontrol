@@ -322,6 +322,9 @@ python3 -m rogcontrol.qt.runtime
 
 ## 📦 Installing
 
+Version 1.0.3.1 refines the graphite backdrop, sidebar artwork, rounded window
+corners, and profile hover and selection indicators.
+
 Version 1.0.3.0 adds an angular ROG interface across all tabs, a continuous
 graphite background, textured header artwork, and a redesigned profile bar.
 It includes responsive wide layouts, a reactive ROG G614 keyboard lighting preview,
@@ -334,16 +337,16 @@ desktop.** The older app's updater can terminate its own installer when the
 tray service stops. The installer now refuses that unsafe path before changing
 the system; the bundled updater isolates future update terminals from the tray.
 
-For the 1.0.3.0 release archive, extract `Rog-Control-V1.0.3.0.zip`, then run:
+For the 1.0.3.1 release archive, extract `Rog-Control-V1.0.3.1.zip`, then run:
 
 ```sh
-cd Rog-Control-V1.0.3.0/rogcontrol
+cd Rog-Control-V1.0.3.1/rogcontrol
 bash install.sh
 ```
 
 The archive includes the Qt controllers, QML pages, JavaScript helpers, and
 icons. To preview the extracted application before installing, run
-`python3 -m rogcontrol --demo` from `Rog-Control-V1.0.3.0`.
+`python3 -m rogcontrol --demo` from `Rog-Control-V1.0.3.1`.
 
 To install from a Git checkout:
 
