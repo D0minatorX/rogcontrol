@@ -56,6 +56,7 @@ for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
             sys.path.insert(0, _candidate)
         break
 
+from rogcontrol import app_profiles
 from rogcontrol import config as config_mod  # noqa: E402
 from rogcontrol import fancurve  # noqa: E402
 from rogcontrol import gamescope, charge_once, keyboard_power  # noqa: E402
@@ -210,7 +211,7 @@ def apply_gpu_clock_offsets(gpu, profile_only=False):
 
 def apply_once(config, profile_only=False, force_stock_undervolt=False):
     profile_name = config.get("current_profile")
-    profile = config.get("profiles", {}).get(profile_name)
+    profile = app_profiles.active_profile(config)
 
     # First, before anything else is written. This script is what the tray
     # runs to make a profile switch real, and without it the tray switched

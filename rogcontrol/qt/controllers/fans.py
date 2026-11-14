@@ -337,8 +337,8 @@ class FansController(TuningController):
         self.submit('fan-boost', worker, self._operation_done)
 
     def _restore_saved(self, cfg):
-        from ... import hardware as h, fancurve
-        fans = cfg.get('profiles', {}).get(cfg.get('current_profile'), {}).get('fans', {})
+        from ... import hardware as h, fancurve, app_profiles
+        fans = app_profiles.active_profile(cfg).get('fans', {})
         failures = []
         for i, ch in enumerate(ch for ch in h.FAN_CHANNELS if ch in fans):
             if i:

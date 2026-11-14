@@ -30,6 +30,7 @@ CONFIG_VERSION = 1
 
 DEFAULT_CONFIG = {
     "current_profile": "Balanced Performance",
+    "app_profiles": {},
     "kbd_brightness": 2,
     # None leaves firmware settings untouched until the user opts in.
     "keyboard_power": None,

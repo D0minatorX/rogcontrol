@@ -22,6 +22,8 @@ Canvas {
         } else if (name === 'fans') {
             circle(12,12,2)
             for(var j=0;j<3;j++) { c.save(); c.translate(12,12); c.rotate(j*Math.PI*2/3); c.beginPath(); c.moveTo(1,-3); c.bezierCurveTo(9,-13,14,-1,4,1); c.stroke(); c.restore() }
+        } else if (name === 'app_profiles') {
+            box(3,5,18,14); line(3,9,21,9); line(7,13,12,13); line(7,16,16,16)
         } else if (name === 'battery') {
             box(2,6,18,12); line(22,10,22,14); line(6,10,6,14); line(10,10,10,14); line(14,10,14,14)
         } else if (name === 'keyboard') {

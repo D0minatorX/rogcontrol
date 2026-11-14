@@ -48,6 +48,7 @@ to run at all for the modes whose previous state cannot be reconstructed
 from the config -- see kbdcolor.FLASH_UNRESTORABLE_MODES.
 """
 
+from contextlib import nullcontext
 import glob
 import json
 import os
@@ -69,6 +70,7 @@ for _candidate in (os.path.dirname(_HERE), os.path.expanduser("~/.local/lib")):
             sys.path.insert(0, _candidate)
         break
 
+from rogcontrol import app_profiles
 from rogcontrol import config as config_mod  # noqa: E402
 from rogcontrol import fancurve  # noqa: E402
 from rogcontrol import hardware  # noqa: E402
@@ -289,6 +291,15 @@ def clock_limit_available():
 
 
 def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
+    with profile_requests.hardware_apply_lock():
+        if app_profiles.entries(config):
+            with open(CONFIG_PATH) as stream:
+                config = json.load(stream)
+            profile = config.get("profiles", {}).get(config.get("current_profile"))
+        _apply_full_profile(config, profile, force_fan_reapply, full)
+
+
+def _apply_full_profile(config, profile, force_fan_reapply, full):
     """Apply a profile to the hardware.
 
     full=True applies everything, and is what a profile switch, a detected
@@ -329,6 +340,7 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
             run_helper(*args)
 
     if profile:
+        profile = app_profiles.active_profile(config, profile)
         # CPU limits are kept in the periodic pass: AMD firmware is known to
         # walk STAPM/PPT back on its own, so this one genuinely needs
         # re-asserting. It is cheap -- a single ryzenadj call.
@@ -388,7 +400,7 @@ def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
 
         # Manual switches can keep the same OS thermal mode. Detect saved
         # GPU changes independently, and recover skipped writes after wake.
-        reconcile_gpu_profile(config, force=full)
+        reconcile_gpu_profile(config, force=full, locked=True)
 
         # The fan boost, if one is in force, replaces the profile's curves
         # for as long as it lasts. This service is what makes the boost
@@ -1416,7 +1428,7 @@ def retry_pending_gpu_limits(gpu, force=False):
         _retry_pending_gpu_limits(gpu, force)
 
 
-def reconcile_gpu_profile(config, force=False):
+def reconcile_gpu_profile(config, force=False, locked=False):
     """Recover the latest saved GPU settings without rewriting stable ones.
 
     The UI/shortcut may skip a sleeping card or fail a write in another
@@ -1432,7 +1444,8 @@ def reconcile_gpu_profile(config, force=False):
             and not _pending_gpu_limits and not _pending_gpu_offsets
             and _pending_powermizer_mode is None and _pending_voltage_boost is None):
         return
-    with profile_requests.hardware_apply_lock(), _pending_gpu_limits_lock:
+    lock = nullcontext() if locked else profile_requests.hardware_apply_lock()
+    with lock, _pending_gpu_limits_lock:
         try:
             with open(CONFIG_PATH) as stream:
                 fresh = json.load(stream)
@@ -1441,8 +1454,9 @@ def reconcile_gpu_profile(config, force=False):
                 dedupe_key="gpu-config")
             return
         name = fresh.get("current_profile")
-        gpu = ((fresh.get("profiles") or {}).get(name) or {}).get("gpu") or {}
-        signature = (name, json.dumps(gpu, sort_keys=True))
+        baseline = (fresh.get("profiles") or {}).get(name) or {}
+        gpu = app_profiles.active_profile(fresh, baseline).get("gpu") or {}
+        signature = (name, json.dumps(baseline.get("gpu") or {}, sort_keys=True))
         changed = force or signature != _gpu_profile_signature
 
         # Retry values always belong to the current profile, including keys
@@ -1507,8 +1521,8 @@ def _retry_pending_gpu_limits(gpu, force=False):
                 and run_nvidia_helper("gpu", _pending_gpu_limits["watts"])):
             del _pending_gpu_limits["watts"]
     if "clock_limit" in _pending_gpu_limits:
-        arg = hardware.gpu_clock_limit_arg(
-            _pending_gpu_limits["clock_limit"], hardware.gpu_clock_limit_max())
+        clock = _pending_gpu_limits["clock_limit"]
+        arg = hardware.gpu_clock_limit_arg(clock, hardware.gpu_clock_limit_max()) if clock else "reset"
         if run_nvidia_helper("gpuclocklimit", arg):
             del _pending_gpu_limits["clock_limit"]
 
@@ -1688,9 +1702,128 @@ def _on_terminate(_signum, _frame):
     raise SystemExit(0)
 
 
+def reconcile_app_profiles(stop):
+    """Apply changed override fields between normal enforcer upkeep passes."""
+    journal = profile_requests.directory() / "app-profile-fields.json"
+    previous = {}
+    try:
+        pending = {(section, key) for section, key in json.loads(journal.read_text())
+                   if key in app_profiles.FIELDS.get(section, ())}
+    except (OSError, ValueError, TypeError):
+        pending = set()
+    stamp = None
+    configured = False
+    while not stop.is_set():
+        try:
+            config_stamp = os.stat(CONFIG_PATH).st_mtime_ns
+            if stamp != config_stamp or configured or pending:
+                with open(CONFIG_PATH) as stream:
+                    config = json.load(stream)
+                paths = app_profiles.running_paths(config)
+                base = app_profiles.effective_profile(config, [])
+                effective = app_profiles.effective_profile(config, paths)
+                overrides = {(section, key): value
+                             for section, fields in app_profiles.FIELDS.items()
+                             for key, value in effective.get(section, {}).items()
+                             if key in fields and value != app_profiles.baseline_value(section, key, base.get(section, {}))}
+                pending.update(field for field in previous.keys() | overrides.keys()
+                               if previous.get(field) != overrides.get(field))
+                if stamp != config_stamp:
+                    pending.update(overrides)
+                for section, key in pending - overrides.keys():
+                    values = effective.get(section, {})
+                    restore = app_profiles.baseline_value(section, key, values)
+                    if restore is not None:
+                        effective.setdefault(section, {})[key] = restore
+                if pending:
+                    with profile_requests.hardware_apply_lock(), _pending_gpu_limits_lock:
+                        if os.stat(CONFIG_PATH).st_mtime_ns != config_stamp:
+                            continue
+                        # Record fields before touching hardware so a restart can
+                        # restore them even if the executable exited meanwhile.
+                        record_app_fields(journal, pending | overrides.keys())
+                        pending = apply_app_changes(config, effective, pending)
+                        record_app_fields(journal, pending | overrides.keys())
+                previous = overrides
+                # A configured app can launch even when the file has not changed.
+                stamp = config_stamp
+                configured = bool(app_profiles.entries(config))
+        except (OSError, ValueError, TypeError) as error:
+            log(f"Application profile reconciliation deferred: {error}", "WARN",
+                dedupe_key="app-profiles")
+        stop.wait(2)
+
+
+def record_app_fields(journal, fields):
+    if fields:
+        temp = journal.with_suffix(".tmp")
+        temp.write_text(json.dumps(sorted(fields)))
+        temp.replace(journal)
+    else:
+        journal.unlink(missing_ok=True)
+
+
+def apply_app_changes(config, effective, pending):
+    remaining = set(pending)
+    cpu = effective.get("cpu", {})
+    if config.get("safety_tripped"):
+        cpu = config_mod.stock_cpu_values(cpu)
+    cpu_keys = {key for section, key in pending if section == "cpu"}
+    if cpu_keys:
+        power_keys = cpu_keys - {"max_freq", "min_freq"}
+        clock_keys = cpu_keys & {"max_freq", "min_freq"}
+        caps = {"ryzenadj": hardware.cpu_is_amd(),
+                "cpu_power_limits": hardware.cpu_power_limits_backend(),
+                "cpu_clock": clock_limit_available(),
+                "cpu_boost": boost_control_available()}
+        # A ceiling write can lower the live floor. If the floor is part of
+        # this transition and must go down first, write it before the ceiling.
+        plan = hardware.cpu_apply_plan(cpu, caps)
+        ceiling = cpu.get("max_freq")
+        if "max_freq" in clock_keys and ceiling:
+            live_floors = [hardware.read_int(path) for path in
+                           glob.glob(hardware.CPUFREQ_GLOB + "/scaling_min_freq")]
+            if live_floors and any(floor is None or floor > ceiling for floor in live_floors):
+                if "min_freq" in clock_keys:
+                    plan.sort(key=lambda item: item[0] != "minclock")
+                else:
+                    clock_keys.discard("max_freq")
+        for step, args in plan:
+            keys = {"limits": power_keys, "clock": clock_keys & {"max_freq"},
+                    "minclock": clock_keys & {"min_freq"}}.get(step)
+            if keys and run_helper(*args):
+                remaining.difference_update(("cpu", key) for key in keys)
+    gpu_keys = {key for section, key in pending if section == "gpu"}
+    if gpu_keys and not hardware.nvidia_access_error() and not hardware.dgpu_is_suspended():
+        gpu = effective.get("gpu", {})
+        for key in gpu_keys & gpu.keys():
+            if key == "watts":
+                success = hardware.gpu_power_limit_supported() and run_nvidia_helper("gpu", gpu[key])
+            elif key == "clock_limit":
+                arg = (hardware.gpu_clock_limit_arg(gpu[key], hardware.gpu_clock_limit_max())
+                       if gpu[key] else "reset")
+                success = run_nvidia_helper("gpuclocklimit", arg)
+            else:
+                success = set_clock_offset("core" if key == "clock_offset" else "memory", gpu[key])
+            if success:
+                remaining.discard(("gpu", key))
+    if not hardware.fan_boost_active(hardware.read_fan_boost()):
+        fans = effective.get("fans", {})
+        channels = sorted(key for section, key in pending if section == "fans" and key in fans)
+        for index, key in enumerate(channels):
+            if index:
+                time.sleep(CHANNEL_GAP_S)
+            ok, _ = hardware.run_fan_helper_logged(
+                key, *fancurve.curve_to_flat(fans[key]), source="enforcer")
+            if ok:
+                remaining.discard(("fans", key))
+    return {field for field in remaining if field[1] in effective.get(field[0], {})}
+
+
 def main():
     signal.signal(signal.SIGTERM, _on_terminate)
-    for target in (daily_automation.run, keyboard_idle.run, hotkeys.run):
+    for target in (daily_automation.run, keyboard_idle.run, hotkeys.run,
+                   reconcile_app_profiles):
         worker = threading.Thread(target=target, args=(_automation_stop,),
                                   daemon=True)
         _automation_threads.append(worker)

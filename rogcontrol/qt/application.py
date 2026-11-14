@@ -38,6 +38,7 @@ def main(argv=None):
         return 1
     from .workers import TaskRunner
     from .controllers.app import AppController
+    from .controllers.app_profiles import AppProfilesController
     from .controllers.overview import OverviewController
     from .controllers.quick_access import QuickAccessController
     from .controllers.cpu import CpuController
@@ -110,6 +111,8 @@ def main(argv=None):
     engine = QQmlApplicationEngine()
     qml_errors = []
     engine.warnings.connect(lambda warnings: qml_errors.extend(warnings))
+    app_profiles = AppProfilesController(controller, application)
+    engine.rootContext().setContextProperty('appProfilesController', app_profiles)
     for key, value in [('appController', controller), ('overviewController', overview), ('quickAccessController', quick), ('cpuController', cpu), ('gpuController', gpu), ('fansController', fans), ('profileController', profiles), ('batteryController', battery), ('keyboardController', keyboard), ('systemController', system), ('updatesController', updates)]:
         engine.rootContext().setContextProperty(key, value)
     engine.load(str(Path(__file__).resolve().parents[1] / 'qml' / 'Main.qml'))

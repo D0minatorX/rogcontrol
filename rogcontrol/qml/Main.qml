@@ -29,7 +29,7 @@ ApplicationWindow {
     Palette { id: theme; appearance: appController.appearance }
     property bool narrow: width < 620
     property var tuningPage: appController.currentPage === 'cpu' ? cpuController : appController.currentPage === 'gpu' ? gpuController : appController.currentPage === 'fans' ? fansController : null
-    property var pages: [{id:'quick_access',title:'Home',icon:'⌂'}, {id:'cpu',title:'CPU',icon:'▣'}, {id:'gpu',title:'GPU',icon:'▱'}, {id:'fans',title:'Fans',icon:'✣'}, {id:'keyboard',title:'Keyboard',icon:'⌨'}, {id:'system',title:'System',icon:'⚙'}]
+    property var pages: [{id:'quick_access',title:'Home',icon:'⌂'}, {id:'cpu',title:'CPU',icon:'▣'}, {id:'gpu',title:'GPU',icon:'▱'}, {id:'fans',title:'Fans',icon:'✣'}, {id:'app_profiles',title:'Per-App Profiles'}, {id:'keyboard',title:'Keyboard',icon:'⌨'}, {id:'system',title:'System',icon:'⚙'}]
     header: Rectangle {
         height: 48; color: theme.light ? theme.sidebar : 'transparent'; radius: window.cornerRadius
         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.border; opacity: .5 }
@@ -153,7 +153,7 @@ ApplicationWindow {
 
                     Loader {
                         Layout.fillWidth: true; Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
-                        sourceComponent: appController.currentPage === 'quick_access' ? home : appController.currentPage === 'cpu' ? cpu : appController.currentPage === 'gpu' ? gpu : appController.currentPage === 'fans' ? fans : appController.currentPage === 'keyboard' ? keyboard : system
+                        sourceComponent: appController.currentPage === 'quick_access' ? home : appController.currentPage === 'cpu' ? cpu : appController.currentPage === 'gpu' ? gpu : appController.currentPage === 'fans' ? fans : appController.currentPage === 'keyboard' ? keyboard : appController.currentPage === 'app_profiles' ? appProfiles : system
                     }
                     Item { Layout.preferredHeight: 14 }
                 }
@@ -163,6 +163,7 @@ ApplicationWindow {
     Component { id: home; QuickAccessPage { colors: theme } }
     Component { id: cpu; CpuPage { colors: theme } }
     Component { id: gpu; GpuPage { colors: theme } }
+    Component { id: appProfiles; AppProfilesPage { colors: theme } }
     Component { id: fans; FansPage { colors: theme } }
     Component { id: keyboard; KeyboardPage { colors: theme } }
     Component { id: system; SystemPage { colors: theme } }

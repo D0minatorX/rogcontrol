@@ -107,7 +107,7 @@ class TuningController(QObject):
 
     @Slot()
     def refresh(self):
-        if self._closed or self.app.currentPage not in (self.section, 'quick_access') or self.app.runner.active('tuning-' + self.section):
+        if self._closed or self.app.currentPage not in (self.section, 'quick_access', 'app_profiles') or self.app.runner.active('tuning-' + self.section):
             return
         if self.app.demo:
             if not self._ready:
@@ -279,9 +279,9 @@ def apply_saved_profile(cfg, caps, progress=None, gpu_only=False, force_fan_reap
     curves until its deadline. Return every failure for the caller to display.
     """
     import time
-    from ... import hardware as h, fancurve, config
+    from ... import hardware as h, fancurve, config, app_profiles
     name = cfg.get('current_profile')
-    profile = deepcopy(cfg.get('profiles', {}).get(name, {}))
+    profile = app_profiles.active_profile(cfg)
     failures = []
     def perform(label, operation):
         try:
