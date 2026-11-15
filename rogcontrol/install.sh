@@ -1225,18 +1225,48 @@ gnome)
     # extension the tray process starts, stays running, and shows nothing --
     # which looks exactly like the app being broken, and is the one failure
     # here that a status check cannot see.
-    if gnome-extensions list 2>/dev/null | grep -qi appindicator; then
-        say "GNOME AppIndicator extension present - the tray icon can show"
-    else
-        warn "GNOME needs an extension before any tray icon can appear:"
-        warn "  'AppIndicator and KStatusNotifierItem Support'"
-        if [ "$ATOMIC" = 1 ]; then
-            warn "  Bazzite ships it - enable it in the Extensions app."
+    # Any extension that owns the watcher name works, not only AppIndicator.
+    tray_host=0
+    { gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+        --method org.freedesktop.DBus.NameHasOwner org.kde.StatusNotifierWatcher \
+        || busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus \
+            NameHasOwner s org.kde.StatusNotifierWatcher; } 2>/dev/null | grep -q true && tray_host=1
+    gnome-extensions list 2>/dev/null | grep -qi appindicator && tray_host=1
+    tray_uuid=""
+    if [ "$tray_host" = 1 ]; then
+        say "Tray icon host present - the tray icon can show"
+    elif [ -t 0 ]; then
+        step "Choose tray icon extension"
+        echo "  1) AppIndicator and KStatusNotifierItem Support"
+        echo "  2) Status Tray"
+        echo "  3) None — skip; everything works, only the tray icon is missing"
+        read -rp "  Choose [1/2/3, default 3]: " TRAY_CHOICE || TRAY_CHOICE=""
+        case "${TRAY_CHOICE:-3}" in
+            1) tray_uuid=appindicatorsupport@rgcjonas.gmail.com ;;
+            2) tray_uuid=status-tray@keithvassallo.com ;;
+        esac
+    fi
+    if [ -n "$tray_uuid" ]; then
+        echo "  Accept the GNOME Shell dialog to install the extension."
+        # The shell answers 'successful' only after the user accepts its dialog.
+        if gdbus call --session --dest org.gnome.Shell.Extensions \
+            --object-path /org/gnome/Shell/Extensions \
+            --method org.gnome.Shell.Extensions.InstallRemoteExtension "$tray_uuid" 2>/dev/null \
+            | grep -q successful; then
+            say "Tray extension installed - you may need to log out and back in"
         else
-            warn "  Install it from extensions.gnome.org, or your distro's"
-            warn "  gnome-shell-extension-appindicator package, then log back in."
+            warn "GNOME needs an extension before any tray icon can appear:"
+            warn "  'AppIndicator and KStatusNotifierItem Support'"
+            if [ "$ATOMIC" = 1 ]; then
+                warn "  Bazzite ships it - enable it in the Extensions app."
+            else
+                warn "  Install it from extensions.gnome.org, or your distro's"
+                warn "  gnome-shell-extension-appindicator package, then log back in."
+            fi
+            warn "Everything else works without it; only the icon is missing."
         fi
-        warn "Everything else works without it; only the icon is missing."
+    elif [ "$tray_host" = 0 ]; then
+        warn "No tray icon extension - only the tray icon is missing; add one from extensions.gnome.org"
     fi
     ;;
 kde)
