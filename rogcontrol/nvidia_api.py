@@ -2,7 +2,7 @@
 
 NVIDIA does not document these Linux entry points.  This module is always
 started in a short-lived child process by :mod:`rogcontrol.hardware`, so an
-incompatible driver cannot take down the GTK window or the enforcer.  It has
+incompatible driver cannot take down the Qt window or the enforcer.  It has
 no dependency on LACT or any other GPU-control application.
 """
 

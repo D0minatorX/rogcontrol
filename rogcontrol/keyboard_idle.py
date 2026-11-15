@@ -1,4 +1,4 @@
-"""Opt-in keyboard backlight idle policy, independent of the GTK window.
+"""Opt-in keyboard backlight idle policy, independent of the Qt window.
 
 Only desktop-provided idle durations are queried; no input events are read.
 Mutter works on Wayland and X11. KDE Wayland uses ext-idle-notify because

@@ -2,7 +2,7 @@
 
 Only registry, sync, seat and idle objects are used. No surfaces, input-event
 objects or file descriptors are requested. This small wire subset avoids a
-new Python binding/compiler dependency for the existing GTK application.
+new Python binding/compiler dependency for the Qt application.
 
 Protocol references:
 https://gitlab.freedesktop.org/wayland/wayland/-/blob/main/protocol/wayland.xml

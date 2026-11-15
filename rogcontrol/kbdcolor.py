@@ -12,9 +12,8 @@ tests -- a gradient that ramps the wrong way, or a restore token dropped
 while saving, is invisible until a user notices their keyboard is wrong.
 
 Colours are 0-255 integer triples throughout, which is what the config
-stores and what the helper's arguments are. The GTK side deals in 0.0-1.0
-floats; :func:`byte_to_float` and :func:`float_to_byte` are the only place
-that conversion happens, so a colour cannot drift a point every time the
+stores and what the helper's arguments are. The Qt UI stores picker colours
+in that same integer form, so a colour cannot drift a point every time the
 page is loaded and saved.
 """
 
@@ -171,25 +170,6 @@ def clamp_speed(value):
     except (TypeError, ValueError):
         value = DEFAULT_SPEED
     return max(SPEED_MIN, min(SPEED_MAX, value))
-
-
-def byte_to_float(value):
-    """0-255 as GTK's 0.0-1.0."""
-    return clamp_byte(value) / 255.0
-
-
-def float_to_byte(value):
-    """GTK's 0.0-1.0 back to 0-255.
-
-    Rounding rather than truncating, so a colour survives the round trip
-    through a colour button unchanged. Truncation loses a point on most
-    channels every time the page is loaded and saved, and a pink that walks
-    towards red over a week is a bug nobody can reproduce on demand."""
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return 0
-    return max(0, min(255, int(round(value * 255.0))))
 
 
 def saved_color(saved, suffix="", default=DEFAULT_COLOR):
