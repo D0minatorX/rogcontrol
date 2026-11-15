@@ -17,19 +17,43 @@ ApplicationWindow {
     background: Rectangle {
         color: theme.window; radius: window.cornerRadius
         SurfaceBackdrop { anchors.fill: parent; colors: theme; visible: theme.light }
-        ReferenceArtwork {
+        Item {
+            id: artworkViewport
             anchors.fill: parent
             visible: !theme.light
-            cornerRadius: window.cornerRadius
-            headerHeight: window.header.height
-            footerHeight: window.footer.height
-            sidebarWidth: window.narrow ? 0 : window.width >= 980 ? 164 : 82
+            clip: true
+            property real paintedWidth: 1586
+            property real paintedHeight: 900
+            onWidthChanged: artworkResize.restart()
+            onHeightChanged: artworkResize.restart()
+            Timer {
+                id: artworkResize
+                interval: 120
+                onTriggered: {
+                    artworkViewport.paintedWidth = artworkViewport.width
+                    artworkViewport.paintedHeight = artworkViewport.height
+                }
+            }
+            ReferenceArtwork {
+                width: artworkViewport.paintedWidth
+                height: artworkViewport.paintedHeight
+                transform: Scale {
+                    xScale: artworkViewport.width / Math.max(1, artworkViewport.paintedWidth)
+                    yScale: artworkViewport.height / Math.max(1, artworkViewport.paintedHeight)
+                }
+                cornerRadius: window.cornerRadius
+                headerHeight: window.header.height
+                footerHeight: window.footer.height
+                sidebarWidth: artworkViewport.paintedWidth < 620 ? 0
+                              : artworkViewport.paintedWidth >= 980 ? 164 : 82
+            }
         }
     }
     Palette { id: theme; appearance: appController.appearance }
+    readonly property int navigationWidth: width >= 980 ? 164 : 82
     property bool narrow: width < 620
     property var tuningPage: appController.currentPage === 'cpu' ? cpuController : appController.currentPage === 'gpu' ? gpuController : appController.currentPage === 'fans' ? fansController : null
-    property var pages: [{id:'quick_access',title:'Home',icon:'⌂'}, {id:'cpu',title:'CPU',icon:'▣'}, {id:'gpu',title:'GPU',icon:'▱'}, {id:'fans',title:'Fans',icon:'✣'}, {id:'app_profiles',title:'Per-App Profiles'}, {id:'keyboard',title:'Keyboard',icon:'⌨'}, {id:'system',title:'System',icon:'⚙'}]
+    property var pages: [{id:'quick_access',title:'Home',icon:'⌂'}, {id:'cpu',title:'CPU',icon:'▣'}, {id:'gpu',title:'GPU',icon:'▱'}, {id:'fans',title:'Fans',icon:'✣'}, {id:'app_profiles',title:'App Profiles'}, {id:'keyboard',title:'Keyboard',icon:'⌨'}, {id:'system',title:'System',icon:'⚙'}]
     header: Rectangle {
         height: 48; color: theme.light ? theme.sidebar : 'transparent'; radius: window.cornerRadius
         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.border; opacity: .5 }
@@ -113,7 +137,7 @@ ApplicationWindow {
     RowLayout {
         anchors.fill: parent; spacing: 0
         Rectangle {
-            Layout.fillHeight: true; Layout.preferredWidth: window.width >= 980 ? 164 : 82; color: 'transparent'; visible: !window.narrow
+            Layout.fillHeight: true; Layout.preferredWidth: window.navigationWidth; color: 'transparent'; visible: !window.narrow
             radius: window.cornerRadius
             Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: theme.border; opacity: .5 }
             Column { anchors.top: parent.top; anchors.topMargin: 22; anchors.horizontalCenter: parent.horizontalCenter; spacing: 5
@@ -122,14 +146,29 @@ ApplicationWindow {
         }
         ColumnLayout {
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
-            ScrollView {
-                visible: window.narrow; Layout.fillWidth: true; Layout.preferredHeight: 62; contentWidth: compactNav.implicitWidth; clip: true
-                Row { id: compactNav; spacing: 0; Repeater { model: window.pages; NavigationItem { required property var modelData; text: modelData.title; symbol: modelData.id; selected: appController.currentPage === modelData.id; colors: theme; onClicked: appController.navigate(modelData.id) } } }
+            RowLayout {
+                visible: window.narrow
+                Layout.fillWidth: true
+                spacing: 0
+                Repeater {
+                    model: window.pages
+                    NavigationItem {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        Layout.preferredWidth: 1
+                        text: modelData.title
+                        symbol: modelData.id
+                        selected: appController.currentPage === modelData.id
+                        colors: theme
+                        onClicked: appController.navigate(modelData.id)
+                    }
+                }
             }
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
-                Layout.topMargin: 22; Layout.bottomMargin: 16
+                Layout.topMargin: 8; Layout.bottomMargin: 6
                 spacing: 7
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
@@ -155,7 +194,7 @@ ApplicationWindow {
                         Layout.fillWidth: true; Layout.leftMargin: window.narrow ? 12 : 22; Layout.rightMargin: window.narrow ? 12 : 22
                         sourceComponent: appController.currentPage === 'quick_access' ? home : appController.currentPage === 'cpu' ? cpu : appController.currentPage === 'gpu' ? gpu : appController.currentPage === 'fans' ? fans : appController.currentPage === 'keyboard' ? keyboard : appController.currentPage === 'app_profiles' ? appProfiles : system
                     }
-                    Item { Layout.preferredHeight: 14 }
+                    Item { Layout.preferredHeight: 2 }
                 }
             }
         }

@@ -1,6 +1,7 @@
 import QtQuick
 Canvas {
     id: panel
+    renderStrategy: Canvas.Threaded
     property color fillColor: '#101012'
     property color lineColor: '#424247'
     property color accentColor: '#ef1745'
@@ -28,14 +29,18 @@ Canvas {
         c.save(); c.clip()
         if (decorated) {
             c.strokeStyle = lineColor; c.globalAlpha = .12
+            c.beginPath()
             for (let i = w - 150; i < w + 60; i += 4) {
-                c.beginPath(); c.moveTo(i, 0); c.lineTo(i - 110, 110); c.stroke()
+                c.moveTo(i, 0); c.lineTo(i - 110, 110)
             }
+            c.stroke()
             // Fine brushed grain and a second bevel make the surface catch light.
             c.globalAlpha = .007; c.strokeStyle = '#ffffff'
+            c.beginPath()
             for (let y = 3; y < h; y += 3) {
-                c.beginPath(); c.moveTo(0, y); c.lineTo(w, y - w * .08); c.stroke()
+                c.moveTo(0, y); c.lineTo(w, y - w * .08)
             }
+            c.stroke()
             c.globalAlpha = .38; c.strokeStyle = lineColor
             c.beginPath(); c.moveTo(d+4,4); c.lineTo(w-d-4,4); c.stroke()
             c.beginPath(); c.moveTo(w-90,h-5); c.lineTo(w-d-5,h-5); c.lineTo(w-5,h-d-5); c.stroke()

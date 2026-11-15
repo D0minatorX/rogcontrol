@@ -15,7 +15,7 @@ Button {
         columns: root.expanded ? 2 : 1
         columnSpacing: 12; rowSpacing: 7
         NavigationIcon { name: root.symbol; tint: root.selected ? root.colors.accent : root.colors.mutedText; Layout.alignment: Qt.AlignHCenter; Layout.leftMargin: root.expanded ? 10 : 0 }
-        Text { text: root.text; color: root.selected ? root.colors.text : root.colors.mutedText; font.pixelSize: root.expanded ? 14 : 10; font.weight: root.selected ? Font.DemiBold : Font.Normal; Layout.fillWidth: root.expanded; Layout.alignment: root.expanded ? Qt.AlignLeft : Qt.AlignHCenter }
+        Text { text: root.text; color: root.selected ? root.colors.text : root.colors.mutedText; font.pixelSize: root.expanded ? 14 : 10; font.weight: root.selected ? Font.DemiBold : Font.Normal; Layout.fillWidth: true; Layout.minimumWidth: 0; horizontalAlignment: root.expanded ? Text.AlignLeft : Text.AlignHCenter; wrapMode: root.expanded ? Text.NoWrap : Text.WordWrap; Layout.alignment: root.expanded ? Qt.AlignLeft : Qt.AlignHCenter }
     }
     background: AngularPanel {
         cut: 9

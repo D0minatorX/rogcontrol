@@ -12,7 +12,7 @@ GridLayout {
     property var fnlock: keyboardController.fnPreferences
     property int section: 0
     columns: root.width >= 1100 ? 3 : 1
-    columnSpacing: 14; rowSpacing: 14
+    columnSpacing: 14; rowSpacing: 8
     SegmentedSetting {
         Layout.columnSpan: root.columns
         Layout.fillWidth: true
@@ -32,7 +32,7 @@ GridLayout {
         Layout.minimumHeight: implicitHeight
         Layout.preferredWidth: root.columns === 3 ? 880 : 1
         Layout.alignment: Qt.AlignTop
-        spacing: 14
+        spacing: 8
         visible: root.section === 0
         MetricCard {
             Layout.columnSpan: 1
@@ -44,7 +44,7 @@ GridLayout {
             KeyboardPreview {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.minimumHeight: root.columns === 3 ? 240 : 150
+                Layout.minimumHeight: root.columns === 3 ? 205 : 150
                 Layout.maximumHeight: 380
                 colors: root.colors
                 lighting: root.lighting
@@ -162,7 +162,7 @@ GridLayout {
         Layout.preferredWidth: root.columns === 3 ? 480 : 1
         Layout.minimumWidth: root.columns === 3 ? 360 : 0
         Layout.alignment: Qt.AlignTop
-        spacing: 14
+        spacing: 8
         visible: root.section === 0
         MetricCard {
             Layout.alignment: Qt.AlignTop
@@ -244,7 +244,7 @@ GridLayout {
             Layout.fillWidth: true
             columns: root.width >= 1300 ? 4 : (root.width >= 1000 ? 3 : (root.width >= 620 ? 2 : 1))
             columnSpacing: 24
-            rowSpacing: 14
+            rowSpacing: 8
             Repeater {
                 model: root.readings.bindings || []
                 SettingsChoice {
@@ -268,7 +268,7 @@ GridLayout {
             Layout.fillWidth: true
             columns: root.width >= 1300 ? 4 : (root.width >= 1000 ? 3 : (root.width >= 620 ? 2 : 1))
             columnSpacing: 24
-            rowSpacing: 14
+            rowSpacing: 8
             Repeater {
                 model: root.readings.fn_keys || []
                 SettingsChoice {

@@ -12,7 +12,8 @@ Item {
     implicitHeight: content.implicitHeight + 34
     AngularPanel {
         anchors.fill: parent
-        fillColor: root.colors.panel
+        fillColor: root.colors.light ? root.colors.panel
+                   : Qt.rgba(root.colors.panel.r, root.colors.panel.g, root.colors.panel.b, 0.80)
         lineColor: root.colors.border
         accentColor: root.colors.accent
     }

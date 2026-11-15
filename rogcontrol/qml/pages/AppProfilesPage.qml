@@ -6,10 +6,12 @@ ColumnLayout {
     id: root
     property var colors
     readonly property var editor: appProfilesController
-    spacing: 16
+    property int selectedSetting: 0
+    spacing: 12
 
     RowLayout {
         Layout.fillWidth: true
+        Layout.topMargin: 10
         RogComboBox {
             colors: root.colors
             Layout.fillWidth: true
@@ -47,6 +49,16 @@ ColumnLayout {
             color: root.colors.mutedText
         }
 
+        RogComboBox {
+            colors: root.colors
+            Layout.fillWidth: true
+            model: root.editor.rows.map(row => row.section.toUpperCase() + " · " + row.title
+                                        + (row.overridden ? " · Override" : ""))
+            currentIndex: Math.min(root.selectedSetting, count - 1)
+            onActivated: index => root.selectedSetting = index
+            Accessible.name: "Setting to edit"
+        }
+
         Repeater {
             model: root.editor.rows.length
             MetricCard {
@@ -55,6 +67,7 @@ ColumnLayout {
                 Layout.fillWidth: true
                 colors: root.colors
                 title: row.title
+                visible: index === Math.min(root.selectedSetting, root.editor.rows.length - 1)
                 SettingsSwitch {
                     Layout.fillWidth: true
                     colors: root.colors

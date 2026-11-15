@@ -4,14 +4,14 @@ import "../components"
 ColumnLayout {
     id: root
     property var colors
-    spacing: 14
+    spacing: 10
     HomeReadings { colors: root.colors; Layout.fillWidth: true }
     GridLayout {
         Layout.fillWidth: true
         columns: root.width >= 1200 ? 3 : (root.width >= 740 ? 2 : 1)
         columnSpacing: 14
         rowSpacing: 14
-        ColumnLayout { Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 14
+        ColumnLayout { Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 10
             MetricCard { Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; colors: root.colors; title: 'Quick controls'
                 SettingsSwitch { colors: root.colors; objectName: 'turboBoostSetting'; title: 'Turbo boost'; visible: cpuController.rows.some(row => row.key === 'boost'); value: !!cpuController.values.boost; enabled: !appController.busy && cpuController.ready && cpuController.rows.some(row => row.key === 'boost'); onEdited: value => quickAccessController.setCpuBoost(value) }
                 SettingsChoice { colors: root.colors; objectName: 'gpuModeSetting'; title: 'GPU mode'; visible: !(gpuController.live.mode_gate || '').length && (gpuController.live.modes || []).length > 0; choices: gpuController.live.modes || []; value: gpuController.live.mode; enabled: !appController.busy && !(gpuController.live.mode_gate || '').length; Layout.fillWidth: true; onEdited: value => gpuController.changeMode(value) }
@@ -23,7 +23,7 @@ ColumnLayout {
             }
             MetricCard { Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; colors: root.colors; title: 'Temporary fan boost'
                 ColumnLayout {
-                    Layout.fillWidth: true; spacing: 14
+                    Layout.fillWidth: true; spacing: 10
                     visible: fansController.channels.length > 0
                     NumberSetting { id: boostPercent; Layout.fillWidth: true; colors: root.colors; title: 'Fan speed'; unit: '%'; minimum: 20; maximum: 100; value: (quickAccessController.settings.fan_boost_preferences || {}).percent || 85; enabled: !appController.busy; onEdited: value => quickAccessController.setFanBoostPreference('percent', value) }
                     NumberSetting { id: boostDuration; Layout.fillWidth: true; colors: root.colors; title: 'Duration'; unit: 's'; minimum: 10; maximum: 600; step: 10; value: (quickAccessController.settings.fan_boost_preferences || {}).seconds || 60; enabled: !appController.busy; onEdited: value => quickAccessController.setFanBoostPreference('seconds', value) }
@@ -36,7 +36,7 @@ ColumnLayout {
                 }
             }
         }
-        ColumnLayout { Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 14
+        ColumnLayout { Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 10
             MetricCard { Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; colors: root.colors; title: 'Display and firmware'
                 SettingsSwitch { colors: root.colors; title: 'Boot sound'; visible: !!systemController.data.caps && !!systemController.data.caps.boot_sound; value: !!systemController.data.boot_sound; enabled: !appController.busy; onEdited: value => systemController.setFirmware('boot_sound', value) }
                 SettingsSwitch { colors: root.colors; title: 'Panel overdrive'; visible: !!systemController.data.caps && !!systemController.data.caps.panel_od; value: !!systemController.data.panel_od; enabled: !appController.busy; onEdited: value => systemController.setFirmware('panel_od', value) }
@@ -47,7 +47,7 @@ ColumnLayout {
             }
             BatteryControls { colors: root.colors; Layout.fillWidth: true }
         }
-        ColumnLayout { Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 14
+        ColumnLayout { Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 10
             MetricCard {
                 title: 'Startup'; colors: root.colors; Layout.fillWidth: true
                 SettingsSwitch { colors: root.colors; title: 'Start on boot'; value: quickAccessController.settings.start_on_boot !== false; enabled: !appController.busy; onEdited: value => quickAccessController.setStartup(value) }
