@@ -8,6 +8,7 @@ FIELDS = {
     "gpu": ("watts", "clock_limit", "clock_offset", "mem_clock_offset"),
     "fans": ("1", "2", "3"),
 }
+LIMIT_KEYS = ("stapm", "fast", "slow", "pl1", "pl2")
 
 
 def entries(config):
@@ -81,14 +82,15 @@ def effective_profile(config, paths, baseline=None):
             if not isinstance(values, dict) or not isinstance(base, dict):
                 continue
             if section == "cpu":
-                if base.get("limits_enabled") is False:
-                    keys = ("boost", "max_freq", "min_freq")
                 if base.get("boost") is False:
                     keys = tuple(key for key in keys if key != "max_freq")
             for key in keys:
                 if (baseline_value(section, key, base) is not None and key in values
                         and valid_value(section, values[key], key)):
                     effective[section][key] = deepcopy(values[key])
+                    # A limit override means "apply limits" even if the profile has them off.
+                    if section == "cpu" and key in LIMIT_KEYS:
+                        effective[section]["limits_enabled"] = True
     cpu = effective.get("cpu", {})
     if cpu.get("max_freq") and cpu.get("min_freq", 0) > cpu["max_freq"]:
         for key in ("max_freq", "min_freq"):

@@ -34,6 +34,17 @@ class BoostOverrideTests(unittest.TestCase):
     def test_override_applies_when_power_limits_are_disabled(self):
         self.assertIs(self.effective(config({'boost': False}, limits_enabled=False))['boost'], False)
 
+    def test_limit_override_applies_when_power_limits_are_disabled(self):
+        from rogcontrol.cpu_plan import cpu_apply_plan
+        limits = dict(stapm=30000, fast=40000, slow=30000, temp=90, limits_enabled=False)
+        cfg = config({'stapm': 20000}, **limits)
+        cpu = self.effective(cfg)
+        self.assertEqual(cpu['stapm'], 20000)
+        self.assertEqual(cpu['fast'], 40000)  # not overridden: the profile's stored value
+        self.assertEqual(cpu_apply_plan(cpu, {'ryzenadj': True}),
+                         [('limits', ('cpu', 20000, 40000, 30000, 90, 0))])
+        self.assertEqual(cpu_apply_plan(cfg['profiles']['P']['cpu'], {'ryzenadj': True}), [])  # app gone: nothing written
+
     def test_non_bool_value_is_ignored(self):
         for bad in (1, 'off', None):
             self.assertIs(self.effective(config({'boost': bad}, boost=True))['boost'], True)
@@ -63,11 +74,56 @@ class EnforcerBoostTests(unittest.TestCase):
         self.assertEqual(left, set())
 
 
+class EnforcerLimitsOffTests(unittest.TestCase):
+    def test_app_start_applies_limits_and_exit_restores_off_via_firmware_reset(self):
+        spec = importlib.util.spec_from_file_location('enforcer_app_limits', ROOT / 'rogcontrol/rogcontrol-enforcer.py')
+        enforcer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(enforcer)
+        cfg = config({'stapm': 20000}, stapm=30000, fast=40000, slow=30000, temp=90, limits_enabled=False)
+        calls = []
+        def run(effective, pending):
+            with patch.object(enforcer, 'run_helper', side_effect=lambda *a: calls.append(a) or True), \
+                    patch.object(enforcer, 'clock_limit_available', return_value=False), \
+                    patch.object(enforcer.hardware, 'cpu_is_amd', return_value=True), \
+                    patch.object(enforcer.hardware, 'cpu_power_limits_backend', return_value='ryzenadj'), \
+                    patch.object(enforcer.hardware, 'cpu_boost_control_available', return_value=False), \
+                    patch.object(enforcer.os.path, 'exists', return_value=True), \
+                    patch.object(enforcer.hardware, 'read_fan_boost', return_value=None):
+                return enforcer.apply_app_changes(cfg, effective, pending)
+        pending = {('cpu', key) for key in ('stapm', 'fast', 'slow')}
+        self.assertEqual(run(app_profiles.effective_profile(cfg, [EXE]), pending), set())
+        self.assertEqual(calls, [('cpu', 20000, 40000, 30000, 90, 0)])
+        calls.clear()
+        self.assertEqual(run(app_profiles.effective_profile(cfg, []), pending), set())
+        self.assertEqual(calls, [('cpufwlimits',)])
+
+
 class AppProfilesUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from PySide6.QtGui import QGuiApplication
         cls.qt = QGuiApplication.instance() or QGuiApplication([])
+
+    def test_limit_row_is_available_when_power_limits_are_disabled(self):
+        from PySide6.QtCore import QObject, Signal
+        from rogcontrol.qt.controllers.app_profiles import AppProfilesController
+
+        class Page(QObject):
+            stateChanged = Signal()
+            rows = [dict(key='stapm', title='STAPM', kind='number', min=0, max=100, default=0)]
+            caps = {}
+
+        class App(QObject):
+            configChanged = Signal()
+            busy = False
+            demo = False
+            config = {'current_profile': 'P', 'profiles': {'P': {'cpu': {'stapm': 30000, 'limits_enabled': False}}},
+                      'app_profiles': {EXE: {}}}
+            tuningPages = {'cpu': Page()}
+
+        row = AppProfilesController(App()).rows[0]
+        self.assertTrue(row['available'])
+        self.assertEqual(row['value'], 30000)
 
     def test_controller_saves_boost_and_page_renders_tile_and_dialog(self):
         from PySide6.QtCore import QObject, QUrl, Signal, Property

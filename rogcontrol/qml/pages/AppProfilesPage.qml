@@ -192,9 +192,7 @@ ColumnLayout {
                         }
                         Text {
                             visible: !row.available
-                            text: row.section === "cpu" && !["boost", "max_freq", "min_freq"].includes(row.key)
-                                  ? "Power limits are turned off in the system profile. Turn them on in CPU to override this."
-                                  : "Waiting for a supported control or a restorable system profile value."
+                            text: "Waiting for a supported control or a restorable system profile value."
                             color: root.colors.mutedText
                             wrapMode: Text.WordWrap
                             Layout.fillWidth: true

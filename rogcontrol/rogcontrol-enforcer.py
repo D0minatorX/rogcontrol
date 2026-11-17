@@ -1654,10 +1654,14 @@ def reconcile_app_profiles(stop):
                 paths = app_profiles.running_paths(config)
                 base = app_profiles.effective_profile(config, [])
                 effective = app_profiles.effective_profile(config, paths)
+                # An override that turns limits on over a limits-off profile marks every
+                # limit key: the ryzenadj call is atomic, and exit must reset them all.
+                forced = effective.get("cpu", {}).get("limits_enabled") != base.get("cpu", {}).get("limits_enabled")
                 overrides = {(section, key): value
                              for section, fields in app_profiles.FIELDS.items()
                              for key, value in effective.get(section, {}).items()
-                             if key in fields and value != app_profiles.baseline_value(section, key, base.get(section, {}))}
+                             if key in fields and (value != app_profiles.baseline_value(section, key, base.get(section, {}))
+                                                   or (forced and section == "cpu" and key in app_profiles.LIMIT_KEYS))}
                 pending.update(field for field in previous.keys() | overrides.keys()
                                if previous.get(field) != overrides.get(field))
                 if stamp != config_stamp:
@@ -1696,6 +1700,7 @@ def record_app_fields(journal, fields):
 
 
 def apply_app_changes(config, effective, pending):
+    global _last_applied_fans
     remaining = set(pending)
     cpu = effective.get("cpu", {})
     if config.get("safety_tripped"):
@@ -1710,7 +1715,16 @@ def apply_app_changes(config, effective, pending):
         caps = {"ryzenadj": hardware.cpu_is_amd(),
                 "cpu_power_limits": hardware.cpu_power_limits_backend(),
                 "cpu_clock": clock_limit_available(),
-                "cpu_boost": hardware.cpu_boost_control_available()}
+                "cpu_boost": hardware.cpu_boost_control_available(),
+                "fw_power_reset": (os.path.exists(hardware.THROTTLE_POLICY_PATH)
+                                   or os.path.exists(hardware.PLATFORM_PROFILE_PATH))}
+        # ryzenadj has no reset: when the profile has limits off, an app's limits
+        # leave only by the same firmware reset the CPU page's "off" uses.
+        reset = power_keys and cpu.get("limits_enabled") is False
+        if reset:
+            cpu = dict(cpu, reset_to_firmware=True)
+            if not caps["fw_power_reset"]:
+                remaining.difference_update(("cpu", key) for key in power_keys)  # nothing can restore them
         # A ceiling write can lower the live floor. If the floor is part of
         # this transition and must go down first, write it before the ceiling.
         plan = hardware.cpu_apply_plan(cpu, caps)
@@ -1724,11 +1738,13 @@ def apply_app_changes(config, effective, pending):
                 else:
                     clock_keys.discard("max_freq")
         for step, args in plan:
-            keys = {"limits": power_keys, "boost": cpu_keys & {"boost"},
+            keys = {"limits": power_keys, "fwreset": power_keys, "boost": cpu_keys & {"boost"},
                     "clock": clock_keys & {"max_freq"},
                     "minclock": clock_keys & {"min_freq"}}.get(step)
             if keys and run_helper(*args):
                 remaining.difference_update(("cpu", key) for key in keys)
+                if step == "fwreset":
+                    _last_applied_fans = None  # the EC drops fan curves; the next pass re-pushes them
     gpu_keys = {key for section, key in pending if section == "gpu"}
     if gpu_keys and not hardware.nvidia_access_error() and not hardware.dgpu_is_suspended():
         gpu = effective.get("gpu", {})

@@ -62,8 +62,7 @@ class AppProfilesController(QObject):
                 saved = key in values
                 inherited = app_profiles.baseline_value(section, key, baseline)
                 available = self.app.demo or (inherited is not None and (
-                    section != 'cpu' or ((key != 'max_freq' or baseline.get('boost') is not False) and
-                    (key in ('boost', 'max_freq', 'min_freq') or baseline.get('limits_enabled') is not False))))
+                    section != 'cpu' or key != 'max_freq' or baseline.get('boost') is not False))
                 if section == 'gpu' and key == 'clock_limit' and inherited == 0:
                     inherited = round(control['max'] * control.get('scale', 1))
                 value = values.get(key, inherited if inherited is not None else control.get('points', control.get('default', 0)))
