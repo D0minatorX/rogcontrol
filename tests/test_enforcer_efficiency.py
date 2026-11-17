@@ -97,7 +97,7 @@ class EnforcerEfficiencyTests(unittest.TestCase):
         self.mock('os.path.exists', return_value=True)
         self.mock('hardware.read_int', return_value=0)
         self.mock('hardware.cpu_is_amd', return_value=False)
-        self.mock('boost_control_available', return_value=False)
+        self.mock('hardware.cpu_boost_control_available', return_value=False)
         self.mock('epp_control_available', return_value=False)
         self.mock('clock_limit_available', return_value=False)
         self.mock('hardware.cpu_power_limits_backend', return_value=None)

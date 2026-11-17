@@ -27,14 +27,6 @@ class CpuBoostDetectionTests(unittest.TestCase):
                     node.write_text(value)
                     self.assertTrue(hardware.cpu_boost_control_available(root=root))
 
-    def test_enforcer_uses_shared_detection_without_changing_its_api(self):
-        enforcer = load_enforcer()
-        for supported in (False, True):
-            with patch.object(hardware, 'cpu_boost_control_available',
-                              return_value=supported) as probe:
-                self.assertIs(enforcer.boost_control_available(), supported)
-                probe.assert_called_once_with()
-
 
 class PlatformHelperTests(unittest.TestCase):
     def setUp(self):

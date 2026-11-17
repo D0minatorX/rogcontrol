@@ -152,95 +152,36 @@ _gpu_profile_signature = None
 def log(message, level="INFO", dedupe_key=None, dedupe_seconds=300):
     """Append one line to the shared app log, tagged as the enforcer's.
 
-    Delegates to the package's log rather than keeping a fourth copy of it.
-    Its own copy was written before this service grew threads and before the
-    log had five writers, and it had neither of the two things the shared one
-    now has: a lock around the dedupe table, which this service needs because
-    the ppd watcher, the power-supply watcher and the main loop all log; and
-    an flock around the rotation, which it needs because the window, the
-    tray, the boot apply and the hotkey cycler rotate the same file.
-
-    Kept as a wrapper rather than replaced call-for-call: ``source`` is the
-    only thing that was ever different, and there are some seventy calls."""
+    The shared log is thread-safe and flock-rotated, which this service needs
+    (ppd watcher, power-supply watcher and main loop all log)."""
     hardware.log(message, level, source="enforcer",
                  dedupe_key=dedupe_key, dedupe_seconds=dedupe_seconds)
 
 
-# The package's, for the same reason the profile mode mapping is: the AC/battery
-# switch is the only thing this service does that the user did not ask for at
-# that moment, so it is the one that most needs to say so -- and there is no
-# version of that argument that wants a second implementation of it.
 notify = hardware.notify
 
 
 def run_helper(*args):
-    """Run a privileged action and REPORT failure.
-
-    Now the package's run_helper_logged, which is this function -- it was
-    lifted out of here after the third copy of it appeared. It used to
-    discard the exit code and both output streams, so the enforcer could not
-    tell anyone that anything had gone wrong: a broken sudoers rule, a
-    missing helper or a failing ryzenadj all looked exactly like normal
-    operation while nothing was actually being applied."""
+    """Run a privileged action and log failure; return True on success."""
     return hardware.run_helper_logged(*args, source="enforcer", timeout=30)[0]
 
 
 def run_nvidia_helper(*args):
     """A helper write that goes through nvidia-smi.
 
-    wait_seconds is 0 on purpose: this is a loop that must not sleep inside a
-    cycle, and the card being unreachable right now is the one failure this
-    service is guaranteed to get another go at 60 seconds later. That is also
-    why it is logged at INFO -- see hardware.run_nvidia_helper_logged."""
+    wait_seconds=0: this loop must not sleep inside a cycle; an unreachable
+    card is retried on the next pass (hence INFO-level logging)."""
     return hardware.run_nvidia_helper_logged(
         *args, source="enforcer", timeout=30)[0]
 
 
 # -- power-profiles-daemon ----------------------------------------------------
-#
-# These three were hand-copied from the package and then diverged from it, in
-# the one way that mattered: the package wraps every busctl call in a
-# try/except and these did not.
-#
-# What that cost. get_ppd_service_name() runs `busctl` to ask which of the two
-# names PPD answers on, and it is called from main() ABOVE the loop's own
-# try/except -- so the two ways that call can raise both killed the service
-# outright rather than being logged:
-#
-#   * busctl not installed          -> FileNotFoundError
-#   * the system bus not answering
-#     within the 5s timeout         -> subprocess.TimeoutExpired
-#
-# and the unit is Restart=always with RestartSec=5, so the result was not a
-# crash but a crash LOOP: start, raise, die, restart five seconds later,
-# forever. Nothing on screen says so; what the user sees is fan curves that
-# stop being re-asserted and AC/battery switching that silently stops working.
-# The second case is the realistic one -- the bus can be slow to come up at
-# login, which is exactly when this service starts.
-#
-# So the lookup and the read now delegate to the package, which has handled
-# this correctly all along. Only the write below is still done here, and only
-# because it has something of its own to do first.
-
-
-def get_ppd_service_name():
-    """Which bus name power-profiles-daemon is answering on, or None.
-
-    hardware.ppd_service_name's answer: same two names, same order, same
-    introspect -- and a try/except round it, so "no busctl" and "the bus did
-    not answer" come back as None instead of taking this service down."""
-    return hardware.ppd_service_name()
+# Lookup and read delegate to the package, which wraps busctl in try/except;
+# an uncaught busctl failure in main() used to crash-loop the service.
 
 
 def get_ppd_active_profile(service_name):
-    """The OS power mode, or None.
-
-    ``service_name`` is kept in the signature -- every caller has one to
-    hand, and passing None still means "there is no daemon, do not ask" --
-    but the reading itself is the package's. That one tries
-    powerprofilesctl first and falls back to busctl on BOTH bus names, so it
-    answers in strictly more cases than the single get-property this
-    replaced, as well as never raising."""
+    """The OS power mode, or None. A None ``service_name`` means "no daemon"."""
     if not service_name:
         return None
     return hardware.read_power_mode()
@@ -268,14 +209,6 @@ def set_profile_power_mode(mode, service_name=None):
         log(f"could not set the OS power mode to '{mode}': {e}", "WARN",
             dedupe_key="ppdset")
         return False
-
-
-def boost_control_available():
-    """True if cpufreq exposes a boost switch, globally or per policy, or
-    intel_pstate's own inverted no_turbo -- see hardware.INTEL_NO_TURBO_PATH.
-    The two cpufreq switches keep priority, so an AMD machine never reaches
-    the third check."""
-    return hardware.cpu_boost_control_available()
 
 
 def epp_control_available():
@@ -380,7 +313,7 @@ def _apply_full_profile(config, profile, force_fan_reapply, full):
                 # machine still cannot reach a Ryzen SMU, and this pass
                 # runs every 60 seconds.
                 "ryzenadj": hardware.cpu_is_amd(),
-                "cpu_boost": boost_control_available(),
+                "cpu_boost": hardware.cpu_boost_control_available(),
                 "cpu_epp": epp_control_available(),
                 "cpu_clock": clock_limit_available(),
                 # The Intel backend, kept in this periodic pass on the same
@@ -1282,7 +1215,7 @@ def ppd_watcher_thread():
         delay = POWER_MODE_POLL_SECONDS
         try:
             if not service_name:
-                service_name = get_ppd_service_name()
+                service_name = hardware.ppd_service_name()
             if service_name and os.path.exists(CONFIG_PATH):
                 with open(CONFIG_PATH) as f:
                     config = json.load(f)
@@ -1774,7 +1707,7 @@ def apply_app_changes(config, effective, pending):
         caps = {"ryzenadj": hardware.cpu_is_amd(),
                 "cpu_power_limits": hardware.cpu_power_limits_backend(),
                 "cpu_clock": clock_limit_available(),
-                "cpu_boost": boost_control_available()}
+                "cpu_boost": hardware.cpu_boost_control_available()}
         # A ceiling write can lower the live floor. If the floor is part of
         # this transition and must go down first, write it before the ceiling.
         plan = hardware.cpu_apply_plan(cpu, caps)
@@ -1832,7 +1765,7 @@ def main():
     watcher = threading.Thread(target=ppd_watcher_thread, daemon=True)
     watcher.start()
 
-    ppd_service_name = get_ppd_service_name()
+    ppd_service_name = hardware.ppd_service_name()
 
     # Pick the power source back up from where the last run left it, BEFORE
     # the first cycle samples it. This is what makes the first cycle able to

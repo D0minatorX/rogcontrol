@@ -131,7 +131,7 @@ class PowerModeSyncTests(unittest.TestCase):
             self.assertIs(self.enforcer.set_ppd_active_profile('net.hadess.PowerProfiles', 'balanced'), False)
 
     def test_absent_watcher_backs_off_then_recovers(self):
-        lookup = self.patch('get_ppd_service_name', side_effect=[None, None, 'net.hadess.PowerProfiles'])
+        lookup = self.patch('hardware.ppd_service_name', side_effect=[None, None, 'net.hadess.PowerProfiles'])
         stop = self.patch('_automation_stop')
         stop.is_set.return_value = False
         stop.wait.side_effect = [False, False, True]
@@ -141,7 +141,7 @@ class PowerModeSyncTests(unittest.TestCase):
         self.apply.assert_called_once()
 
     def test_running_service_disappearing_enters_backoff(self):
-        self.patch('get_ppd_service_name', return_value='net.hadess.PowerProfiles')
+        self.patch('hardware.ppd_service_name', return_value='net.hadess.PowerProfiles')
         self.mode.return_value = None
         stop = self.patch('_automation_stop')
         stop.is_set.return_value = False
@@ -151,7 +151,7 @@ class PowerModeSyncTests(unittest.TestCase):
         self.apply.assert_not_called()
 
     def test_absent_backoff_is_capped_and_resets_after_recovery(self):
-        self.patch('get_ppd_service_name', side_effect=[None] * 6 + ['net.hadess.PowerProfiles'])
+        self.patch('hardware.ppd_service_name', side_effect=[None] * 6 + ['net.hadess.PowerProfiles'])
         self.mode.side_effect = ['performance', None]
         stop = self.patch('_automation_stop')
         stop.is_set.return_value = False
@@ -161,7 +161,7 @@ class PowerModeSyncTests(unittest.TestCase):
                          [30, 60, 120, 240, 300, 300, 2, 30])
 
     def test_watcher_checks_again_after_two_seconds_without_dbus_monitor(self):
-        self.patch('get_ppd_service_name', return_value='net.hadess.PowerProfiles')
+        self.patch('hardware.ppd_service_name', return_value='net.hadess.PowerProfiles')
         stop = self.patch('_automation_stop')
         stop.is_set.return_value = False
         stop.wait.side_effect = [False, True]
