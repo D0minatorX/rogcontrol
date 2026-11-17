@@ -1340,7 +1340,7 @@ def detect_gpu_limits(timeout=5):
             found = parse_gpu_power_limits(result.stdout)
             if found:
                 limits["min_w"], limits["max_w"] = found
-    except Exception:
+    except (OSError, subprocess.SubprocessError, ValueError):
         pass
     mhz = detect_gpu_max_clock(timeout)
     if mhz:
@@ -1361,7 +1361,7 @@ def detect_gpu_max_clock(timeout=5):
                                 capture_output=True, text=True, timeout=timeout)
         if result.returncode == 0:
             return parse_gpu_max_clock(result.stdout)
-    except Exception:
+    except (OSError, subprocess.SubprocessError, ValueError):
         pass
     return None
 
