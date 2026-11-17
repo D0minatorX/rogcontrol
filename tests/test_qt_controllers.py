@@ -349,7 +349,6 @@ class QtControllerTests(unittest.TestCase):
 
     def test_success_status_expires_and_geometry_stays_silent(self):
         from rogcontrol.qt.controllers.app import AppController
-        from PySide6.QtTest import QTest
         app = AppController(Runner(), demo=True)
         self.addCleanup(app.close)
         app.runner.submit = Mock()
@@ -357,10 +356,8 @@ class QtControllerTests(unittest.TestCase):
         app._complete('write', None, None)
         self.assertEqual(app.statusText, 'Saved')
         self.assertEqual(app.statusTimer.interval(), 2000)
-        # Shorten the real timer so the test exercises event-loop expiry.
-        self.assertTrue(hasattr(app, 'statusTimer'))
-        app.statusTimer.start(1)
-        QTest.qWait(20)
+        self.assertTrue(app.statusTimer.isActive())
+        app.statusTimer.timeout.emit()
         self.assertEqual(app.statusText, '')
         app.submitWrite('geometry', lambda: None)
         self.assertEqual(app.statusText, '')
