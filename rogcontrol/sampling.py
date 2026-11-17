@@ -16,7 +16,7 @@ quiet again until the readings come back. Recovery resets the count, so a
 sampler that fails, recovers and fails again says so twice -- which is the
 signal that something is intermittent, and worth seeing.
 
-Deliberately standard library only and free of GTK, so the counting rules can
+Deliberately standard library only and free of Qt, so the counting rules can
 be tested without a display. The toast is handed to a window by the caller;
 :meth:`SampleFailures.failed` does the deciding and returns the sentence.
 """

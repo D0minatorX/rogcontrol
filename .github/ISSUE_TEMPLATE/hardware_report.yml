@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        This app was written on and for an AMD ROG Strix G16 (G614PR). Intel CPU support is new and untested on real Intel hardware -- see [docs/INTEL-SUPPORT-PLAN.txt](https://github.com/D0minatorX/rogcontrol/blob/gtk4-ui/docs/INTEL-SUPPORT-PLAN.txt) -- so this report is how your machine actually gets checked against what the code assumes.
+        This app was written on and for an AMD ROG Strix G16 (G614PR). Intel CPU support is new and untested on real Intel hardware -- so this report is how your machine actually gets checked against what the code assumes.
 
         Getting the report:
         - Installed already: it was written automatically the first time you opened the app, or run `rogcontrol --hardware-report`, or use the "Save hardware report" button on the System page. The path is printed either way.
@@ -16,7 +16,7 @@ body:
     attributes:
       label: Rules
       options:
-        - label: I made myself familiar with the README and docs/INTEL-SUPPORT-PLAN.txt.
+        - label: I made myself familiar with the README.
           required: true
         - label: I have attached the hardware report .txt file below.
           required: true

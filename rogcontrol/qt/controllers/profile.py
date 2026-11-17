@@ -22,11 +22,8 @@ class ProfileController(QObject):
             controller.stateChanged.connect(self.stateChanged)
 
     names = Property('QStringList', lambda s: s.app.profileNames, notify=stateChanged)
-    currentProfile = Property(str, lambda s: s.app.activeProfile, notify=stateChanged)
     dirty = Property(bool, lambda s: any(p.dirty for p in s.pages.values()), notify=stateChanged)
     status = Property(str, lambda s: s._status, notify=stateChanged)
-    stagedValues = Property('QVariantMap', lambda s: {name: deepcopy(page._values) for name, page in s.pages.items()}, notify=stateChanged)
-    validationError = Property(str, lambda s: s._status, notify=stateChanged)
 
     @Slot(str, 'QVariant')
     def stageValue(self, path, value):

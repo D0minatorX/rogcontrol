@@ -92,19 +92,6 @@ class BatteryController(SettingsController):
             return
         self.persist(lambda cfg: cfg.update({key: value}))
 
-    @Slot(float)
-    def setRefreshRate(self, rate):
-        if rate not in self._data.get('rates', []):
-            return
-        if self.app.demo:
-            self._demo_rate = rate
-            self.refresh()
-            return
-        def apply():
-            from ... import display_refresh
-            return display_refresh.set_refresh_rate(rate)
-        self.physical(apply)
-
     def close(self):
         self.debounce.stop()
         super().close()

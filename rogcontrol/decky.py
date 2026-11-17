@@ -15,7 +15,7 @@ def _cpu_capabilities(caps):
 
 
 def get_state(config_data=None, caps=None):
-    """Return saved controls and detected support without importing GTK."""
+    """Return saved controls and detected support without importing Qt."""
     cfg = config_data if config_data is not None else config.load_config()
     detected = caps if caps is not None else hardware.detect_capabilities(probe_gpu=False)
     name = cfg.get("current_profile")

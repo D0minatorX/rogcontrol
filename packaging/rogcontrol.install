@@ -1,0 +1,54 @@
+pkgname=rogcontrol
+helper_src=/usr/share/${pkgname}/rogcontrol-helper
+helper_dst=/usr/local/bin/rogcontrol-helper
+sudoers=/etc/sudoers.d/${pkgname}
+
+_install_helper() {
+	install -o root -g root -m 755 "${helper_src}" "${helper_dst}"
+}
+
+_setup_sudoers() {
+	# Scoped to this one binary for this one invoking user, same as
+	# install.sh. Only ever written after visudo validates it, so a bad
+	# rule can never land and lock sudo out.
+	local user="${SUDO_USER:-$USER}"
+	local rule="${user} ALL=(root) NOPASSWD: ${helper_dst}"
+	if [ -f "${sudoers}" ] && grep -qF "${rule}" "${sudoers}" 2>/dev/null; then
+		return 0
+	fi
+	local tmp
+	tmp="$(mktemp)"
+	printf '%s\n' "${rule}" > "${tmp}"
+	if visudo -cqf "${tmp}" 2>/dev/null; then
+		install -o root -g root -m 440 "${tmp}" "${sudoers}"
+	else
+		echo "==> WARNING: sudoers rule failed validation, not installed."
+		echo "==> Add manually with 'sudo visudo -f ${sudoers}':"
+		echo "==>   ${rule}"
+	fi
+	rm -f "${tmp}"
+}
+
+post_install() {
+	_install_helper
+	_setup_sudoers
+	cat <<-EOF
+	==> rogcontrol installed.
+	==> Enable the user services you want, e.g.:
+	==>   systemctl --user enable --now rogcontrol-apply.service
+	==>   systemctl --user enable --now rogcontrol-enforcer.service
+	==>   systemctl --user enable --now rogcontrol-tray.service
+	==> ryzenadj (AMD CPU power limits) and rogauracore (some keyboard
+	==> models) are AUR packages, not pulled in automatically.
+	EOF
+}
+
+post_upgrade() {
+	_install_helper
+	_setup_sudoers
+}
+
+pre_remove() {
+	rm -f "${helper_dst}"
+	rm -f "${sudoers}"
+}

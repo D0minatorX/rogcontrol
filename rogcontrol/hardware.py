@@ -1,6 +1,6 @@
 """Reading the machine, and asking the privileged helper to change it.
 
-Everything here is standard library only -- no GTK -- so the app, the helper
+Everything here is standard library only -- no Qt -- so the app, the helper
 scripts, the enforcer service and the tests can share one copy. It is the
 sysfs/subprocess half of the old rogcontrol.py, lifted out unchanged in
 behaviour: same paths, same fallbacks, same "return None rather than raise"
@@ -3241,7 +3241,7 @@ def read_fan_curve_enabled(root=None):
 #
 # WHY THE STATE IS A FILE AND NOT A VARIABLE IN THE WINDOW.
 #
-# It used to be a GLib countdown inside the System page, and the page also
+# It used to be a countdown inside the System page, and the page also
 # stopped the enforcer so nothing would fight the flat curve. Both halves of
 # the undo therefore lived in the window -- so closing the window during the
 # hold destroyed the timer, and the machine was left with all three fans

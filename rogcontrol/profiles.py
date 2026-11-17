@@ -1,6 +1,6 @@
 """The stock power profiles and the power-profiles-daemon mapping.
 
-Pure data plus one scaling helper -- no GTK, no hardware access, so it can
+Pure data plus one scaling helper -- no Qt, no hardware access, so it can
 be imported and tested anywhere.
 
 The app, config, System page, tray and enforcer share these tables.

@@ -52,7 +52,6 @@ class AppController(QObject):
     safetyTripped = Property(bool, lambda s: bool(s.config.get('safety_tripped')), notify=stateChanged)
     statusText = Property(str, lambda s: s._status, notify=stateChanged)
     demoMode = Property(bool, lambda s: s.demo, constant=True)
-    liveReadings = Property(bool, lambda s: s.live_readings, constant=True)
 
     @Slot()
     def tuningStateChanged(self):
@@ -127,17 +126,6 @@ class AppController(QObject):
             return
         self.profilesController.select(name)
 
-    @Slot()
-    def applyChanges(self):
-        if hasattr(self, 'profilesController'):
-            self.profilesController.apply()
-
-    @Slot()
-    def revertChanges(self):
-        if hasattr(self, 'profilesController'):
-            self.profilesController.revert()
-        self.refresh()
-
     @Slot(str)
     def command(self, action):
         self.windowCommand.emit(action)
@@ -206,21 +194,6 @@ class AppController(QObject):
             config.update_config(lambda cfg: cfg.update(window_size=geometry))
         if self._geometry == geometry:
             self._geometry_dirty = False
-
-    @Slot(str)
-    def setOverviewLayout(self, layout):
-        if layout not in ('list', 'dashboard'):
-            return
-        if self.demo:
-            self.config['overview_layout'] = layout
-            self.configChanged.emit()
-            return
-        def save():
-            from ... import config
-            from ...profile_requests import selection_lock
-            with selection_lock():
-                config.update_config(lambda cfg: cfg.update(overview_layout=layout))
-        self.submitWrite('overview-layout', save)
 
     def close(self):
         self._closed = True

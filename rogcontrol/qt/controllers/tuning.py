@@ -274,8 +274,8 @@ def toggle(key, title, default=True):
 def apply_saved_profile(cfg, caps, progress=None, gpu_only=False, force_fan_reapply=False):
     """Apply saved active settings while caller holds hardware_apply_lock.
 
-    UI-neutral equivalent of MainWindow's order; no nested hardware lock and
-    no GTK imports. Optional GPU writes remain independent and fan boost owns
+    UI-neutral apply order shared by the profile, CPU and GPU controllers; no nested hardware lock and
+    no Qt imports. Optional GPU writes remain independent and fan boost owns
     curves until its deadline. Return every failure for the caller to display.
     """
     import time

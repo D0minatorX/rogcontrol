@@ -1,4 +1,4 @@
-"""Release checks, download staging, and installer launching (no GTK)."""
+"""Release checks, download staging, and installer launching (no Qt)."""
 
 import json
 import os

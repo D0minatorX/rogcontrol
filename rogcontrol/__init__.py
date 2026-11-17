@@ -2,7 +2,7 @@
 
 Only the version lives here. Anything else in a package __init__ is imported
 by every module that touches the package -- including the helper scripts and
-the tests, which must never pull in GTK -- so this file stays empty of logic
+the tests, which must never pull in Qt -- so this file stays empty of logic
 on purpose.
 """
 

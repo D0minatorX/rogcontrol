@@ -2,7 +2,7 @@
 
 Extracted from the GTK3 app so the helper scripts, the enforcer service and
 the tests can all read the same config the same way. Standard library plus
-the profile tables -- no GTK, no hardware access.
+the profile tables -- no Qt, no hardware access.
 
 The file lives at CONFIG_PATH and holds everything the user has set: their
 profiles, which one is current, charge limit, window size. It is the only
@@ -53,7 +53,6 @@ DEFAULT_CONFIG = {
     "gamescope_profile": None,
     "window_size": [600, 700],
     "appearance": "system",
-    "overview_layout": "list",
     "fan_display_unit": "percent",
     # Whether the app has already put the fan-calibration prompt in front of
     # the user once. Set the first time it is shown, whether they run it or
@@ -107,7 +106,7 @@ AUTO_SWITCH_KEYS = {"ac": "ac_profile", "battery": "battery_profile",
 # --- creating, deleting and moving profiles between machines ----------------
 #
 # All pure: a config dict in, a config dict edited in place, no I/O and no
-# GTK. The window is a thin shell over these -- it asks for a name, shows a
+# Qt. The window is a thin shell over these -- it asks for a name, shows a
 # confirmation and picks a file, and every rule about what is allowed lives
 # here where it can be tested.
 

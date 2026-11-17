@@ -24,7 +24,6 @@ class OverviewController(QObject):
 
     data = Property('QVariantMap', lambda s: s._data, notify=stateChanged)
 
-    layout = Property(str, lambda s: s.app.config.get('overview_layout', 'list'), notify=stateChanged)
 
     sampleError = Property(str, lambda s: s._sample_error, notify=stateChanged)
 

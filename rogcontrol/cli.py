@@ -306,7 +306,7 @@ def adjust_speed(direction):
 
 
 def main(argv=None):
-    """Dispatch headless commands without loading GTK or probing hardware."""
+    """Dispatch headless commands without loading Qt or probing hardware."""
     parser = argparse.ArgumentParser(
         prog="rogcontrol", description="ROG Control profile and keyboard commands",
         epilog="Run rogcontrol without a command to open the window. "

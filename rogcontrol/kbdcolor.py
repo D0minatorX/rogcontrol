@@ -1,6 +1,6 @@
 """Keyboard lighting: the modes, and the colour arithmetic behind them.
 
-Standard library only -- no GTK, no sysfs -- for the same reason
+Standard library only -- no Qt, no sysfs -- for the same reason
 ``fancurve.py`` is: everything here is arithmetic over plain (r, g, b)
 tuples, so it can be tested without a display, without the keyboard
 attached, and without a privileged helper to write to.
@@ -342,7 +342,7 @@ def boost_ambient(color):
 #
 # Used only by Ambient mode, but kept here rather than beside the capture
 # pipeline so it can be exercised on a hand-built buffer -- without a portal,
-# a compositor, a keyboard or GTK. The pipeline half needs a live desktop;
+# a compositor, a keyboard or Qt. The pipeline half needs a live desktop;
 # this half is arithmetic.
 
 def zones_from_frame(data, width, height, stride, zones=KBD_ZONES):
