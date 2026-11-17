@@ -96,6 +96,8 @@ class EnforcerLimitsOffTests(unittest.TestCase):
         calls.clear()
         self.assertEqual(run(app_profiles.effective_profile(cfg, []), pending), set())
         self.assertEqual(calls, [('cpufwlimits',)])
+        self.assertTrue(enforcer._fan_repush)  # reconcile re-pushes fan curves right away
+        enforcer._fan_repush = False
 
 
 class AppProfilesUiTests(unittest.TestCase):

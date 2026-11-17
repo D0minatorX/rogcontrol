@@ -124,6 +124,7 @@ _last_fan_apply_time = 0.0
 # switch or a detected external PPD mode change (which is confirmed to
 # silently disable the curve on this hardware -- see module docstring).
 _last_applied_fans = None
+_fan_repush = False  # an app-exit firmware reset dropped the fan curves
 
 # Lightweight mode checks run independently of the slower hardware upkeep.
 POWER_MODE_POLL_SECONDS = 2
@@ -1680,6 +1681,10 @@ def reconcile_app_profiles(stop):
                         record_app_fields(journal, pending | overrides.keys())
                         pending = apply_app_changes(config, effective, pending)
                         record_app_fields(journal, pending | overrides.keys())
+                    global _fan_repush
+                    if _fan_repush:  # re-push now instead of waiting for the 60 s pass
+                        _fan_repush = False
+                        apply_full_profile(config, None, force_fan_reapply=True, full=False)
                 previous = overrides
                 # A configured app can launch even when the file has not changed.
                 stamp = config_stamp
@@ -1700,7 +1705,7 @@ def record_app_fields(journal, fields):
 
 
 def apply_app_changes(config, effective, pending):
-    global _last_applied_fans
+    global _last_applied_fans, _fan_repush
     remaining = set(pending)
     cpu = effective.get("cpu", {})
     if config.get("safety_tripped"):
@@ -1744,7 +1749,8 @@ def apply_app_changes(config, effective, pending):
             if keys and run_helper(*args):
                 remaining.difference_update(("cpu", key) for key in keys)
                 if step == "fwreset":
-                    _last_applied_fans = None  # the EC drops fan curves; the next pass re-pushes them
+                    _last_applied_fans = None  # the EC drops fan curves
+                    _fan_repush = True
     gpu_keys = {key for section, key in pending if section == "gpu"}
     if gpu_keys and not hardware.nvidia_access_error() and not hardware.dgpu_is_suspended():
         gpu = effective.get("gpu", {})
