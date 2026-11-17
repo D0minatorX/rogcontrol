@@ -895,29 +895,6 @@ def read_cpu_clock_floor_default(root=None):
 INTEL_NO_TURBO_PATH = "/sys/devices/system/cpu/intel_pstate/no_turbo"
 
 
-def read_cpu_boost_enabled(root=None):
-    """True/False if a cpufreq boost switch exists, else None.
-
-    Drivers can publish both global and per-policy switches. Boost is fully
-    enabled only when all exposed switches agree. intel_pstate in
-    active mode has neither -- it publishes ``no_turbo`` instead, meaning the
-    opposite of the other two, so that one is read and inverted rather than
-    just checked for existence."""
-    paths = glob.glob(_under(root, CPUFREQ_GLOB) + "/boost")
-    global_path = _under(root, "/sys/devices/system/cpu/cpufreq/boost")
-    if os.path.exists(global_path):
-        paths.append(global_path)
-    if paths:
-        values = [read_int(path) for path in paths]
-        if 0 in values:
-            return False
-        return True if all(value == 1 for value in values) else None
-    val = read_int(_under(root, INTEL_NO_TURBO_PATH))
-    if val is not None:
-        return not bool(val)
-    return None
-
-
 def read_epp_preferences(root=None):
     """EPP names this kernel accepts, or [] if the machine has no EPP."""
     for path in sorted(glob.glob(

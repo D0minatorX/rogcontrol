@@ -51,12 +51,6 @@ def _save(state, state_path):
         Path(temporary).unlink(missing_ok=True)
 
 
-def effective_limit(config, state_path=None):
-    state = read_state(state_path)
-    return (100 if state and not state.get('restoring')
-            else config.get('charge_limit', 100))
-
-
 def start(config_path=None, state_path=None):
     state_path = state_path or STATE_PATH
     with _locked(state_path):

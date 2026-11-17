@@ -153,12 +153,6 @@ class ApplyEfficiencyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(policy.read_text().strip(), '1')
 
-    def test_boost_readback_reports_disabled_policy_despite_global_enable(self):
-        self.node('/sys/devices/system/cpu/cpufreq/boost', 1)
-        self.node('/sys/devices/system/cpu/cpufreq/policy0/boost', 1)
-        self.node('/sys/devices/system/cpu/cpufreq/policy1/boost', 0)
-        self.assertFalse(hardware.read_cpu_boost_enabled(root=self.root))
-
     def test_floor_restore_resolves_each_policy_default(self):
         for i, value in enumerate((1000000, 1500000)):
             self.node(f'/sys/devices/system/cpu/cpufreq/policy{i}/scaling_min_freq', value)

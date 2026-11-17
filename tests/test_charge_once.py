@@ -94,7 +94,6 @@ class ChargeOnceTests(unittest.TestCase):
         self.fail = True
         self.assertFalse(self.feature.cancel(config_path=self.path)[0])
         self.assertTrue(self.feature.read_state()['restoring'])
-        self.assertEqual(self.feature.effective_limit(self.saved()), 80)
         self.fail = False
         self.assertTrue(self.tick()[0])
         self.assertEqual(self.limit, 80)
