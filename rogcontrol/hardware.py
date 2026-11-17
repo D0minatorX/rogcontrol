@@ -488,7 +488,6 @@ def set_enforcer_running(running, timeout=10):
 # and is-enabled to any user -- so only the two changes go through the helper.
 
 ASUSD_SERVICE = "asusd.service"
-ASUSD_PACKAGE = "asusctl"
 
 # The four states worth telling the user apart.
 ASUSD_ABSENT = "absent"
@@ -681,7 +680,6 @@ CPU_TEMP_HWMON_NAMES = ("k10temp", "coretemp", "acpitz_0", "acpitz")
 # Optimizer -- exists on AMD and nowhere else. Intel's equivalents live
 # behind RAPL and are not wired up here yet.
 CPU_VENDOR_AMD = "AuthenticAMD"
-CPU_VENDOR_INTEL = "GenuineIntel"
 
 
 def read_cpu_vendor(root=None):
@@ -1502,7 +1500,6 @@ NVIDIA_POWERMIZER_MODES = {
     2: "Driver controlled / Auto",
     3: "Prefer Consistent Performance",
 }
-NVIDIA_POWERMIZER_AUTO = 2
 NVIDIA_POWERMIZER_UNSUPPORTED_MESSAGE = (
     "this NVIDIA GPU/driver does not support GPUPowerMizerMode")
 NVIDIA_POWERMIZER_QUERY_MESSAGE = (
@@ -3576,15 +3573,6 @@ USB_DEVICES_DIR = "/sys/bus/usb/devices"
 # because those are safe everywhere. Only the multi-zone ones are withheld
 # until a device is known to handle them. Send the output of `lsusb | grep
 # 0b05` if your model does support zones and isn't listed.
-AURA_SINGLE_ZONE_IDS = {
-    "1854",  # GL553 / GL753
-    "1866",  # GL503 / GL703 / GX501 Zephyrus
-    "1869",  # GL551 / GL771
-    "1822",  # GL502
-    "1837",  # GL702
-    "19b6",  # N-KEY (current Strix / Scar generation)
-    "1a30",  # newer N-KEY revision
-}
 AURA_MULTI_ZONE_IDS = {"1854", "1866", "1869", "19b6", "1a30"}
 
 

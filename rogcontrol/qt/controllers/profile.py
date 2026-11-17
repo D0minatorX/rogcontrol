@@ -36,61 +36,6 @@ class ProfileController(QObject):
         for page in self.pages.values():
             page.revert()
 
-    @Slot()
-    def apply(self):
-        page = self.pages.get(self.app.currentPage)
-        if page and page.dirty:
-            page.apply()
-            return
-        if self.dirty:
-            self._status = 'Apply staged changes on each tuning page before applying the saved profile.'
-            self.stateChanged.emit()
-            return
-        target = self.app.activeProfile
-        saved_gpu = self.app.config.get('profiles', {}).get(target, {}).get('gpu', {})
-        if saved_gpu.get('voltage_boost', 0) > 0:
-            self._pending = ('profile-voltage', (target, saved_gpu['voltage_boost']))
-            self.confirmationRequested.emit('profile-voltage', 'Apply this profile’s positive voltage boost? It is experimental and can increase heat and instability.')
-            return
-        self._apply_saved(target)
-
-    def _apply_saved(self, target, confirmed_voltage=0):
-        if self.app.demo:
-            self._status = 'Demo profile applied'
-            self.stateChanged.emit()
-            return
-        from .tuning import apply_saved_profile
-        gpu_caps = deepcopy(self.pages['gpu'].caps)
-        def worker():
-            from ... import config, hardware as h
-            from ...profile_requests import hardware_apply_lock
-            with hardware_apply_lock():
-                if self._closed:
-                    raise RuntimeError('Controller closed before operation')
-                fresh = config.load_config()
-                if fresh.get('current_profile') != target:
-                    raise RuntimeError('Active profile changed; refresh and retry')
-                actual_voltage = fresh.get('profiles', {}).get(target, {}).get('gpu', {}).get('voltage_boost', 0)
-                if actual_voltage > 0 and actual_voltage != confirmed_voltage:
-                    raise RuntimeError('Profile voltage changed; confirm the current value before applying')
-                caps = h.detect_capabilities(probe_gpu=False)
-                caps.update(gpu_caps)
-                return fresh, apply_saved_profile(fresh, caps)
-        self._submit('profile-apply', worker, self._applied)
-
-    def _applied(self, result, error):
-        if self._closed:
-            return
-        if error:
-            self._status = str(error)
-        else:
-            if any(message.startswith('GPU direct settings deferred:') for message in result[1]):
-                self.pages['gpu']._reapply_after_probe = True
-            self.app.config = result[0]
-            self.app.configChanged.emit()
-            self._status = '\n'.join(result[1]) or 'Saved profile applied'
-        self.stateChanged.emit()
-
     def _submit(self, owner, worker, done):
         if not self.app.submitWrite(owner, worker, done):
             self._status = 'Another operation is running. Try again when it finishes.'
@@ -213,10 +158,7 @@ class ProfileController(QObject):
         if not accepted or not pending or pending[0] != action:
             return
         payload = pending[1]
-        if action == 'profile-voltage':
-            if payload[0] == self.app.activeProfile:
-                self._apply_saved(*payload)
-        elif action == 'select-voltage':
+        if action == 'select-voltage':
             self._select_saved(*payload)
         elif action == 'select':
             self.revert()

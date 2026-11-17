@@ -54,13 +54,6 @@ KBD_RGB_MODES = {
 
 # Needs a controller with four addressable zones.
 MULTI_ZONE_MODES = ("Gradient Static",)
-# Modes that read the first colour picker. The rest either animate through
-# every colour themselves (Rainbow, Color Cycle) or take their colour from
-# something being measured, so showing a picker for them would be showing a
-# control that does nothing.
-COLOUR_MODES = ("Static", "Breathing", "Pulse", "Gradient Static")
-# Breathing fades between the two; Gradient Static blends across the zones.
-SECOND_COLOUR_MODES = ("Breathing", "Gradient Static")
 # The animations the firmware runs itself, all of which take a speed.
 SPEED_MODES = ("Breathing", "Pulse", "Color Cycle", "Rainbow")
 # Colour comes from a live reading, re-sent as the reading moves.
