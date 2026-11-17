@@ -2,7 +2,7 @@
 """Qt system tray sidecar, sharing the app's existing profile request worker.
 
 The sidecar survives closing the window and follows external config changes.
-No GTK environment overrides are needed; children inherit the desktop session.
+Children inherit the desktop session environment; only PYTHONPATH is added.
 """
 import os
 from pathlib import Path
