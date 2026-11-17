@@ -155,6 +155,9 @@ ColumnLayout {
                                                 + (row.overridden ? " · Override" : ""))
                     currentIndex: Math.min(root.selectedSetting, count - 1)
                     onActivated: index => root.selectedSetting = index
+                    // a new model (every edit relabels rows) resets currentIndex to 0
+                    onModelChanged: currentIndex = Math.min(root.selectedSetting, count - 1)
+                    objectName: "settingCombo"
                     Accessible.name: "Setting to edit"
                 }
 
@@ -189,7 +192,9 @@ ColumnLayout {
                         }
                         Text {
                             visible: !row.available
-                            text: "Waiting for a supported control or a restorable system profile value."
+                            text: row.section === "cpu" && !["boost", "max_freq", "min_freq"].includes(row.key)
+                                  ? "Power limits are turned off in the system profile. Turn them on in CPU to override this."
+                                  : "Waiting for a supported control or a restorable system profile value."
                             color: root.colors.mutedText
                             wrapMode: Text.WordWrap
                             Layout.fillWidth: true

@@ -135,6 +135,13 @@ class AppProfilesUiTests(unittest.TestCase):
         dialog = view.rootObject().findChild(QObject, 'overridesDialog')
         self.assertTrue(dialog.property('visible'))
         self.assertEqual(controller.path, EXE)
+        combo = view.rootObject().findChild(QObject, 'settingCombo')
+        combo.setProperty('currentIndex', 1)
+        view.rootObject().setProperty('selectedSetting', 1)
+        row = controller.rows[1]
+        controller.toggle(row['section'], row['key'], True)  # relabels the model
+        self.qt.processEvents()
+        self.assertEqual(combo.property('currentIndex'), 1)
         dialog.close()
         self.qt.processEvents()
         controller.selectExecutable('/bin/sh')  # a fresh pick has no tile yet, so the editor must open itself
