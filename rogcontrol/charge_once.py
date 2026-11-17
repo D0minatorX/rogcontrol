@@ -4,12 +4,9 @@ The state file survives app/service restarts. A separate advisory lock serialize
 GUI and enforcer transitions, including hardware writes, without holding the
 configuration lock across a helper invocation.
 """
-from contextlib import contextmanager
-import fcntl
 import json
 import os
 from pathlib import Path
-import tempfile
 
 from . import config as config_mod
 from . import hardware
@@ -28,32 +25,16 @@ def read_state(state_path=None):
     return None
 
 
-@contextmanager
-def _locked(state_path):
-    Path(state_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(state_path + '.lock', 'a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        yield
-
-
 def _save(state, state_path):
     if state is None:
         Path(state_path).unlink(missing_ok=True)
         return
-    fd, temporary = tempfile.mkstemp(dir=str(Path(state_path).parent))
-    try:
-        with os.fdopen(fd, 'w') as target:
-            json.dump(state, target)
-            target.flush()
-            os.fsync(target.fileno())
-        os.replace(temporary, state_path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+    config_mod.write_json_atomic(state_path, state)
 
 
 def start(config_path=None, state_path=None):
     state_path = state_path or STATE_PATH
-    with _locked(state_path):
+    with config_mod.locked_state(state_path):
         _save({'seen_ac': bool(hardware.is_ac_connected()), 'restoring': False},
               state_path)
         return _tick(config_path, state_path)
@@ -61,7 +42,7 @@ def start(config_path=None, state_path=None):
 
 def cancel(config_path=None, state_path=None):
     state_path = state_path or STATE_PATH
-    with _locked(state_path):
+    with config_mod.locked_state(state_path):
         state = read_state(state_path)
         if state:
             state['restoring'] = True
@@ -72,7 +53,7 @@ def cancel(config_path=None, state_path=None):
 def set_limit(percent, config_path=None, state_path=None):
     """Save the normal limit without interrupting an active full charge."""
     state_path = state_path or STATE_PATH
-    with _locked(state_path):
+    with config_mod.locked_state(state_path):
         if not read_state(state_path):
             # A failed normal-limit write must also get a later retry.
             _save({'restoring': True, 'seen_ac': False}, state_path)
@@ -88,7 +69,7 @@ def tick(config=None, config_path=None, state_path=None, enforce_normal=False):
     not used: a profile apply can carry a snapshot predating a user's edit.
     """
     state_path = state_path or STATE_PATH
-    with _locked(state_path):
+    with config_mod.locked_state(state_path):
         return _tick(config_path, state_path, enforce_normal=enforce_normal)
 
 

@@ -10,16 +10,15 @@ GNOME mutter tools/gdctl and data/dbus-interfaces/org.gnome.Mutter.DisplayConfig
 No root helper, xrandr fallback, custom timings, or persistent display writes.
 """
 
-from contextlib import contextmanager
-import fcntl
 import json
 import math
 import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
+
+from .config import locked_state, write_json_atomic
 
 CONFIG_KEY = 'auto_display_refresh'
 BATTERY_RATE_KEY = 'battery_display_refresh_hz'
@@ -296,14 +295,6 @@ def _gnome_state():
                 raise
 
 
-@contextmanager
-def _locked_state(state_path):
-    Path(state_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(state_path + '.lock', 'a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        yield
-
-
 def _read_restore(state_path):
     try:
         with open(state_path) as source:
@@ -315,18 +306,6 @@ def _read_restore(state_path):
         raise ValueError('Invalid saved display refresh restore state')
     _rate(state.get('restore_hz'))
     return state
-
-
-def _save_restore(state, state_path):
-    fd, temporary = tempfile.mkstemp(dir=str(Path(state_path).parent))
-    try:
-        with os.fdopen(fd, 'w') as target:
-            json.dump(state, target)
-            target.flush()
-            os.fsync(target.fileno())
-        os.replace(temporary, state_path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
 
 
 def tick(cfg, power_source, state_path=None):
@@ -343,7 +322,7 @@ def tick(cfg, power_source, state_path=None):
     if not enabled and not Path(state_path).exists():
         return 'Automatic display refresh is off.'
     try:
-        with _locked_state(state_path):
+        with locked_state(state_path):
             pending = _read_restore(state_path)
             restoring = not enabled or power_source != 'battery'
             if restoring and pending is None:
@@ -366,7 +345,7 @@ def tick(cfg, power_source, state_path=None):
             if not restoring and pending is None and command is not None:
                 if current not in rates:
                     raise ValueError('Current internal refresh rate cannot be safely restored')
-                _save_restore({'restore_hz': current, 'panels': identities}, state_path)
+                write_json_atomic(state_path, {'restore_hz': current, 'panels': identities})
             if command is not None:
                 _run(command)
             if restoring:

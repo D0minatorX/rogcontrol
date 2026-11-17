@@ -388,7 +388,7 @@ class AutomaticRefreshPolicyTests(unittest.TestCase):
         self.assertEqual(len(self.writes), 1)
 
     def test_snapshot_write_failure_prevents_display_change(self):
-        with patch.object(refresh, '_save_restore', side_effect=OSError('Disk full')):
+        with patch.object(refresh, 'write_json_atomic', side_effect=OSError('Disk full')):
             self.assertIn('Disk full', self.tick('battery'))
         self.assertEqual(self.writes, [])
 

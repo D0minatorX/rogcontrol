@@ -11,8 +11,11 @@ migration never overwrites a value, a save never truncates the old file, and
 a config that cannot be parsed is moved aside rather than replaced.
 """
 
+from contextlib import contextmanager
+import fcntl
 import json
 import os
+from pathlib import Path
 import stat
 import sys
 import tempfile
@@ -607,6 +610,50 @@ def update_config(mutate, path=None):
     return cfg
 
 
+def write_json_atomic(path, data, indent=None, fsync=True, keep_mode=False):
+    """Write ``data`` as JSON to ``path`` via a unique temp file and a rename,
+    so a reader sees the complete old file or the complete new one.
+
+    The temp file is unique (mkstemp, same directory so the rename stays on
+    one filesystem) because several processes write these files and a fixed
+    name would let two of them interleave. ``fsync`` makes the contents reach
+    the disk before the rename; runtime files on tmpfs skip it. ``keep_mode``
+    carries an existing file's permissions over (mkstemp makes 0600; a file
+    that does not exist yet keeps that, the safer default)."""
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory,
+                               prefix=os.path.basename(path) + ".",
+                               suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=indent)
+            if fsync:
+                f.flush()
+                os.fsync(f.fileno())
+        if keep_mode:
+            try:
+                os.chmod(tmp, stat.S_IMODE(os.stat(path).st_mode))
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    except BaseException:
+        # Never leave a half-written .tmp sitting next to the real file.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+@contextmanager
+def locked_state(state_path):
+    """Hold an exclusive flock on ``<state_path>.lock`` (parent dir created)."""
+    Path(state_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(str(state_path) + '.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def save_config(cfg, path=None):
     """Write the config out atomically.
 
@@ -615,41 +662,11 @@ def save_config(cfg, path=None):
     Writing in place -- which this used to do -- truncates the file the
     moment it is opened, so a crash, a full disk or a value that will not
     serialise left the user with an empty or half-written config and no
-    profiles."""
+    profiles. Five processes save this file (the window, the tray, the hotkey
+    cycler, the boot apply and the enforcer), hence the unique temp file."""
     path = CONFIG_PATH if path is None else path
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    # A unique temporary file, not a fixed "<path>.tmp". Five processes save
-    # this config -- the window, the tray, the hotkey cycler, the boot apply
-    # and the enforcer -- and two of them saving at once would open, truncate
-    # and write the same temp file, then rename the interleaved result over
-    # the user's config. mkstemp in the same directory keeps the rename on
-    # one filesystem, which is what makes it atomic.
-    fd, tmp = tempfile.mkstemp(dir=directory,
-                               prefix=os.path.basename(path) + ".",
-                               suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(cfg, f, indent=2)
-            # The rename is only atomic with respect to the file's contents
-            # if those contents have actually reached the disk first.
-            f.flush()
-            os.fsync(f.fileno())
-        # mkstemp creates 0600. Carry the real config's own permissions over
-        # so saving cannot quietly change them; a config that does not exist
-        # yet keeps the private 0600, which is the safer of the two.
-        try:
-            os.chmod(tmp, stat.S_IMODE(os.stat(path).st_mode))
-        except OSError:
-            pass
-        os.replace(tmp, path)
-    except BaseException:
-        # Never leave a half-written .tmp sitting next to the real config.
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    write_json_atomic(path, cfg, indent=2, keep_mode=True)
 
 
 # --- crash-loop breaker for the CPU undervolt --------------------------------

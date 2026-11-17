@@ -9,7 +9,6 @@ Temporary dimming is recorded in a private runtime file, never in config.
 import json
 import os
 from pathlib import Path
-import tempfile
 import time
 
 from . import config, hardware, wayland_idle
@@ -135,14 +134,7 @@ class IdleController:
 
     def _record(self, value):
         # Record BEFORE dimming so a concurrent UI refresh cannot persist zero.
-        fd, name = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name + '.')
-        try:
-            with os.fdopen(fd, 'w') as stream:
-                json.dump(value, stream)
-            os.replace(name, self.path)
-        finally:
-            if os.path.exists(name):
-                os.unlink(name)
+        config.write_json_atomic(str(self.path), value, fsync=False)
         self.saved = value
 
     def restore(self, cfg):
