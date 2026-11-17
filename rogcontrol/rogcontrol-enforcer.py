@@ -293,8 +293,7 @@ def clock_limit_available():
 def apply_full_profile(config, profile, force_fan_reapply=False, full=True):
     with profile_requests.hardware_apply_lock():
         if app_profiles.entries(config):
-            with open(CONFIG_PATH) as stream:
-                config = json.load(stream)
+            config = config_mod.load_config(CONFIG_PATH)
             profile = config.get("profiles", {}).get(config.get("current_profile"))
         _apply_full_profile(config, profile, force_fan_reapply, full)
 
