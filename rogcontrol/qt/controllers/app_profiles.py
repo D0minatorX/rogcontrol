@@ -3,10 +3,29 @@ import os
 from copy import deepcopy
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Property, Signal, Slot
+from PySide6.QtCore import QObject, Property, QSize, Signal, Slot
+from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtQuick import QQuickImageProvider
 from PySide6.QtWidgets import QFileDialog
 
 from ... import app_profiles, config, fancurve
+
+
+class AppIconProvider(QQuickImageProvider):
+    """image://appicon/<executable name>: its theme icon, else a generic executable icon."""
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Pixmap)
+
+    def requestPixmap(self, name, size, requested):
+        edge = requested.width() if requested.width() > 0 else 48
+        icon = QIcon.fromTheme(name)
+        if icon.isNull():
+            icon = QIcon.fromTheme('application-x-executable')
+        size.setWidth(edge)
+        size.setHeight(edge)
+        # A null pixmap makes the QML Image report an error, which shows its glyph fallback.
+        return icon.pixmap(QSize(edge, edge)) if not icon.isNull() else QPixmap()
 
 
 class AppProfilesController(QObject):
@@ -23,6 +42,8 @@ class AppProfilesController(QObject):
             page.stateChanged.connect(self.changed.emit)
 
     paths = Property('QStringList', lambda s: sorted(app_profiles.entries(s.app.config)), notify=changed)
+    apps = Property('QVariantList', lambda s: [{'path': p, 'name': os.path.basename(p)}
+                                               for p in sorted(app_profiles.entries(s.app.config))], notify=changed)
     path = Property(str, lambda s: s._path, notify=changed)
     rows = Property('QVariantList', lambda s: s._rows(), notify=changed)
 
@@ -41,7 +62,7 @@ class AppProfilesController(QObject):
                 inherited = app_profiles.baseline_value(section, key, baseline)
                 available = self.app.demo or (inherited is not None and (
                     section != 'cpu' or ((key != 'max_freq' or baseline.get('boost') is not False) and
-                    (key in ('max_freq', 'min_freq') or baseline.get('limits_enabled') is not False))))
+                    (key in ('boost', 'max_freq', 'min_freq') or baseline.get('limits_enabled') is not False))))
                 if section == 'gpu' and key == 'clock_limit' and inherited == 0:
                     inherited = round(control['max'] * control.get('scale', 1))
                 value = values.get(key, inherited if inherited is not None else control.get('points', control.get('default', 0)))
@@ -93,6 +114,20 @@ class AppProfilesController(QObject):
             values[key] = deepcopy(row['value'])
         elif not enabled:
             values.pop(key, None)
+        self.changed.emit()
+
+    @Slot(str, str, str)
+    def setMode(self, section, key, mode):
+        """Boolean override: mode is 'inherit', 'on' or 'off'."""
+        row = next((row for row in self._rows()
+                    if (row['section'], row['key']) == (section, key)), None)
+        if not row or row['kind'] != 'bool' or mode not in ('inherit', 'on', 'off') or self.app.busy:
+            return
+        values = self._draft.setdefault(section, {})
+        if mode == 'inherit':
+            values.pop(key, None)
+        elif row['available']:
+            values[key] = mode == 'on'
         self.changed.emit()
 
     @Slot(str, str, float)
@@ -151,7 +186,7 @@ class AppProfilesController(QObject):
         if not path or self.app.busy:
             return
         draft = {section: {key: deepcopy(value) for key, value in values.items()
-                           if key in app_profiles.FIELDS[section] and app_profiles.valid_value(section, value)}
+                           if key in app_profiles.FIELDS[section] and app_profiles.valid_value(section, value, key)}
                  for section, values in self._draft.items()
                  if section in app_profiles.FIELDS and isinstance(values, dict) and values}
         def mutate(cfg):

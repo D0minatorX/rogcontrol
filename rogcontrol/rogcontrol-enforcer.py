@@ -1702,8 +1702,11 @@ def apply_app_changes(config, effective, pending):
         cpu = config_mod.stock_cpu_values(cpu)
     cpu_keys = {key for section, key in pending if section == "cpu"}
     if cpu_keys:
-        power_keys = cpu_keys - {"max_freq", "min_freq"}
+        power_keys = cpu_keys - {"boost", "max_freq", "min_freq"}
         clock_keys = cpu_keys & {"max_freq", "min_freq"}
+        # A boost write resets every policy's ceiling, so rewrite it after.
+        if "boost" in cpu_keys:
+            clock_keys.add("max_freq")
         caps = {"ryzenadj": hardware.cpu_is_amd(),
                 "cpu_power_limits": hardware.cpu_power_limits_backend(),
                 "cpu_clock": clock_limit_available(),
@@ -1721,7 +1724,8 @@ def apply_app_changes(config, effective, pending):
                 else:
                     clock_keys.discard("max_freq")
         for step, args in plan:
-            keys = {"limits": power_keys, "clock": clock_keys & {"max_freq"},
+            keys = {"limits": power_keys, "boost": cpu_keys & {"boost"},
+                    "clock": clock_keys & {"max_freq"},
                     "minclock": clock_keys & {"min_freq"}}.get(step)
             if keys and run_helper(*args):
                 remaining.difference_update(("cpu", key) for key in keys)

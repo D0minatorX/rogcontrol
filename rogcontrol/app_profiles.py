@@ -4,7 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 
 FIELDS = {
-    "cpu": ("stapm", "fast", "slow", "pl1", "pl2", "max_freq", "min_freq"),
+    "cpu": ("stapm", "fast", "slow", "pl1", "pl2", "boost", "max_freq", "min_freq"),
     "gpu": ("watts", "clock_limit", "clock_offset", "mem_clock_offset"),
     "fans": ("1", "2", "3"),
 }
@@ -41,7 +41,9 @@ def running_paths(config, proc="/proc"):
     return sorted(newest, key=newest.__getitem__)
 
 
-def valid_value(section, value):
+def valid_value(section, value, key=None):
+    if key == "boost":
+        return type(value) is bool
     if section == "fans":
         return (isinstance(value, list) and 2 <= len(value) <= 8
                 and all(isinstance(point, list) and len(point) == 2
@@ -56,6 +58,8 @@ def baseline_value(section, key, values):
         return values[key]
     if section == "cpu" and key in ("max_freq", "min_freq"):
         return 0
+    if section == "cpu" and key == "boost":
+        return True  # Profiles without the key leave the kernel default (boost on).
     if section == "gpu" and key == "clock_limit":
         return 0  # Explicit reset when the global profile has no ceiling.
     return None
@@ -78,12 +82,12 @@ def effective_profile(config, paths, baseline=None):
                 continue
             if section == "cpu":
                 if base.get("limits_enabled") is False:
-                    keys = ("max_freq", "min_freq")
+                    keys = ("boost", "max_freq", "min_freq")
                 if base.get("boost") is False:
                     keys = tuple(key for key in keys if key != "max_freq")
             for key in keys:
                 if (baseline_value(section, key, base) is not None and key in values
-                        and valid_value(section, values[key])):
+                        and valid_value(section, values[key], key)):
                     effective[section][key] = deepcopy(values[key])
     cpu = effective.get("cpu", {})
     if cpu.get("max_freq") and cpu.get("min_freq", 0) > cpu["max_freq"]:
