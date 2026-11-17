@@ -3,26 +3,12 @@
 This module builds helper commands without probing or changing hardware.
 """
 
-# The steps a CPU apply can make, in the only order that works. This is a
-# hardware constraint, not a preference: writing cpufreq's ``boost`` refreshes
-# every policy and takes ``scaling_max_freq`` back up to hardware maximum with
-# it, so a clock cap written before boost is silently undone. The same order
-# is spelled out again in app.py's whole-profile apply and in
-# rogcontrol-apply.py, which is why it is worth having one tested definition
-# of it here.
-#
-# ``fwreset`` is first and is the only optional-by-request one -- see
-# cpu_apply_plan. The floor goes after the ceiling for a second, separate
-# reason: cpuclock has to pull scaling_min_freq down on any policy whose
-# floor would sit above the new ceiling, so a floor written first can be
-# lowered by the very next step.
-#
-# EVERY step cpu_apply_plan can emit belongs here, and every one of them
-# needs a row, a save entry and a label on the CPU page. A step that reaches
-# the hardware with no save entry is written on every Apply and never stored,
-# and the profile comes back without it each time the page reloads. That is
-# what this tuple is checked against.
-CPU_APPLY_STEPS = ("thermal_policy", "fwreset", "limits", "boost", "epp", "clock", "minclock")
+# Step order is a hardware constraint, not a preference: writing cpufreq's
+# ``boost`` refreshes every policy and takes ``scaling_max_freq`` back up to
+# hardware maximum, so a clock cap written before boost is silently undone.
+# The floor goes after the ceiling because cpuclock has to pull
+# scaling_min_freq down on any policy whose floor would sit above the new
+# ceiling. ``fwreset`` is first and is the only optional-by-request step.
 
 
 def cpu_apply_plan(values, caps=None):
@@ -104,8 +90,8 @@ def cpu_apply_plan(values, caps=None):
     # only ever reads "ppt"/"rapl" here -- it resolves to "ryzenadj" first
     # whenever that backend is available, so this branch is never reached on
     # an AMD machine and the block above is untouched. Same step name as the
-    # ryzenadj branch, on purpose: CPU_APPLY_STEPS, STEP_ROWS, STEP_SAVES and
-    # STEP_LABELS all key on "limits" and need no branch of their own for it.
+    # ryzenadj branch, on purpose: callers key on "limits" and need no branch
+    # of their own for it.
     #
     # pl1/pl2 rather than stapm/fast/slow/temp -- Intel has no equivalent of
     # the fast/slow windows or the temperature target (that is an SMU

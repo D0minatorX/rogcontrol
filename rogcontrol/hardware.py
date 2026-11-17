@@ -29,7 +29,7 @@ from . import kbdcolor, graphics_backend
 from .nvidia_clocks import CLOCK_OFFSET_STEPS
 from .profiles import expected_ppd_mode
 # Re-export the established API for UI, services, shortcuts and plugins.
-from .cpu_plan import CPU_APPLY_STEPS, cpu_apply_plan
+from .cpu_plan import cpu_apply_plan
 
 HELPER = "/usr/local/bin/rogcontrol-helper"
 ASUS_WMI_DIR = "/sys/devices/platform/asus-nb-wmi"

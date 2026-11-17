@@ -500,7 +500,7 @@ case "$1" in
     cpuminclock)
         # Floor under the core clock, in kHz, written to every cpufreq policy.
         # The counterpart of cpuclock, and it must be written AFTER it -- see
-        # hardware.CPU_APPLY_STEPS. Two separate reasons, both measured:
+        # cpu_plan.cpu_apply_plan. Two separate reasons, both measured:
         #
         #   * a cpufreq "boost" write refreshes every policy, and that resets
         #     scaling_min_freq the same way it resets scaling_max_freq, so a
