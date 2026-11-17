@@ -30,6 +30,7 @@ class AppIconProvider(QQuickImageProvider):
 
 class AppProfilesController(QObject):
     changed = Signal()
+    picked = Signal()  # new executable chosen; page opens its editor
 
     def __init__(self, app, parent=None):
         super().__init__(parent)
@@ -92,6 +93,7 @@ class AppProfilesController(QObject):
             self.app.errorOccurred.emit('Select a file with execute permission.')
             return
         self.select(path)
+        self.picked.emit()
 
     @Slot(str)
     def select(self, path):

@@ -135,6 +135,11 @@ class AppProfilesUiTests(unittest.TestCase):
         dialog = view.rootObject().findChild(QObject, 'overridesDialog')
         self.assertTrue(dialog.property('visible'))
         self.assertEqual(controller.path, EXE)
+        dialog.close()
+        self.qt.processEvents()
+        controller.selectExecutable('/bin/sh')  # a fresh pick has no tile yet, so the editor must open itself
+        self.qt.processEvents()
+        self.assertTrue(dialog.property('visible'))
         view.close()
 
 

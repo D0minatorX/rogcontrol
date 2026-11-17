@@ -10,6 +10,14 @@ ColumnLayout {
     property int selectedSetting: 0
     spacing: 12
 
+    Connections {
+        target: root.editor
+        function onPicked() {
+            root.selectedSetting = 0
+            overrides.open()
+        }
+    }
+
     RowLayout {
         Layout.fillWidth: true
         Layout.topMargin: 10
